@@ -1,0 +1,169 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>westmarch — semantic browser</title>
+<style>
+  :root { --bg:#0d1014; --panel:#141920; --line:#232b35; --fg:#c8d3de; --dim:#6b7986; --ok:#5fd39a; --bad:#e6737a; --accent:#4a9fd8; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  header { padding:10px 14px; border-bottom:1px solid var(--line); display:flex; gap:16px; flex-wrap:wrap; align-items:baseline; }
+  header .nav { margin-left:auto; display:flex; gap:14px; align-items:baseline; }
+  header .nav a { color:var(--dim); text-decoration:none; border-bottom:1px solid transparent; }
+  header .nav a:hover, header .nav a.on { color:var(--fg); border-bottom-color:var(--accent); }
+  header .nav a b { color:var(--accent); font-weight:600; }
+  h1 { font-size:12px; margin:0; font-weight:600; letter-spacing:.08em; text-transform:uppercase; }
+  .good { color:var(--ok); } .bad { color:var(--bad); } .dim { color:var(--dim); }
+  /* Three zones, and the middle one is the point: the generated view. The
+     left is the stable, persistent UI — what exists, and what the focused
+     corpus is — which a just-in-time surface still needs beside it. */
+  /* One stage. Everything that was an admin panel is under a disclosure, because
+     a person arriving here should see a question and an answer, not a readout of
+     somebody's shard pipeline. */
+  main { max-width:900px; margin:0 auto; padding:20px 16px 40px; }
+  .stage input[type=text] { font-size:16px; padding:11px 14px; }
+  .chips { display:flex; gap:5px; flex-wrap:wrap; margin-top:8px; }
+  .chip { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--line);
+          color:var(--dim); font:inherit; font-size:11px; padding:3px 9px; cursor:pointer; }
+  .chip.held { border-left-color:var(--accent); color:var(--fg); }
+  .chip.hot { border-left-color:var(--ok); color:var(--fg); }
+  .chip.made { border-left-color:#b98ad8; color:var(--fg); }
+  a.chip { text-decoration:none; border-left-color:var(--ok); color:var(--fg); margin-top:8px; display:inline-block; }
+  .chip:hover { border-color:var(--accent); }
+  details#hood { margin-top:26px; border-top:1px solid var(--line); padding-top:10px; }
+  details#hood > summary { cursor:pointer; color:var(--dim); letter-spacing:.08em;
+                           text-transform:uppercase; font-size:11px; }
+  .hood { display:grid; grid-template-columns:1fr 1fr; gap:26px; margin-top:16px; }
+  @media (max-width:800px) { .hood { grid-template-columns:1fr; } }
+  section { background:var(--bg); overflow:auto; }
+  h2 { font-size:11px; margin:0 0 10px; color:var(--dim); font-weight:600; letter-spacing:.08em; text-transform:uppercase; }
+  h2 + h2 { margin-top:22px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); margin-bottom:20px; }
+  .cell { background:var(--panel); padding:9px 11px; }
+  .cell b { display:block; font-size:17px; font-weight:600; color:#fff; }
+  .cell span { color:var(--dim); font-size:10px; letter-spacing:.06em; text-transform:uppercase; }
+  .field { display:grid; grid-template-columns:130px 1fr 58px; gap:9px; align-items:center; padding:1.5px 0; }
+  .field .k { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .field .v { text-align:right; color:var(--dim); }
+  .bar { background:var(--panel); height:8px; border-radius:1px; overflow:hidden; }
+  .bar i { display:block; height:100%; background:var(--accent); }
+  .cols { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
+  .col { --accent:#4a9fd8; background:var(--panel); border:1px solid var(--line);
+         border-left:3px solid var(--accent); color:var(--fg); font:inherit;
+         padding:6px 11px; cursor:pointer; text-align:left; }
+  .col:hover { border-color:var(--accent); }
+  .col.on { background:var(--accent); color:#08101a; }
+  .col.on span { color:#08101a; opacity:.75; }
+  .col b { display:block; font-size:15px; }
+  .col span { color:var(--dim); font-size:10px; letter-spacing:.06em; text-transform:uppercase; }
+  .row { padding:4px 0; border-bottom:1px solid var(--line); }
+  .row .t { color:#fff; }
+  .row a { color:var(--accent); text-decoration:none; }
+  .row a:hover { text-decoration:underline; }
+  .corpus { border-left:2px solid var(--line); background:var(--panel); padding:7px 10px; margin-bottom:5px; }
+  .corpus.on { border-left-color:var(--ok); }
+  .corpus.held { border-left-color:var(--accent); }
+  .corpus .head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  .corpus .head b { color:#fff; }
+  .corpus .meta { color:var(--dim); margin-top:2px; display:flex; align-items:center; gap:6px; }
+  .corpus button { background:transparent; border:1px solid var(--line); color:var(--accent);
+                   font:inherit; padding:1px 8px; cursor:pointer; }
+  .corpus button:hover { border-color:var(--accent); }
+  input[type=text] { background:var(--panel); color:var(--fg); border:1px solid var(--line);
+                     font:inherit; padding:6px 9px; width:100%; font-size:13px; }
+  select { background:var(--panel); color:var(--fg); border:1px solid var(--line); font:inherit; padding:2px 5px; }
+  .call { border-left:2px solid var(--accent); background:var(--panel); padding:6px 9px; margin-bottom:5px; }
+  .call.bad { border-left-color:var(--bad); }
+  .call .head { display:flex; justify-content:space-between; gap:10px; }
+  .call .args { color:var(--dim); word-break:break-all; margin-top:2px; }
+  /* The orientation strip. The page is an agent backend, which is exactly the
+     thing a person cannot see by looking at it — so it says so, in words, above
+     the telemetry. */
+  #howto { padding:9px 14px; border-bottom:1px solid var(--line); background:var(--panel); }
+  #howto b { color:#fff; font-weight:600; }
+  #howto .try { margin-top:6px; color:var(--dim); display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  #howto .try button { background:var(--bg); border:1px solid var(--line); border-left:3px solid var(--accent);
+                       color:var(--fg); font:inherit; padding:2px 8px; cursor:pointer; }
+  #howto .try button:hover { border-color:var(--accent); }
+  .corpus .why { color:var(--dim); }
+  /* The answer pane is an IFRAME on purpose. What lands in it is the same
+     `ui://` resource an MCP host would be handed, rendered the same sandboxed
+     way — so this page is its own host, and the buttons inside it come back as
+     tool calls. Anything less would be a second renderer that could drift.
+     It is also where the media plays, which is why a like re-orders the queue
+     by message rather than by re-render: replacing the srcdoc would stop it. */
+  #answer { width:100%; height:min(62vh, 620px); min-height:380px; border:1px solid var(--line);
+            background:#10151b; margin-top:10px; border-radius:4px; }
+  #answerMeta { margin-top:8px; }
+  #ask { width:100%; font-size:14px; padding:7px 10px; }
+  .corpus.miss { opacity:.45; }
+</style>
+
+<header>
+  <h1>westmarch</h1>
+  <span id="status" class="dim"></span>
+  <span id="mcp" class="dim" hidden></span>
+  <span id="view" class="dim" hidden></span>
+  <span id="shape" class="dim" hidden></span>
+  <span id="gate" class="dim"></span>
+  <!-- Two places, and the distinction is the whole architecture: this page is
+       about what the publishers hold, `you.html` is about the reader. The link
+       is not decoration — without it the only screen in the system whose subject
+       is the person was reachable by typing its filename. -->
+  <nav class="nav">
+    <a href="/" class="on">catalogue</a>
+    <a href="/you.html" id="navYou">you <b id="navCount"></b></a>
+  </nav>
+</header>
+
+<div id="howto">
+  <div>Ask anything and it plays. The queue is built here, in this tab — the question is
+  never sent anywhere, every publisher's data stays on their own server until you open it,
+  and what you like or skip re-orders the queue without leaving the page.
+  <span class="dim">An agent can drive the same fourteen verbs over <code>document.modelContext</code>, including <code>taste-doc</code> — what it has worked out about you, as a file you can read and answer.</span></div>
+</div>
+
+<main>
+  <div class="stage">
+    <input type="text" id="dirQuery" placeholder="ask a question and press ⏎">
+    <div class="chips" id="prompts"></div>
+    <div id="answerMeta" class="dim" style="margin-top:10px"></div>
+    <a id="launch" class="chip" target="_blank" rel="noreferrer noopener" hidden></a>
+    <iframe id="answer" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"></iframe>
+    <div class="chips" id="sources" style="margin-top:10px"></div>
+    <div class="chips" id="sets" style="margin-top:6px"></div>
+  </div>
+
+  <details id="hood">
+    <summary>under the hood</summary>
+    <div class="hood">
+      <section>
+        <h2>publishers <span id="dirMeta" class="dim"></span></h2>
+        <div id="directory"></div>
+
+        <h2>in focus <span id="focusMeta" class="dim"></span></h2>
+        <div class="grid">
+          <div class="cell"><b id="rows">0</b><span>rows</span></div>
+          <div class="cell"><b id="vecs">—</b><span>vectors</span></div>
+          <div class="cell"><b id="shards">—</b><span>streamed</span></div>
+          <div class="cell"><b id="owners">—</b><span>publishers</span></div>
+        </div>
+
+        <h2>collections</h2>
+        <div class="cols" id="collections"></div>
+
+        <h2>field coverage</h2>
+        <div id="fields"></div>
+
+        <h2>facet <select id="facetField"></select> <span id="facetMeta" class="dim"></span></h2>
+        <div id="facet"></div>
+      </section>
+
+      <section>
+        <h2>tool calls <span id="callCount" class="dim"></span></h2>
+        <div id="calls"></div>
+      </section>
+    </div>
+  </details>
+</main>
+
+<script type="module" src="/main.js"></script>

@@ -1,0 +1,514 @@
+<title>A Market for Legibility</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#fbfbfd; --surface:#f1f2f7; --sunk:#e9ebf1;
+  --ink:#14161c; --body:#2c313d; --muted:#5c6270; --faint:#878da0;
+  --rule:#dbdee7; --rule-soft:#e8eaf1;
+  --accent:#2f4d8a; --accent-soft:#e6ebf6;
+  --warn:#8a3a2f; --warn-soft:#f6e9e6;
+  --live:#1f6b4a; --live-soft:#e2f0e9;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0e1015; --surface:#171a21; --sunk:#1d212a;
+    --ink:#e9ebf1; --body:#c9cedb; --muted:#8f96a6; --faint:#6b7284;
+    --rule:#262b35; --rule-soft:#1f242d;
+    --accent:#93aee2; --accent-soft:#1a2436;
+    --warn:#d99384; --warn-soft:#2b1d1a;
+    --live:#6fc39a; --live-soft:#152720;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0e1015; --surface:#171a21; --sunk:#1d212a;
+  --ink:#e9ebf1; --body:#c9cedb; --muted:#8f96a6; --faint:#6b7284;
+  --rule:#262b35; --rule-soft:#1f242d;
+  --accent:#93aee2; --accent-soft:#1a2436;
+  --warn:#d99384; --warn-soft:#2b1d1a;
+  --live:#6fc39a; --live-soft:#152720;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--body);
+  font-family:"Source Serif 4",Charter,Georgia,serif;
+  font-size:17px; line-height:1.62; font-optical-sizing:auto;
+  -webkit-font-smoothing:antialiased;
+}
+.page{max-width:1060px;margin:0 auto;padding:64px 32px 120px}
+@media(max-width:760px){.page{padding:44px 20px 80px}}
+
+/* ── masthead ─────────────────────────────────────────── */
+.masthead{border-bottom:2px solid var(--ink);padding-bottom:26px;margin-bottom:14px}
+.eyebrow{
+  font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:11px;font-weight:600;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin:0 0 14px
+}
+h1{
+  font-size:clamp(38px,6vw,60px);line-height:1.02;margin:0 0 16px;color:var(--ink);
+  font-weight:700;letter-spacing:-.025em;text-wrap:balance
+}
+.standfirst{font-size:20px;line-height:1.5;color:var(--muted);margin:0;max-width:60ch}
+.byline{
+  display:flex;flex-wrap:wrap;gap:8px 28px;margin-top:22px;
+  font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:12px;color:var(--faint)
+}
+.byline b{color:var(--muted);font-weight:500}
+
+/* ── the status convention ────────────────────────────── */
+.legend{
+  display:flex;flex-wrap:wrap;gap:10px;margin:26px 0 60px;padding:16px 18px;
+  background:var(--surface);border:1px solid var(--rule-soft);border-radius:3px
+}
+.legend p{margin:0 0 4px;width:100%;font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:12px;color:var(--muted)}
+.tag{
+  display:inline-flex;align-items:center;gap:6px;
+  font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:10.5px;font-weight:600;
+  letter-spacing:.07em;text-transform:uppercase;padding:3px 8px;border-radius:2px;white-space:nowrap
+}
+.tag.live{background:var(--live-soft);color:var(--live)}
+.tag.built{background:var(--accent-soft);color:var(--accent)}
+.tag.sim{background:var(--sunk);color:var(--muted)}
+.tag.open{background:var(--warn-soft);color:var(--warn)}
+
+/* ── sections ─────────────────────────────────────────── */
+section{margin:0 0 66px;scroll-margin-top:24px}
+.sechead{display:flex;gap:18px;align-items:baseline;margin:0 0 22px;border-bottom:1px solid var(--rule);padding-bottom:10px}
+.secno{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px;color:var(--accent);
+  font-weight:500;flex:none;padding-top:4px
+}
+h2{font-size:27px;line-height:1.2;margin:0;color:var(--ink);font-weight:600;letter-spacing:-.015em;text-wrap:balance}
+h3{
+  font-size:18px;margin:34px 0 10px;color:var(--ink);font-weight:600;letter-spacing:-.01em;
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap
+}
+p{margin:0 0 16px;max-width:68ch}
+a{color:var(--accent);text-decoration-thickness:1px;text-underline-offset:2px}
+em{font-style:italic;color:var(--ink)}
+strong{font-weight:600;color:var(--ink)}
+
+/* ── formal blocks ────────────────────────────────────── */
+.block{
+  border-left:2px solid var(--accent);padding:2px 0 2px 20px;margin:22px 0 24px;
+  background:linear-gradient(90deg,var(--accent-soft),transparent 55%)
+}
+.block .lab{
+  font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:11px;font-weight:600;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--accent);display:block;margin-bottom:6px
+}
+.block p:last-child{margin-bottom:0}
+.remark{border-left-color:var(--muted);background:none}
+.remark .lab{color:var(--muted)}
+.caution{border-left-color:var(--warn);background:linear-gradient(90deg,var(--warn-soft),transparent 55%)}
+.caution .lab{color:var(--warn)}
+
+/* ── code + data ──────────────────────────────────────── */
+code{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.86em;background:var(--sunk);padding:1px 5px;border-radius:2px;color:var(--ink)}
+pre{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12.5px;line-height:1.62;
+  background:var(--surface);border:1px solid var(--rule-soft);border-radius:3px;
+  padding:16px 18px;overflow-x:auto;margin:20px 0;color:var(--body)
+}
+pre code{background:none;padding:0;font-size:inherit}
+.tblwrap{overflow-x:auto;margin:22px 0}
+table{width:100%;border-collapse:collapse;font-size:14.5px}
+th{
+  font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:10.5px;font-weight:600;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--faint);
+  text-align:left;padding:0 16px 8px 0;border-bottom:1px solid var(--rule);white-space:nowrap
+}
+td{padding:9px 16px 9px 0;border-bottom:1px solid var(--rule-soft);vertical-align:top}
+td:last-child,th:last-child{padding-right:0}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12.5px;font-variant-numeric:tabular-nums}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+
+ul,ol{margin:0 0 16px;padding-left:22px;max-width:68ch}
+li{margin-bottom:7px}
+li::marker{color:var(--faint)}
+.tight li{margin-bottom:3px}
+
+hr{border:0;border-top:1px solid var(--rule);margin:56px 0}
+.colophon{
+  margin-top:70px;padding-top:22px;border-top:2px solid var(--ink);
+  font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:12.5px;color:var(--faint)
+}
+.colophon p{max-width:70ch}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="page">
+
+<header class="masthead">
+  <p class="eyebrow">System notes · westmarch / fangorn</p>
+  <h1>A Market for Legibility</h1>
+  <p class="standfirst">An index in which discovery is unmeterable, content is sold by the right to resolve it, and the reader is a publisher of one small corpus: themselves.</p>
+  <div class="byline">
+    <span><b>Chain</b> Arbitrum Sepolia · 421614</span>
+    <span><b>Embedding</b> nomic-embed-text-v1.5, 256-d</span>
+    <span><b>Status</b> partially deployed; see §0</span>
+  </div>
+</header>
+
+<div class="legend">
+  <p>Every construction below carries its state. The distinction is load-bearing: several mechanisms are implemented and self-checked but have never run outside a simulation, and describing those as features would be the precise dishonesty this system is built to refuse.</p>
+  <span class="tag live">Deployed</span>
+  <span class="tag built">Built · exercised for real</span>
+  <span class="tag sim">Built · simulation only</span>
+  <span class="tag open">Open</span>
+</div>
+
+<section>
+  <div class="sechead"><span class="secno">§0</span><h2>Setting</h2></div>
+
+  <p>A catalogue of media is held by a publisher who wishes to sell access to it. A reader wishes to find things in it worth their attention, and does not wish to be surveilled while doing so. Between them sits an <em>index</em>, which knows what exists and what it costs, and — by construction — cannot know what anyone asked.</p>
+
+  <p>The system has three parts, and it matters that they are separable. <strong>quickbeam</strong> ingests a publisher's graph and bakes it into immutable, content-addressed shards. <strong>westmarch</strong> is the client library and the index: it pulls shards, ranks them locally, and holds the reader. <strong>fangorn</strong> is the on-chain graph and registry where publishers commit, resources are priced, and payments settle. Applications — a television app, a music app — are lenses over the index and own nothing about the reader.</p>
+
+  <div class="block">
+    <span class="lab">The thesis</span>
+    <p>Every artifact exists at two resolutions: a free, public, lossy <em>projection</em> sufficient to decide, and a paid, exact <em>payload</em> sufficient to use. The economy is the business of moving between them. Settlement is the act of collapsing a projection into the thing it projects.</p>
+  </div>
+
+  <p>This resolves, for a restricted but useful class of goods, the difficulty Arrow identified in the market for information: that to value information one must know it, at which point one need not buy it. An embedding is a faithful, machine-comparable measurement of content which supports <em>decisions</em> without supporting <em>use</em>. One can rank with it, cluster it, compare it across catalogues, and cannot watch it.</p>
+
+  <div class="block remark">
+    <span class="lab">Remark 0.1</span>
+    <p>It follows that this market is native to agents rather than to people. A human consumes perceptually, so a human market degenerates to "give me a sample," and a sample is a piece of the good. An agent decides computationally and can therefore transact in measurements. The agentic setting is not incidental; it is the enabling condition.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="secno">§1</span><h2>The embedding substrate</h2></div>
+
+  <p>Fix a single public embedding model — here <code>nomic-embed-text-v1.5</code>, truncated Matryoshka-style to its leading 256 dimensions and quantised to <code>int8</code>, packed base64. Every corpus on the network embeds with it. This is usually stated as a compatibility requirement; the directory refuses to rank a corpus baked under a different model, because cosine between two models' vectors is noise.</p>
+
+  <p>It purchases something nobody asked for. A taste learned in one publisher's corpus applies directly to another's — not by matching identifiers, of which there are none in common, nor by a shared schema, of which there is none. A film and a video game have no field in common, no publisher in common, and no agreement of any kind beyond the embedding.</p>
+
+  <div class="block">
+    <span class="lab">Proposition 1.1</span>
+    <p>Interoperability between catalogues requires no coordination between their publishers. It requires only that both embed with the same public model.</p>
+  </div>
+
+  <p>Observed: a taste vector fitted on six reactions to public-domain films ranks 5,839 video games from an unrelated publisher, returning <em>Crime Cities</em>, <em>Dance of Death: Du Lac &amp; Fey</em>, and <em>The Sinking City</em> for a reader whose likes were <em>Nosferatu</em>, <em>Metropolis</em> and <em>The Golem</em>.</p>
+
+  <div class="block caution">
+    <span class="lab">Caution 1.2</span>
+    <p>An embedding is not an opaque token. Inversion attacks reconstruct short inputs near-exactly, and the noise levels that preserve retrieval do not prevent it. Any vector published in the clear should be treated as a lossy publication of the text it was computed from. §8 gives a measured instance where this destroyed a paywall in one step.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="secno">§2</span><h2>Corpora</h2></div>
+  <h3>2.1 Shards and manifests <span class="tag live">Deployed</span></h3>
+
+  <p>A baked domain is a manifest plus one or more gzipped NDJSON shards, named by the SHA-256 of their contents and therefore immutable. A row is <code>{track_id, owner, fields, v}</code>, where <code>v</code> is the packed vector. A client fetches the manifest, streams the shards, and thereafter searches in its own process.</p>
+
+  <h3>2.2 The role map</h3>
+
+  <p>A shard's field names are the publisher's business. The manifest's <code>role_map</code> declares which of them play which part: <code>identity</code>, <code>title</code>, <code>subtitle</code>, <code>temporal</code>, <code>spatial</code>, <code>media</code>, and the list-valued <code>tags</code>, <code>measures</code>, <code>relations</code>, <code>text</code>. A client that reads the declaration renders any publisher's corpus without knowing anything about it in advance.</p>
+
+  <div class="block caution">
+    <span class="lab">Caution 2.3</span>
+    <p>The text role is evaluated <em>at parse time</em>. A reader that fails to wire the declaration before loading a shard falls back to a default field sniff, and the failure is silent: a corpus of dialogue answers every question about what was said with zero results, which reads as a worthless corpus rather than a misconfigured reader. Two independent agents hit this and one nearly abandoned the only asset serving its brief.</p>
+  </div>
+
+  <h3>2.4 A corpus is not one thing</h3>
+
+  <p>An ingest may emit several kinds of row under one entity type. The archive subtitles corpus is 21,131 rows of which 4,147 are speech transcription, 14,643 are machine-generated scene descriptions and 2,341 are summaries — a distinction the ingest recorded in a <code>role</code> field and the bake discarded, because the domain filter admitted only entity types. Sold whole, it was sold as "every spoken line," and was 80% not that. The filter now admits arbitrary payload fields, and the corpus is two domains.</p>
+</section>
+
+<section>
+  <div class="sechead"><span class="secno">§3</span><h2>Discovery without disclosure</h2></div>
+
+  <p>The query never leaves the client. This is the property from which everything else follows, and it is achieved by the unremarkable means of doing the search locally.</p>
+
+  <h3>3.1 Coverage centroids <span class="tag live">Deployed</span></h3>
+
+  <p>A corpus of any size is summarised by <em>k</em> = 8 centroids fitted by spherical k-means over its own vectors, truncated to 128 leading dimensions and <em>renormalised after truncation</em> — a truncated unit vector is not a unit vector, and the client compares against a query it truncates and renormalises identically. The summary is roughly 4 KB and rides in the catalogue.</p>
+
+  <div class="block">
+    <span class="lab">Consequence 3.2</span>
+    <p>A client ranks a thousand corpora it has never downloaded, by cosine against their centroids, before deciding which to pull. Discovery is therefore unmeterable: nothing is logged because nothing is asked, and the index holds four kilobytes per corpus.</p>
+  </div>
+
+  <p>The corollary is unwelcome and worth stating: <strong>discovery in this architecture cannot be monetised.</strong> Revenue must come from settlement, which is §6 onward.</p>
+
+  <h3>3.3 Ranking</h3>
+
+  <p>Raw cosine is offset per query, so absolute scores are not comparable between queries and a fixed threshold is meaningless. Results are cut at a <em>z-floor</em> of <code>mean + 1σ</code> of the present query's own score distribution, with the floor capped below the top score so a query where everything matches still returns its best.</p>
+
+  <p>Near-duplicates are adjacent in the space by construction, so a list taken by score alone is one thing said repeatedly — measured, five episodes of one series in a six-item list. Results are diversified by Maximal Marginal Relevance, <code>λ·score − (1−λ)·max_similarity_to_already_picked</code>, at λ = 0.7.</p>
+
+  <div class="block remark">
+    <span class="lab">Remark 3.4</span>
+    <p>A publisher asking about a <em>region</em> of its own catalogue (§9) needs a threshold meaning the same thing on every reader's machine. Percentiles of the publisher's own shelf serve; absolute cosine does not. Using 0.55 as a cutoff admitted the entire corpus and returned byte-identical answers to three different questions.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="secno">§4</span><h2>The taste kernel</h2></div>
+  <h3><span class="tag live">Deployed</span></h3>
+
+  <p>A reader's state is four vectors, recency-weighted with a half-life of 8 — the eighth-most-recent like carries half the weight of the newest, because a taste that never forgets is a taste that cannot be steered.</p>
+
+  <div class="tblwrap"><table>
+    <thead><tr><th>Symbol</th><th>Definition</th><th>Reading</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">μ</td><td>weighted mean of accepted items</td><td>where you are</td></tr>
+      <tr><td class="mono">v</td><td>recent mean − older mean</td><td>where you are heading</td></tr>
+      <tr><td class="mono">q</td><td>μ nudged along v (drift 0.35)</td><td>the lookahead you rank with</td></tr>
+      <tr><td class="mono">no</td><td>mean of rejected items</td><td>where you are <em>not</em> going</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>Scoring subtracts a γ = 0.6 multiple of similarity to <code>no</code>, so rejection steers rather than merely filtering. The whole object serialises to roughly 108 bytes of packed int8 — small enough to paste into a message.</p>
+
+  <div class="block">
+    <span class="lab">Proposition 4.1</span>
+    <p>Every recommender in production keeps its embedding private, which is exactly what makes taste non-portable: the reader's taste is an asset of whoever holds the model. Here the model is public and the vectors are in files the reader already downloaded, so the taste is an object the reader owns.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="secno">§5</span><h2>The vault</h2></div>
+  <h3>Wallet-sealed reader state <span class="tag live">Deployed</span></h3>
+
+  <p><code>localStorage</code> is origin-scoped, so a taste learned in one application is invisible to the next and gone with the browser. Passing it in a query parameter fixes that and nothing else: it cannot survive a new machine, and it leaks the object into every referrer and server log on the way.</p>
+
+  <p>The taste is therefore committed to the reader's own namespace in the graph, encrypted under a key only their wallet derives.</p>
+
+  <pre><code>k  ←  HKDF-SHA256( Sign_wallet("fangorn:taste-vault:v1"), salt="fangorn/taste-vault" )
+c  ←  AES-256-GCM_k( exportTaste(t) ),  fresh 96-bit IV
+V  ←  vertex{ id:"self/taste", tag:"taste", payload:{ enc:"vault-v1", blob:c } }</code></pre>
+
+  <p>ECDSA signing is deterministic (RFC 6979), so the wallet is the only input and a machine that has never seen the taste re-derives the key. Observed on-chain: a wrong wallet returns <code>null</code>; the right wallet returns 256 dimensions and the titles behind them.</p>
+
+  <ul>
+    <li><strong>The vault message is domain-separated from the identity message.</strong> Two secrets derived from one signature are one secret, and the identity signature proves payment (§6) — a vault sharing it would let anyone who opened a reader's taste also spend their entitlements.</li>
+    <li><strong>A fresh IV per sync</strong>, so committing twice does not announce "unchanged" to an observer of the chain.</li>
+    <li><strong>One vertex id, overwritten.</strong> A chain of past selves is precisely the profile the encryption exists to prevent, and a chain neither forgets nor accepts a deletion request.</li>
+  </ul>
+
+  <div class="block caution">
+    <span class="lab">Caution 5.1</span>
+    <p>Publishing the taste in plaintext would be strictly worse than the surveillance it replaces. μ is where the reader is and <code>no</code> is what they rejected; both are directly comparable to every corpus on the network, and the binding to an address is permanent and irrevocable.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="secno">§6</span><h2>Access and settlement</h2></div>
+  <h3><span class="tag built">Built · exercised for real</span></h3>
+
+  <p>Content is encrypted client-side under a data encryption key and uploaded to the publisher's own object store; the ciphertext is served ungated. What is sold is not the bytes — anyone may hold those — but the right to resolve them. Purchase proceeds in three steps.</p>
+
+  <ol>
+    <li><strong>Register.</strong> The buyer signs an EIP-3009 <code>transferWithAuthorization</code> and an identity commitment. A facilitator relays it; USDC moves to <code>resource_owners[rid]</code>. <em>The buyer signs and does not transact, and therefore needs no gas.</em></li>
+    <li><strong>Settle.</strong> The buyer proves Semaphore group membership with scope equal to the resource id, from a stealth address derived per <code>(identity, resource)</code>. Two purchases by one buyer are unlinkable on-chain.</li>
+    <li><strong>Access.</strong> A stealth-signed request to the access worker releases the DEK.</li>
+  </ol>
+
+  <p>Price and payee are read from the registry and never from the index. The index is a convenience, and in a cross-publisher market one the buyer did not build; signing for a price or a payee it supplied is how a poisoned index overcharges or redirects.</p>
+
+  <div class="block">
+    <span class="lab">Observed</span>
+    <p>An agent wallet holding <span class="mono">1.00 USDC and 0 ETH</span> discovered a 4.7 MB file in a public catalogue, read its price from the contract, paid 0.05 USDC, settled, took delivery, and decrypted to bytes identical to the publisher's original. Balances after: buyer 0.95, publisher +0.05, buyer's gas balance unchanged at zero.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="secno">§7</span><h2>Lineage</h2></div>
+  <h3>7.1 The split <span class="tag live">Deployed</span></h3>
+
+  <p>A derivative work is worth more than its inputs and is made entirely of them. Let <em>A</em> be the amount paid, <em>a</em> the app's share in basis points, and <em>(p<sub>i</sub>, b<sub>i</sub>)</em> the cited payees and their shares <em>of the publisher's remainder</em>.</p>
+
+  <pre><code>appCut   = ⌊A · a / 10000⌋
+pool     = A − appCut
+upstream = Σ ⌊pool · bᵢ / 10000⌋
+publisher gets pool − upstream                    (absorbing all dust)
+
+invariant:  appCut + upstream + publisher  =  A     exactly</code></pre>
+
+  <p>Every share rounds down and the publisher absorbs the remainder. Settlement that invents or destroys a base unit cannot be reconciled, so the sum is asserted rather than assumed. Note that upstream is paid from the publisher's share and never from the app's: a publisher spends its own money on its citations.</p>
+
+  <h3>7.2 Why the splitter is the owner, not a hook</h3>
+
+  <p>The registry offers <code>registerHook(rid, addr)</code>, calling <code>afterSettle</code> on the registered address, with a failing hook reverting the settle. The obvious construction — a hook that distributes — does not work: money moves at <em>register</em>, directly to the resource owner, and the hook fires at <em>settle</em>, a later transaction, after the funds are gone.</p>
+
+  <div class="block">
+    <span class="lab">Construction 7.3</span>
+    <p>The splitter calls <code>createResource</code> itself, and is therefore the owner and the payee. In the same call it registers itself as its own hook. Payments accumulate in the contract; <code>afterSettle</code> distributes them. One contract in both roles, and no modification to a registry already deployed and holding funds.</p>
+  </div>
+
+  <p>Since one settle corresponds to one register, a settle distributes exactly <code>price</code> — never the whole balance, which would let one buyer's settle drain another's unsettled payment. Registrations without settlement accumulate and are released by a permissionless <code>sweep</code>: anyone owed money should be able to trigger their own payment.</p>
+
+  <div class="tblwrap"><table>
+    <thead><tr><th>Payee</th><th>Basis</th><th class="num">Received</th></tr></thead>
+    <tbody>
+      <tr><td>app</td><td>1000 bps of gross</td><td class="num mono">0.00500</td></tr>
+      <tr><td>source 1</td><td>1200 bps of publisher share</td><td class="num mono">0.00540</td></tr>
+      <tr><td>source 2</td><td>800 bps</td><td class="num mono">0.00360</td></tr>
+      <tr><td>source 3</td><td>500 bps</td><td class="num mono">0.00225</td></tr>
+      <tr><td>publisher</td><td>remainder + dust</td><td class="num mono">0.03375</td></tr>
+      <tr><td><strong>total</strong></td><td>on 0.05 USDC paid in</td><td class="num mono"><strong>0.05000</strong></td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="block caution">
+    <span class="lab">Caution 7.4</span>
+    <p>A Stylus contract is deployed through a factory, so <code>msg_sender()</code> during the constructor is that factory and not the deploying wallet. The first deployment recorded the factory as owner; every <code>only_owner</code> call would have reverted, leaving a contract able to receive money and unable to distribute it. Ownership must be a constructor argument.</p>
+  </div>
+
+  <div class="block caution">
+    <span class="lab">Caution 7.5</span>
+    <p><code>MAX_PAYEES</code> is bounded at 16 because <code>afterSettle</code> executes inside a buyer's settle transaction, and a hook exhausting gas <em>reverts that settle</em> — a buyer who has paid would be unable to take delivery.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="secno">§8</span><h2>The reader as publisher</h2></div>
+  <h3>Reactions as a corpus <span class="tag sim">Built · simulation only</span></h3>
+
+  <p>A reaction corpus has the same shape as any publisher's: a manifest, coverage centroids, a free index, a paid payload, and lineage. Constructing one requires no embedding model, because a reaction's vector <em>is</em> the vector of the row reacted to, which the reader already downloaded in order to react. Becoming a publisher is therefore not a tier one is promoted into; it is one file and a price.</p>
+
+  <div class="block">
+    <span class="lab">The economic claim</span>
+    <p>Lineage runs backwards from a reaction to the corpora that produced it. When a reader sells their reactions, the catalogues they were reacting <em>to</em> are paid, in proportion to how much of the attention each supplied. Under an advertising model those catalogues receive nothing for precisely this data. The proposition is not that privacy is pleasant; it is that non-surveillance makes publishers a strictly better offer.</p>
+  </div>
+
+  <h3>8.1 What the free index may contain</h3>
+
+  <p>Free: the coverage centroids, which corpus, and the month. Paid: which item, its title, and the polarity of the reaction. <strong>A reaction row publishes no vector at all</strong>, and the reason is a measurement:</p>
+
+  <pre><code>free reaction rows carrying the item's vector, matched against
+the (free) source corpus by cosine:
+
+    5 / 5 paid rows identified exactly, at cosine 1.0000</code></pre>
+
+  <p>A reaction's vector is a byte-for-byte copy of a row in a corpus anyone may download. No coarsening repairs a copy. Nothing is lost by omitting it, because nobody buys row 47 of a stranger's reactions — a taste corpus is bought whole, and the question a buyer actually asks is answered by the centroids alone.</p>
+
+  <div class="block remark">
+    <span class="lab">Remark 8.2</span>
+    <p>Two further leaks of the same shape appeared and were closed: the free/paid split was declared in the manifest and never applied to the rows, and the row identifier was derived from the item — publishing the paid title inside the primary key of a corpus whose identity role is its title. The general principle: <em>anything derived from the paid thing is a disclosure of it</em>. The test asserts by substring that no paid string occurs anywhere in a free row, including its keys.</p>
+  </div>
+
+  <div class="block caution">
+    <span class="lab">Caution 8.3</span>
+    <p>Centroids are averages, so <em>k</em> is capped such that at least 8 reactions stand behind each. A centroid over one reaction is that reaction's vector under another name.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="secno">§9</span><h2>Aggregate queries</h2></div>
+  <h3>Buying an answer rather than the rows <span class="tag sim">Built · simulation only</span></h3>
+
+  <p>A publisher wishes to know how its catalogue landed. Buying readers' reaction corpora and summing them works, pays the readers, and ends with the publisher holding every reader's private log — surveillance with an invoice attached. Instead the publisher buys the aggregate.</p>
+
+  <ol class="tight">
+    <li>The publisher posts a question and a budget. It has its own catalogue, so it anchors the question on one of its own rows and needs no embedding model to ask.</li>
+    <li>Each reader evaluates the question locally, producing a short integer vector: a presence tally, counts by polarity, and a fixed-point sum of the vectors of matching items.</li>
+    <li>For each pair of readers a shared secret is derived by ECDH over published keys and expanded by HKDF into 64-bit words; the reader with the lower public key adds the stream and the other subtracts it.</li>
+    <li>The masked shares are summed. Every pair contributes <em>+m</em> and <em>−m</em>; the masks vanish and the totals remain, exactly, over ℤ/2<sup>64</sup>.</li>
+  </ol>
+
+  <p>An individual share is uniform over the ring. Two readers with identical logs produce different shares. The publisher receives counts and a direction it can rank its own shelf against, and no fact about any person.</p>
+
+  <div class="tblwrap"><table>
+    <thead><tr><th>Guard</th><th>Value</th><th>Because</th></tr></thead>
+    <tbody>
+      <tr><td>Cohort floor</td><td class="mono">5 readers</td><td>An aggregate over two readers is two readers' data with a total sign on it.</td></tr>
+      <tr><td>Support floor</td><td class="mono">5 reactions</td><td>See Caution 9.2.</td></tr>
+      <tr><td>Presence tally</td><td class="mono">slot 0 = 1</td><td>The sum must equal the cohort size; a dropout lands it uniformly in 2<sup>64</sup> and is caught by one comparison.</td></tr>
+      <tr><td>Payment</td><td class="mono">identical</td><td>Paying by contribution publishes the one quantity the masking hides.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="block caution">
+    <span class="lab">Caution 9.2</span>
+    <p>Masking protects <em>who</em> and is silent about <em>what</em>. Six readers were asked how they reacted near <em>Nosferatu</em>; exactly one reaction matched; the returned centroid ranked the publisher's own shelf as <span class="mono">nosferatu-1of5</span>, <span class="mono">Grave-of-the-Vampire</span>, <span class="mono">Nosferatu_1922_Symphony_of_Horror</span> — a complete recovery of one reader's film through a mechanism whose entire claim is that it does not do that. A mean over <em>k</em> things is those things when <em>k</em> is small, however many people stand behind it. Counts may be reported at any support; the direction is withheld below the floor, and the reader is told to widen the question.</p>
+  </div>
+
+  <div class="block remark">
+    <span class="lab">Remark 9.3</span>
+    <p>The privacy floor shapes the product rather than obstructing it. Asked at the top 2% of the shelf the question is refused for want of support; widened to 35% it returns sentiment +0.467 around <em>Nosferatu</em> against +0.231 around a noir anchor — a commissioning decision reached without holding one person's log.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="secno">§10</span><h2>Surfaces</h2></div>
+
+  <p>Applications are lenses. A television application has a player, channels, scenes and its own tool vocabulary; a music application will have others. None of them owns the reader, and the reader's state is not theirs to keep — which is settled by §5 rather than by policy.</p>
+
+  <p>The index carries the one screen whose subject is the reader rather than the catalogue. It shows position (the reader's <em>q</em> and <em>no</em> projected against the two directions of greatest variance <em>in the corpus</em>, so that two readers' positions are comparable rather than each sitting at the origin of a private map), what the reader is carrying, what a buyer would and would not receive, and what it has earned.</p>
+
+  <div class="block remark">
+    <span class="lab">Remark 10.1</span>
+    <p>The itemised list of what a buyer <em>cannot</em> learn is the feature, not the disclaimer. An advertising network's structural difficulty with such a screen is not that it would be ugly but that the honest version would be a list of everything. Here the disclosure is short enough to print, and printing it is the argument.</p>
+  </div>
+
+  <div class="block caution">
+    <span class="lab">Caution 10.2</span>
+    <p>That screen currently reports earnings of zero and says why. §8 and §9 are implemented and self-checked and have never run against real readers. A figure there would be the exact dishonesty the page exists to argue against.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="secno">§11</span><h2>Admitting a publisher</h2></div>
+
+  <p>An app owner claims a namespace on-chain, publishes terms and sets a join fee. Publishers register once globally, then join the app, accepting its terms. Thereafter:</p>
+
+  <ol>
+    <li><strong>Declare.</strong> A domain specification names its source collection, a filter over entity types and payload fields, a <code>role_map</code>, a <code>presentation</code> block (icons, external URLs, actions, an optional launch template), and optionally a paywall.</li>
+    <li><strong>Bake.</strong> quickbeam scrolls the collection into content-addressed shards, fits the coverage centroids, and writes the manifest and catalogue entry.</li>
+    <li><strong>Publish.</strong> Content is encrypted client-side, uploaded to the publisher's own store, minted as a resource, and committed to the graph. One <code>commitStateRoot</code> covers a graph of any size, so bulk ingest costs one transaction rather than one per file.</li>
+    <li><strong>Lint.</strong> A publisher-facing check reads the served view as a reader would and reports what blocks discovery and what degrades it.</li>
+  </ol>
+
+  <p>Declarations belong in the domain specification and not in the baked manifest; a manifest is an artifact and an edit to it is lost on the next bake. An application is admitted by the same route with no privileged position: it declares a launch template, and the index hands readers to it carrying their taste.</p>
+
+  <div class="block remark">
+    <span class="lab">Remark 11.1</span>
+    <p>Failures worth designing against, all observed. A paywall may name fields the free shard ships anyway. A text role may point at a field the shard does not carry, whereupon the client silently substitutes the title and every row becomes searchable only by filename. A domain without a source collection may be baked against the wrong one and acquire 42,215 rows of another corpus under its own role map. Each is invisible to the publisher, whose manifest is correct and whose rows exist.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead"><span class="secno">§12</span><h2>Open problems</h2></div>
+
+  <h3>12.1 Composable proof gadgets <span class="tag open">Open</span></h3>
+  <p>Key derivation in §5 occurs off-circuit, so the only checkable statement is that a blob decrypts — checkable solely by its owner. An HKDF gadget composed with an existing ECDSA gadget would support the statement <em>"the key that sealed this vault was derived from a signature by the address owning this namespace,"</em> proved to a third party without revealing key or taste. This is a hybrid chain several gadgets deep and lands exactly on the composition contract that is not yet specified.</p>
+
+  <h3>12.2 Dropout recovery <span class="tag open">Open</span></h3>
+  <p>A reader who commits to a round and does not submit leaves their pairs uncancelled and the total noise. The round fails and nobody is paid, which is the correct failure and is detected by the presence tally, but secret-shared recovery is the proper repair.</p>
+
+  <h3>12.3 Collusion <span class="tag open">Open</span></h3>
+  <p>A publisher colluding with <em>n</em>−1 readers isolates the <em>n</em>-th. The cohort floor bounds the damage and does not remove it. Only differential-privacy noise removes it, at an accuracy cost a cohort of this size cannot bear.</p>
+
+  <h3>12.4 Provenance <span class="tag open">Open</span></h3>
+  <p>One corpus in the demonstration set was scraped and baked directly from a JSONL file, never passing through the graph. It has no commit, no owner, and no provenance, and is the only corpus whose existence cannot be pointed at a chain.</p>
+
+  <h3>12.5 An unmeasured claim <span class="tag open">Open</span></h3>
+  <p>§8 and §9 have run only against simulated readers whose reactions were authored rather than observed. The mechanisms are self-checked; the economics are not evidence.</p>
+</section>
+
+<section>
+  <div class="sechead"><span class="secno">§A</span><h2>Deployed addresses</h2></div>
+  <div class="tblwrap"><table>
+    <thead><tr><th>Contract</th><th>Address</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td>SettlementRegistry</td><td class="mono">0x480d54411d77820701fd80f42b81fb6e20176d12</td><td>price, groups, hooks</td></tr>
+      <tr><td>DataRegistry</td><td class="mono">0x97d63259bd91e386322c12fa7e923e5e1c0ddf91</td><td>publisher standing</td></tr>
+      <tr><td>LineageSplitter</td><td class="mono">0xc73ddccd4ee85a0d6fb2f50314b4028f4fc4c7e5</td><td>§7, owner and hook</td></tr>
+      <tr><td>USDC</td><td class="mono">0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d</td><td>6 decimals</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<div class="colophon">
+  <p><strong>Conventions.</strong> Amounts are USDC base units, 10<sup>−6</sup>. Shares are basis points of the stated base. Vectors are 256-dimensional unless truncated, and truncation is always followed by renormalisation.</p>
+  <p style="margin-top:12px">Every quantitative statement above was measured against running code on Arbitrum Sepolia or against a self-check in the repository. Statements about mechanisms marked <span class="tag sim">simulation only</span> describe implementations, not observations of use.</p>
+</div>
+
+</div>

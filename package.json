@@ -1,0 +1,43 @@
+{
+  "name": "@fangorn/westmarch",
+  "version": "0.1.0",
+  "description": "Publisher and consumer surfaces for a Fangorn app: shape a graph, publish it, read it back as a searchable, agent-drivable catalog",
+  "type": "module",
+  "exports": {
+    "./graph": "./publish/graph.js",
+    "./envelope": "./publish/envelope.js",
+    "./enrich": "./publish/enrich.js",
+    "./shard": "./consume/shard.js",
+    "./embed": "./consume/embed.js",
+    "./rank": "./consume/rank.js",
+    "./apps": "./consume/apps.js",
+    "./roles": "./consume/roles.js",
+    "./directory": "./consume/directory.js",
+    "./taste": "./consume/taste.js",
+    "./corpora": "./consume/corpora.js",
+    "./ui": "./consume/ui.js",
+    "./lint": "./consume/lint.js",
+    "./terms": "./publish/terms.js",
+    "./reactions": "./publish/reactions.js",
+    "./cohort": "./publish/cohort.js",
+    "./vault": "./publish/vault.js",
+    "./taste-doc": "./consume/taste-doc.js"
+  },
+  "scripts": {
+    "test": "node publish/terms.js && node publish/reactions.js && node publish/cohort.js && node publish/vault.js && node publish/graph.js && node publish/envelope.js && node publish/enrich.js && node consume/embed.js && node consume/rank.js && node consume/apps.js && node consume/roles.js && node consume/shard.js && node consume/directory.js && node consume/taste.js && node consume/taste-doc.js && node consume/corpora.js && node consume/ui.js && node consume/lint.js && node example/tools.js",
+    "lint": "node consume/lint.js"
+  },
+  "peerDependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "viem": "^2.55.1"
+  },
+  "peerDependenciesMeta": {
+    "@huggingface/transformers": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "viem": "^2.56.3"
+  }
+}
