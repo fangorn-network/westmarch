@@ -224,9 +224,17 @@ export function readout(total, cohort, { minSupport = MIN_SUPPORT } = {}) {
         readers: cohort,
         matched,
         like: n(2), skip: n(3), share: n(4),
-        // Averaged over readers, so one enthusiast cannot outvote the cohort.
+        // A MEAN over readers, which is not the same as "one enthusiast cannot
+        // outvote the cohort" — one reader with every match sets this on their
+        // own. It says how much attention the region drew per head, and nothing
+        // about how many heads.
         perReader: +(matched / cohort).toFixed(2),
-        sentiment: matched ? +((n(2) + n(4) - n(3)) / matched).toFixed(3) : null,
+        // Withheld on exactly the same support as the direction. At matched = 1
+        // this is ±1: one identified reader's polarity on one item, under a
+        // question the publisher wrote and an anchor the publisher chose. Counts
+        // are genuinely aggregate; a mean over one row is that row, and that is
+        // as true of a sentiment as it is of a centroid.
+        sentiment: supported && matched ? +((n(2) + n(4) - n(3)) / matched).toFixed(3) : null,
         // Withheld, not zeroed — a caller must be able to tell "nobody went there"
         // from "not enough people went there to say where".
         centroid: supported ? centroid.map((x) => x / norm) : null,
@@ -302,6 +310,9 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     if (lonely.centroid) throw new Error("a centroid over ONE reaction is that reaction — it must be withheld");
     if (!lonely.withheld?.includes("1 matched")) throw new Error("and it must say why, so a publisher knows to widen the question");
     if (lonely.readers !== 5 || lonely.like !== 1) throw new Error("counts are genuinely aggregate and stay");
+    // …but a sentiment over one reaction is that reader's polarity on that row,
+    // and it went out under the same question and anchor the publisher chose.
+    if (lonely.sentiment !== null) throw new Error("a sentiment over one reaction is one reader's opinion of one film");
     // With support, the direction comes back.
     if (!readout(aggregate(ls), 5, { minSupport: 1 }).centroid) throw new Error("the floor is a dial, not a wall");
 
@@ -333,6 +344,6 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
 
     console.log("cohort.js self-check ok — a question is answered on the reader's machine, shares are uniform over 2^64 and "
         + "differ for identical logs, the masks cancel to the exact total, a dropout fails the round instead of faking it, "
-        + "fewer than five readers is refused as an interview, and a direction over too few reactions is withheld "
+        + "fewer than five readers is refused as an interview, and a direction — and the sentiment beside it — over too few reactions is withheld "
         + "because a mean over one row IS that row however many people stood behind it");
 }

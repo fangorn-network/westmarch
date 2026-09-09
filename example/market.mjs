@@ -34,7 +34,7 @@ import { MIN_COHORT, aggregate, contribute, keypair, readout, statistics } from 
 import { search, browse } from "./tools.js";
 
 const BASE = process.env.MARKET_BASE ?? "http://localhost:5180";
-const LEDGER = new URL("./.market.json", import.meta.url).pathname;
+const LEDGER = process.env.MARKET_LEDGER ?? new URL("./.market.json", import.meta.url).pathname;
 
 // ── the world ───────────────────────────────────────────────────────────────
 const APP = { appId: "fangorn.tv", owner: "0x" + "a".repeat(40), appBps: 1000, currency: "USDC" };
@@ -407,7 +407,7 @@ async function sample(sku, query, n = 6) {
 
 // The verbs, for a simulation that wants the same money rules the CLI uses rather
 // than a second implementation of them that can drift.
-export { load, save, txn, wallet, quote, buy, publish, sellTaste, react, books, cohort, skus, find, sample, SEED, APP, ADDR };
+export { load, save, txn, wallet, quote, buy, publish, sellTaste, react, books, cohort, skus, find, sample, rowsOf, catalog, SEED, APP, ADDR };
 
 // ── cli ─────────────────────────────────────────────────────────────────────
 const j = (v) => JSON.stringify(v, replace, 1);

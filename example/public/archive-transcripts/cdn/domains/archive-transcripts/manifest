@@ -1,6 +1,6 @@
 {
   "name": "archive-transcripts",
-  "description": "Timed dialogue from those films \u2014 every spoken line, searchable by what is said rather than by title.",
+  "description": "Timed dialogue and scene descriptions for those films \u2014 every spoken line and every described shot, with its timecode, searchable by what is said or seen rather than by title. Free: the text is how the film is found; the film is what is sold.",
   "count": 21131,
   "dim": 256,
   "model": "nomic-ai/nomic-embed-text-v1.5",
@@ -66,41 +66,12 @@
       "count": 21131
     }
   ],
-  "paywall": {
-    "free": [
-      "entityType",
-      "name",
-      "videoPath"
-    ],
-    "locked": [
-      "cues",
-      "end",
-      "kind",
-      "role",
-      "start",
-      "text"
-    ],
-    "price": "50000",
-    "asset": "USDC",
-    "files": [
-      {
-        "file": "locked-0000-4f1366f85564.ndjson.gz",
-        "count": 20916,
-        "bytes": 3317798,
-        "sha256": "4f1366f85564315eefca0a540e51dac8b19e1cc88487257ce821fd96cb62754c"
-      }
-    ],
-    "sample": {
-      "rate": 0.01,
-      "count": 215
-    }
-  },
   "shards": [
     {
-      "file": "shard-0000-7c32b04e048f.ndjson.gz",
+      "file": "shard-0000-0d94a01f16dc.ndjson.gz",
       "count": 21131,
-      "bytes": 6877409,
-      "sha256": "7c32b04e048fc5472490efcc4b54405f21aae9f9fcdc90948c23b7a2d4b374dd"
+      "bytes": 9957263,
+      "sha256": "0d94a01f16dc822bbea71c69eac674f1e687a26d37099979dba040d18e9be3d1"
     }
   ],
   "coverage": {

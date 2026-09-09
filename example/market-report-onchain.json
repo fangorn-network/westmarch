@@ -1,0 +1,99 @@
+{
+ "chain": 421614,
+ "registry": "0x480d54411d77820701fd80f42b81fb6e20176d12",
+ "acts": [
+  {
+   "from": "mara",
+   "to": "archive",
+   "amount": "60000",
+   "why": "bought the shelf sample"
+  },
+  {
+   "from": "iven",
+   "to": "archive",
+   "amount": "60000",
+   "why": "bought the shelf sample"
+  },
+  {
+   "from": "juno",
+   "to": "archive",
+   "amount": "60000",
+   "why": "bought the shelf sample"
+  },
+  {
+   "from": "archive",
+   "to": "mara",
+   "amount": "40000",
+   "why": "bought the taste corpus"
+  },
+  {
+   "from": "archive",
+   "to": "mara",
+   "amount": "9000",
+   "why": "cohort answer, paid identically"
+  },
+  {
+   "from": "archive",
+   "to": "iven",
+   "amount": "9000",
+   "why": "cohort answer, paid identically"
+  },
+  {
+   "from": "archive",
+   "to": "juno",
+   "amount": "9000",
+   "why": "cohort answer, paid identically"
+  },
+  {
+   "from": "archive",
+   "to": "peter",
+   "amount": "9000",
+   "why": "cohort answer, paid identically"
+  },
+  {
+   "from": "archive",
+   "to": "sable",
+   "amount": "9000",
+   "why": "cohort answer, paid identically"
+  }
+ ],
+ "txs": [
+  {
+   "what": "createResource archive-films-sample",
+   "hash": "0x705fe8876a0bb8af863940b2c3c8ea36eea252f3e888f73d3fd4ea5c9af4aee9"
+  },
+  {
+   "what": "createResource mara-taste",
+   "hash": "0xab908c9c19a7026a4478a27de49078382d8d53db28e67a1a55fb069b958f3122"
+  },
+  {
+   "what": "cohort payout mara",
+   "hash": "0x6688cfc7c3f08e73461bd2440b1983d54422673e8002d86511f24f9f7f3f2731"
+  },
+  {
+   "what": "cohort payout iven",
+   "hash": "0x71c798cd4d676a07e6420c2e3aa777ade2de6e6cea4ac5e5ce2eae119e7c996a"
+  },
+  {
+   "what": "cohort payout juno",
+   "hash": "0xafa12ccefd9d88ca6470415732834d544c80990f1753202eaf2642d036f7c5e7"
+  },
+  {
+   "what": "cohort payout peter",
+   "hash": "0x3c1c96b175015553120c8d71f3af468dd50dad3d1861dca35657e21add6a93ff"
+  },
+  {
+   "what": "cohort payout sable",
+   "hash": "0x3577c86a26946ede2c9a9c58ed2ac77ad9485759e1a22a92f05f8dbb20936030"
+  }
+ ],
+ "brief": "# demand — archive-films (settled on Arbitrum Sepolia)\n\n20986 rows on your shelf, 20986 with vectors, 2711 of your tags carry enough rows to name a region.\n1 question asked, 0.04 USDC paid to readers. This shelf has earned 0.18 USDC over the same period.\n\n## diffuse — how are readers reacting around our submarine reel?\n*the answer is no sharper against your shelf than chance (0.81) — narrow the anchor percentile and ask again*\n\n12 reactions from 5 readers (2.4/reader), sentiment +0.5.\nYour shelf: best row at 3.61σ against 4.46σ for the best of 20986 arbitrary rows.\n\n## heading\n\na heading needs two windows — 1 answered round so far, 4 minimum",
+ "balances": {
+  "0x7a7849231cF7Ab1EA003BcF0063CB89704D7Cce9": "59512991",
+  "0x71e5C9e7C4dca2d50E02A0d52bBae989BB3A7023": "49000",
+  "0x61148B58aE805A025bA3D3317b95De8E8C1A0E82": "9000",
+  "0x23942fd4CB492526a07e8073c395c231eEC416BD": "9000",
+  "0x1035772b2680cB97E5A16A9742184B7a4d8BEA27": "9000",
+  "0x8F6683F5347bCFD5bDdF9e323a24bee4248a487B": "9000"
+ }
+}

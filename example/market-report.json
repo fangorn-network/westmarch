@@ -1,0 +1,674 @@
+{
+ "acts": [
+  {
+   "act": 1,
+   "title": "published once",
+   "catalog": [
+    {
+     "sku": "archive-films",
+     "kind": "corpus",
+     "price": "0.25 USDC",
+     "what": "20,986 public-domain films",
+     "appTake": "10%"
+    },
+    {
+     "sku": "archive-transcripts",
+     "kind": "corpus",
+     "price": "0.40 USDC",
+     "what": "21,131 timed dialogue rows from those films",
+     "appTake": "10%"
+    },
+    {
+     "sku": "games",
+     "kind": "corpus",
+     "price": "0.15 USDC",
+     "what": "5,847 games 1995-2024",
+     "appTake": "10%"
+    },
+    {
+     "sku": "places",
+     "kind": "corpus",
+     "price": "0.10 USDC",
+     "what": "917 local places, events and trails",
+     "appTake": "10%"
+    }
+   ]
+  },
+  {
+   "act": 2,
+   "title": "discovery without disclosure",
+   "searched": 4,
+   "ranked": false,
+   "downloaded": 0,
+   "corpora": [
+    {
+     "price": null
+    },
+    {
+     "price": null
+    },
+    {
+     "price": null
+    },
+    {
+     "price": null
+    }
+   ]
+  },
+  {
+   "act": 4,
+   "title": "portable taste",
+   "from": "archive-films",
+   "to": "games",
+   "picks": [
+    "undefined",
+    "undefined",
+    "undefined",
+    "undefined",
+    "undefined"
+   ]
+  }
+ ],
+ "ledger": {
+  "sales": 22,
+  "paid": "4790000",
+  "rows": [
+   {
+    "who": "archive-films",
+    "amount": "1882800"
+   },
+   {
+    "who": "curator",
+    "amount": "1134000"
+   },
+   {
+    "who": "archive-transcripts",
+    "amount": "603000"
+   },
+   {
+    "who": "app fangorn.tv",
+    "amount": "479000"
+   },
+   {
+    "who": "mara",
+    "amount": "158400"
+   },
+   {
+    "who": "iven",
+    "amount": "158400"
+   },
+   {
+    "who": "juno",
+    "amount": "158400"
+   },
+   {
+    "who": "peter",
+    "amount": "72000"
+   },
+   {
+    "who": "sable",
+    "amount": "72000"
+   },
+   {
+    "who": "otto",
+    "amount": "72000"
+   }
+  ],
+  "appTake": "479000",
+  "streams": {
+   "direct sales": "1575000",
+   "cited by cold-war-cut": "243000",
+   "cited by mara-taste": "21600",
+   "cited by iven-taste": "21600",
+   "cited by juno-taste": "21600"
+  },
+  "spent": "480000"
+ },
+ "brief": "# demand — archive-films\n\n20986 rows on your shelf, 20986 with vectors, 2711 of your tags carry enough rows to name a region.\n8 questions asked, 0.43 USDC paid to readers. This shelf has earned 1.88 USDC over the same period.\n\n## serve — and around \"dracula vampire\"?\n*working — promote it, and price the next one like it*\n\n18 reactions from 6 readers (3/reader), sentiment +0.889.\nDemand points at: **Dracula, comedy horror, vampire, Bela Lugosi, vampire**.\nYour shelf: best row at 5.47σ against 4.46σ for the best of 20986 arbitrary rows — standout 1.23.\n\n- **Dracula 1931.mp4** 5.47σ\n- **videoplayback.mp4** 4.8σ\n- **The Vampire Happening - Gebissen wird nur nachts - das Happening der Vampire - Trailer.mp4** 4.7σ\n- **DRACULA'S DAUGHTER 1936..mp4** 4.64σ\n- **Dracula.mp4** 4.43σ\n\n## diffuse — how are readers reacting around our submarine reel?\n*the answer is no sharper against your shelf than chance (0.81) — narrow the anchor percentile and ask again*\n\nasked 6×, mean 12 reactions from 6 readers (2/reader), sentiment +0.5.\nYour shelf: best row at 3.61σ against 4.46σ for the best of 20986 arbitrary rows.\n\n## withheld — and around \"ballet dance opera\"?\n*direction withheld: 2 matched reactions is not a direction, it is a handful of rows with a mean drawn round them. 5 needed. Widen the anchor or pool more rounds.*\n\n2 reactions from 6 readers (0.33/reader).\n\n## heading\n\ndemand has not moved: the shift between windows (0.000) is inside what 3 rounds of a standing question would show anyway (0.000)\n\n## not answered\n\n- and around \"ballet dance opera\"?",
+ "demand": {
+  "unsafe": [],
+  "shelf": {
+   "rows": 20986,
+   "vectors": 20986,
+   "terms": 2711,
+   "dim": 128
+  },
+  "findings": [
+   {
+    "question": "how are readers reacting around our submarine reel?",
+    "readers": 6,
+    "matched": 12,
+    "perReader": 2,
+    "sentiment": 0.5,
+    "verdict": "diffuse",
+    "act": "the answer is no sharper against your shelf than chance (0.81) — narrow the anchor percentile and ask again",
+    "terms": [
+     {
+      "field": "subject",
+      "value": "crime drama",
+      "n": 23,
+      "score": 0.5187260750717093
+     },
+     {
+      "field": "subject",
+      "value": "Film-Noir",
+      "n": 73,
+      "score": 0.5093677254113513
+     },
+     {
+      "field": "genre",
+      "value": "spy",
+      "n": 25,
+      "score": 0.5039565577054814
+     },
+     {
+      "field": "subject",
+      "value": "Drama",
+      "n": 899,
+      "score": 0.48606129216008004
+     },
+     {
+      "field": "cast",
+      "value": "Edmond O'Brien",
+      "n": 13,
+      "score": 0.4826033806596176
+     }
+    ],
+    "depth": 0,
+    "sharpness": 3.61,
+    "standout": 0.81,
+    "chance": 4.46,
+    "ofRows": 20986,
+    "top": [
+     {
+      "id": "bafyreigxcetb4vhb77gdyejrjsh2nxzpkkmy3ffiaftf6r3lvnb7kmilpu",
+      "z": 3.61,
+      "title": "TokyoFile212.mp4"
+     },
+     {
+      "id": "bafyreiewmfqshacqgvpxh62sopc3zvdlfnoatsr6j3fik62ecbswc4uidi",
+      "z": 3.55,
+      "title": "TheWayAheadPresentedByMoviePowder.mp4"
+     },
+     {
+      "id": "bafyreibt4qdts5rbjyt6f7svosrcjwjk5pdbrriinua4u73baf56y6l23i",
+      "z": 3.5,
+      "title": "Criminals Within 1941 colorized.mp4"
+     },
+     {
+      "id": "bafyreigv7pyknv63eattzrwjseoobjcxyjx3t5j3nshmfdjzqzz7x2sfie",
+      "z": 3.49,
+      "title": "Man-From-Headquarters-1942_1.mp4"
+     },
+     {
+      "id": "bafyreiclxl4puybtmipzzdmlqkdozuyzhvunla5ht6ffxg4shhzznzxdpq",
+      "z": 3.49,
+      "title": "IdentityUnknown.mp4"
+     }
+    ]
+   },
+   {
+    "question": "how are readers reacting around our submarine reel?",
+    "readers": 6,
+    "matched": 12,
+    "perReader": 2,
+    "sentiment": 0.5,
+    "verdict": "diffuse",
+    "act": "the answer is no sharper against your shelf than chance (0.81) — narrow the anchor percentile and ask again",
+    "terms": [
+     {
+      "field": "subject",
+      "value": "crime drama",
+      "n": 23,
+      "score": 0.5187260750717093
+     },
+     {
+      "field": "subject",
+      "value": "Film-Noir",
+      "n": 73,
+      "score": 0.5093677254113513
+     },
+     {
+      "field": "genre",
+      "value": "spy",
+      "n": 25,
+      "score": 0.5039565577054814
+     },
+     {
+      "field": "subject",
+      "value": "Drama",
+      "n": 899,
+      "score": 0.48606129216008004
+     },
+     {
+      "field": "cast",
+      "value": "Edmond O'Brien",
+      "n": 13,
+      "score": 0.4826033806596176
+     }
+    ],
+    "depth": 0,
+    "sharpness": 3.61,
+    "standout": 0.81,
+    "chance": 4.46,
+    "ofRows": 20986,
+    "top": [
+     {
+      "id": "bafyreigxcetb4vhb77gdyejrjsh2nxzpkkmy3ffiaftf6r3lvnb7kmilpu",
+      "z": 3.61,
+      "title": "TokyoFile212.mp4"
+     },
+     {
+      "id": "bafyreiewmfqshacqgvpxh62sopc3zvdlfnoatsr6j3fik62ecbswc4uidi",
+      "z": 3.55,
+      "title": "TheWayAheadPresentedByMoviePowder.mp4"
+     },
+     {
+      "id": "bafyreibt4qdts5rbjyt6f7svosrcjwjk5pdbrriinua4u73baf56y6l23i",
+      "z": 3.5,
+      "title": "Criminals Within 1941 colorized.mp4"
+     },
+     {
+      "id": "bafyreigv7pyknv63eattzrwjseoobjcxyjx3t5j3nshmfdjzqzz7x2sfie",
+      "z": 3.49,
+      "title": "Man-From-Headquarters-1942_1.mp4"
+     },
+     {
+      "id": "bafyreiclxl4puybtmipzzdmlqkdozuyzhvunla5ht6ffxg4shhzznzxdpq",
+      "z": 3.49,
+      "title": "IdentityUnknown.mp4"
+     }
+    ]
+   },
+   {
+    "question": "how are readers reacting around our submarine reel?",
+    "readers": 6,
+    "matched": 12,
+    "perReader": 2,
+    "sentiment": 0.5,
+    "verdict": "diffuse",
+    "act": "the answer is no sharper against your shelf than chance (0.81) — narrow the anchor percentile and ask again",
+    "terms": [
+     {
+      "field": "subject",
+      "value": "crime drama",
+      "n": 23,
+      "score": 0.5187260750717093
+     },
+     {
+      "field": "subject",
+      "value": "Film-Noir",
+      "n": 73,
+      "score": 0.5093677254113513
+     },
+     {
+      "field": "genre",
+      "value": "spy",
+      "n": 25,
+      "score": 0.5039565577054814
+     },
+     {
+      "field": "subject",
+      "value": "Drama",
+      "n": 899,
+      "score": 0.48606129216008004
+     },
+     {
+      "field": "cast",
+      "value": "Edmond O'Brien",
+      "n": 13,
+      "score": 0.4826033806596176
+     }
+    ],
+    "depth": 0,
+    "sharpness": 3.61,
+    "standout": 0.81,
+    "chance": 4.46,
+    "ofRows": 20986,
+    "top": [
+     {
+      "id": "bafyreigxcetb4vhb77gdyejrjsh2nxzpkkmy3ffiaftf6r3lvnb7kmilpu",
+      "z": 3.61,
+      "title": "TokyoFile212.mp4"
+     },
+     {
+      "id": "bafyreiewmfqshacqgvpxh62sopc3zvdlfnoatsr6j3fik62ecbswc4uidi",
+      "z": 3.55,
+      "title": "TheWayAheadPresentedByMoviePowder.mp4"
+     },
+     {
+      "id": "bafyreibt4qdts5rbjyt6f7svosrcjwjk5pdbrriinua4u73baf56y6l23i",
+      "z": 3.5,
+      "title": "Criminals Within 1941 colorized.mp4"
+     },
+     {
+      "id": "bafyreigv7pyknv63eattzrwjseoobjcxyjx3t5j3nshmfdjzqzz7x2sfie",
+      "z": 3.49,
+      "title": "Man-From-Headquarters-1942_1.mp4"
+     },
+     {
+      "id": "bafyreiclxl4puybtmipzzdmlqkdozuyzhvunla5ht6ffxg4shhzznzxdpq",
+      "z": 3.49,
+      "title": "IdentityUnknown.mp4"
+     }
+    ]
+   },
+   {
+    "question": "how are readers reacting around our submarine reel?",
+    "readers": 6,
+    "matched": 12,
+    "perReader": 2,
+    "sentiment": 0.5,
+    "verdict": "diffuse",
+    "act": "the answer is no sharper against your shelf than chance (0.81) — narrow the anchor percentile and ask again",
+    "terms": [
+     {
+      "field": "subject",
+      "value": "crime drama",
+      "n": 23,
+      "score": 0.5187260750717093
+     },
+     {
+      "field": "subject",
+      "value": "Film-Noir",
+      "n": 73,
+      "score": 0.5093677254113513
+     },
+     {
+      "field": "genre",
+      "value": "spy",
+      "n": 25,
+      "score": 0.5039565577054814
+     },
+     {
+      "field": "subject",
+      "value": "Drama",
+      "n": 899,
+      "score": 0.48606129216008004
+     },
+     {
+      "field": "cast",
+      "value": "Edmond O'Brien",
+      "n": 13,
+      "score": 0.4826033806596176
+     }
+    ],
+    "depth": 0,
+    "sharpness": 3.61,
+    "standout": 0.81,
+    "chance": 4.46,
+    "ofRows": 20986,
+    "top": [
+     {
+      "id": "bafyreigxcetb4vhb77gdyejrjsh2nxzpkkmy3ffiaftf6r3lvnb7kmilpu",
+      "z": 3.61,
+      "title": "TokyoFile212.mp4"
+     },
+     {
+      "id": "bafyreiewmfqshacqgvpxh62sopc3zvdlfnoatsr6j3fik62ecbswc4uidi",
+      "z": 3.55,
+      "title": "TheWayAheadPresentedByMoviePowder.mp4"
+     },
+     {
+      "id": "bafyreibt4qdts5rbjyt6f7svosrcjwjk5pdbrriinua4u73baf56y6l23i",
+      "z": 3.5,
+      "title": "Criminals Within 1941 colorized.mp4"
+     },
+     {
+      "id": "bafyreigv7pyknv63eattzrwjseoobjcxyjx3t5j3nshmfdjzqzz7x2sfie",
+      "z": 3.49,
+      "title": "Man-From-Headquarters-1942_1.mp4"
+     },
+     {
+      "id": "bafyreiclxl4puybtmipzzdmlqkdozuyzhvunla5ht6ffxg4shhzznzxdpq",
+      "z": 3.49,
+      "title": "IdentityUnknown.mp4"
+     }
+    ]
+   },
+   {
+    "question": "how are readers reacting around our submarine reel?",
+    "readers": 6,
+    "matched": 12,
+    "perReader": 2,
+    "sentiment": 0.5,
+    "verdict": "diffuse",
+    "act": "the answer is no sharper against your shelf than chance (0.81) — narrow the anchor percentile and ask again",
+    "terms": [
+     {
+      "field": "subject",
+      "value": "crime drama",
+      "n": 23,
+      "score": 0.5187260750717093
+     },
+     {
+      "field": "subject",
+      "value": "Film-Noir",
+      "n": 73,
+      "score": 0.5093677254113513
+     },
+     {
+      "field": "genre",
+      "value": "spy",
+      "n": 25,
+      "score": 0.5039565577054814
+     },
+     {
+      "field": "subject",
+      "value": "Drama",
+      "n": 899,
+      "score": 0.48606129216008004
+     },
+     {
+      "field": "cast",
+      "value": "Edmond O'Brien",
+      "n": 13,
+      "score": 0.4826033806596176
+     }
+    ],
+    "depth": 0,
+    "sharpness": 3.61,
+    "standout": 0.81,
+    "chance": 4.46,
+    "ofRows": 20986,
+    "top": [
+     {
+      "id": "bafyreigxcetb4vhb77gdyejrjsh2nxzpkkmy3ffiaftf6r3lvnb7kmilpu",
+      "z": 3.61,
+      "title": "TokyoFile212.mp4"
+     },
+     {
+      "id": "bafyreiewmfqshacqgvpxh62sopc3zvdlfnoatsr6j3fik62ecbswc4uidi",
+      "z": 3.55,
+      "title": "TheWayAheadPresentedByMoviePowder.mp4"
+     },
+     {
+      "id": "bafyreibt4qdts5rbjyt6f7svosrcjwjk5pdbrriinua4u73baf56y6l23i",
+      "z": 3.5,
+      "title": "Criminals Within 1941 colorized.mp4"
+     },
+     {
+      "id": "bafyreigv7pyknv63eattzrwjseoobjcxyjx3t5j3nshmfdjzqzz7x2sfie",
+      "z": 3.49,
+      "title": "Man-From-Headquarters-1942_1.mp4"
+     },
+     {
+      "id": "bafyreiclxl4puybtmipzzdmlqkdozuyzhvunla5ht6ffxg4shhzznzxdpq",
+      "z": 3.49,
+      "title": "IdentityUnknown.mp4"
+     }
+    ]
+   },
+   {
+    "question": "how are readers reacting around our submarine reel?",
+    "readers": 6,
+    "matched": 12,
+    "perReader": 2,
+    "sentiment": 0.5,
+    "verdict": "diffuse",
+    "act": "the answer is no sharper against your shelf than chance (0.81) — narrow the anchor percentile and ask again",
+    "terms": [
+     {
+      "field": "subject",
+      "value": "crime drama",
+      "n": 23,
+      "score": 0.5187260750717093
+     },
+     {
+      "field": "subject",
+      "value": "Film-Noir",
+      "n": 73,
+      "score": 0.5093677254113513
+     },
+     {
+      "field": "genre",
+      "value": "spy",
+      "n": 25,
+      "score": 0.5039565577054814
+     },
+     {
+      "field": "subject",
+      "value": "Drama",
+      "n": 899,
+      "score": 0.48606129216008004
+     },
+     {
+      "field": "cast",
+      "value": "Edmond O'Brien",
+      "n": 13,
+      "score": 0.4826033806596176
+     }
+    ],
+    "depth": 0,
+    "sharpness": 3.61,
+    "standout": 0.81,
+    "chance": 4.46,
+    "ofRows": 20986,
+    "top": [
+     {
+      "id": "bafyreigxcetb4vhb77gdyejrjsh2nxzpkkmy3ffiaftf6r3lvnb7kmilpu",
+      "z": 3.61,
+      "title": "TokyoFile212.mp4"
+     },
+     {
+      "id": "bafyreiewmfqshacqgvpxh62sopc3zvdlfnoatsr6j3fik62ecbswc4uidi",
+      "z": 3.55,
+      "title": "TheWayAheadPresentedByMoviePowder.mp4"
+     },
+     {
+      "id": "bafyreibt4qdts5rbjyt6f7svosrcjwjk5pdbrriinua4u73baf56y6l23i",
+      "z": 3.5,
+      "title": "Criminals Within 1941 colorized.mp4"
+     },
+     {
+      "id": "bafyreigv7pyknv63eattzrwjseoobjcxyjx3t5j3nshmfdjzqzz7x2sfie",
+      "z": 3.49,
+      "title": "Man-From-Headquarters-1942_1.mp4"
+     },
+     {
+      "id": "bafyreiclxl4puybtmipzzdmlqkdozuyzhvunla5ht6ffxg4shhzznzxdpq",
+      "z": 3.49,
+      "title": "IdentityUnknown.mp4"
+     }
+    ]
+   },
+   {
+    "question": "and around \"ballet dance opera\"?",
+    "readers": 6,
+    "matched": 2,
+    "perReader": 0.33,
+    "sentiment": null,
+    "verdict": "withheld",
+    "act": "direction withheld: 2 matched reactions is not a direction, it is a handful of rows with a mean drawn round them. 5 needed. Widen the anchor or pool more rounds.",
+    "terms": [],
+    "top": []
+   },
+   {
+    "question": "and around \"dracula vampire\"?",
+    "readers": 6,
+    "matched": 18,
+    "perReader": 3,
+    "sentiment": 0.889,
+    "verdict": "serve",
+    "act": "working — promote it, and price the next one like it",
+    "terms": [
+     {
+      "field": "subject",
+      "value": "Dracula",
+      "n": 9,
+      "score": 0.5845557953935867
+     },
+     {
+      "field": "genre",
+      "value": "comedy horror",
+      "n": 49,
+      "score": 0.5489890481032708
+     },
+     {
+      "field": "subject",
+      "value": "vampire",
+      "n": 10,
+      "score": 0.5368755955044708
+     },
+     {
+      "field": "subject",
+      "value": "Bela Lugosi",
+      "n": 25,
+      "score": 0.5279048437779282
+     },
+     {
+      "field": "genre",
+      "value": "vampire",
+      "n": 49,
+      "score": 0.5274236508457059
+     }
+    ],
+    "depth": 4,
+    "sharpness": 5.47,
+    "standout": 1.23,
+    "chance": 4.46,
+    "ofRows": 20986,
+    "top": [
+     {
+      "id": "bafyreiee75dxerohmvf3zf7w4waxhm2ajrmxkjo4mkaqjv4lwnl5kvz24a",
+      "z": 5.47,
+      "title": "Dracula 1931.mp4"
+     },
+     {
+      "id": "bafyreictcb4izirh6atjvbbrsj6ei6wqgno6wu7ctzqcermk7bzjq5gnsa",
+      "z": 4.8,
+      "title": "videoplayback.mp4"
+     },
+     {
+      "id": "bafyreiclug4iahmtt5jlcdpagowq7ypysqnugtlavelg4zqhjqdskzq74a",
+      "z": 4.7,
+      "title": "The Vampire Happening - Gebissen wird nur nachts - das Happening der Vampire - Trailer.mp4"
+     },
+     {
+      "id": "bafyreidxwehnv5tiwx4zxgiqpf6qsceyupn2id7bj5prsbnnxyzjdegdri",
+      "z": 4.64,
+      "title": "DRACULA'S DAUGHTER 1936..mp4"
+     },
+     {
+      "id": "bafyreihzp6xesqlcevyegcsgrck3i5yl6lkh7mah6tw52wwdjx6zi5ylja",
+      "z": 4.43,
+      "title": "Dracula.mp4"
+     }
+    ]
+   }
+  ],
+  "heading": {
+   "terms": [],
+   "rounds": 6,
+   "why": "demand has not moved: the shift between windows (0.000) is inside what 3 rounds of a standing question would show anyway (0.000)"
+  },
+  "spend": {
+   "probes": 8,
+   "paidToReaders": "432000",
+   "shelfEarned": "1882800"
+  },
+  "blind": [
+   "and around \"ballet dance opera\"?"
+  ]
+ }
+}

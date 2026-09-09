@@ -38,6 +38,30 @@ async function readJson(url, timeoutMs = 8000) {
     } finally { clearTimeout(t); }
 }
 
+/** Does this url actually answer? A HEAD where the host allows one, else a
+ *  one-byte ranged GET — the point is the status code, never the body, and a
+ *  paid shard is megabytes nobody should download to find out it was public. */
+async function served(url, { bytes = null, timeoutMs = 8000 } = {}) {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+        let res = await fetch(url, { method: "HEAD", signal: ctl.signal });
+        if (res.status === 405 || res.status === 501) res = await fetch(url, { headers: { range: "bytes=0-0" }, signal: ctl.signal });
+        if (!res.ok && res.status !== 206) return false;
+        // A status code alone proves nothing. Static hosts fall back to
+        // index.html for unknown paths — Cloudflare Pages does — so a deleted
+        // shard answers 200 with 10 KB of HTML, and a leak check that trusted
+        // `res.ok` would report every view hosted that way as leaking. The
+        // payload is gzipped ndjson; an HTML shell is the host saying no.
+        if (/text\/html/i.test(res.headers.get("content-type") ?? "")) return false;
+        // …and when the manifest says how big the file is, the host has to agree.
+        const len = Number(res.headers.get("content-length"));
+        if (bytes && Number.isFinite(len) && len > 0 && len !== bytes) return false;
+        return true;
+    } catch { return false; }      // unreachable is not a leak
+    finally { clearTimeout(t); }
+}
+
 /**
  * Lint one baked view.
  *
@@ -76,7 +100,11 @@ export async function lint(view, { rows = true, model = NETWORK_MODEL, timeoutMs
         // Deferred until the rows are in hand — see its call site.
         const deadEnd = (playable) => {
             const doors = Object.keys(roles.externalUrl ?? {}).length + Object.keys(roles.actions ?? {}).length;
-            if (doors || roles.launch || playable) return;
+            // A declared reference is a destination too, and the most important
+            // kind here: a corpus of subtitles carries no media of its own and is
+            // not a dead end, because every row of it resolves into the film it
+            // was transcribed from and plays there.
+            if (doors || roles.launch || playable || roles.refers) return;
             add("degrades", "nowhere to go",
                 "With no presentation.externalUrl, no actions, no launch, and no row a reader could play where it stands, a hit is a dead end.",
                 "Either declare where a row lives — presentation.externalUrl per entity type — or ship a media role the rows actually carry, and the stage will play it here.");
@@ -122,6 +150,29 @@ export async function lint(view, { rows = true, model = NETWORK_MODEL, timeoutMs
         }
 
         const pay = man?.paywall ?? d.paywall;
+        // The check this pipeline did not have, and the reason it now does.
+        //
+        // `archive-transcripts` shipped a paywall over six fields — text, cues,
+        // start, end, role, kind — and served the file holding them from the same
+        // public directory as the free index. A 200. Plain gzip. 20,916 rows of
+        // dialogue anyone could curl, next to a manifest saying they cost 0.05
+        // USDC. The manifest said locked and the bytes said otherwise, and
+        // nothing in the pipeline had ever compared the two.
+        //
+        // Every other paywall finding here reads the manifest and reasons about
+        // it. This one FETCHES, because that is the only way to learn the thing
+        // that actually matters: whether the payload is behind anything at all.
+        for (const f of pay?.files ?? []) {
+            if (!f?.file) continue;
+            const url = `${at}/cdn/domains/${encodeURIComponent(d.name)}/shards/${f.file}`;
+            if (!(await served(url, { bytes: f.bytes ?? null, timeoutMs }))) continue;
+            add("blocks", "the paid payload is served in the clear",
+                `${f.file} answers 200 on the same public view as the free index — ${(f.count ?? 0).toLocaleString()} rows `
+                + `of the ${(pay.locked ?? []).length} field${(pay.locked ?? []).length === 1 ? "" : "s"} you are charging for, `
+                + `fetchable by anyone who reads the manifest that names it. The price is decoration.`,
+                "Either serve this file from somewhere a payment gates, or drop the paywall and say the data is free. "
+                + "Publishing both a price and the bytes is worse than either, because a reader who paid was charged for a public file.");
+        }
         if (pay && !pay.resourceId) {
             add("degrades", "priced but not purchasable",
                 "A paywall with no resourceId quotes a price nobody can pay.",
@@ -271,12 +322,21 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     const vec = Array.from({ length: 8 }, (_, i) => (i ? 0 : 1));
     const ndjson = (rows) => rows.map((r) => JSON.stringify(r)).join("\n");
 
-    let CATALOG = null, MANIFEST = null, ROWS = [];
+    let CATALOG = null, MANIFEST = null, ROWS = [], LOCKED_SERVED = true;
     globalThis.fetch = async (url) => {
         const { pathname } = new URL(String(url), "https://ok.test");
         if (!CATALOG) return { ok: false, status: 404, headers: new Headers() };
         if (pathname.endsWith("/cdn/catalog")) return body(CATALOG);
         if (/\/cdn\/domains\/[^/]+\/manifest$/.test(pathname)) return MANIFEST ? body(MANIFEST) : { ok: false, status: 404, headers: new Headers() };
+        if (/\/cdn\/domains\/[^/]+\/shards\/locked-/.test(pathname)) {
+            if (LOCKED_SERVED === "html") {
+                // What a static host with an SPA fallback actually does with a
+                // path it no longer has: 200, and the index page.
+                return { ok: true, status: 200, headers: new Headers({ "content-type": "text/html; charset=utf-8" }),
+                         text: async () => "<!doctype html>", json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) };
+            }
+            return LOCKED_SERVED ? body(ndjson(ROWS)) : { ok: false, status: 404, headers: new Headers() };
+        }
         if (/\/cdn\/domains\/[^/]+\/shards\//.test(pathname)) return body(ndjson(ROWS));
         return { ok: false, status: 404, headers: new Headers() };
     };
@@ -331,6 +391,14 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     ROWS = [{ track_id: "a", owner: "0x1", fields: { name: "A", desc: "d" } }];
     if (!has(await lint("https://ok.test/q/v1"), "nowhere to go")) throw new Error("…but declaring a media role the rows do not carry is exactly a dead end");
 
+    // A corpus of subtitles carries no media at all and is not a dead end: every
+    // row resolves into the film it was transcribed from and plays there.
+    MANIFEST = { name: "lines", shards: [{ file: "shard-0000-lines.ndjson" }],
+                 role_map: { title: "name", text: ["text"], identity: "videoPath",
+                             refers: { field: "videoPath", corpus: "films", to: "path" } } };
+    ROWS = [{ track_id: "a", owner: "0x1", fields: { name: "A", text: "a line", videoPath: "x/y.mp4" } }];
+    if (has(await lint("https://ok.test/q/v1"), "nowhere to go")) throw new Error("a corpus that resolves into a playable one is not a dead end");
+
     // The one only rows can catch: a price on data already given away.
     MANIFEST = {
         name: "films", shards: [{ file: "shard-0000-films.ndjson" }],
@@ -349,6 +417,35 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     const lie = r.domains[0].findings.find((f) => f.what.includes("ships anyway"));
     if (!lie.why.includes("url") || lie.why.includes("path")) throw new Error(`name the fields actually given away, not the whole list: ${lie.why}`);
     if (!has(r, "no vectors on the sampled rows")) throw new Error("a shard with no vectors must be caught before a reader finds it by accident");
+
+    // A price over bytes anyone can fetch. This shipped: `archive-transcripts`
+    // sold six fields and served the file holding them from the same public
+    // directory, as a 200, in the clear.
+    MANIFEST = {
+        name: "films", shards: [{ file: "shard-0000-films.ndjson" }],
+        role_map: { title: "name", text: ["desc"] },
+        presentation: { externalUrl: { video: "https://x.test/{id}" } },
+        paywall: { free: ["name"], locked: ["text"], price: "50000", asset: "USDC", resourceId: "0xabc",
+                   files: [{ file: "locked-0000-films.ndjson", count: 20916 }] },
+    };
+    ROWS = [{ track_id: "a", owner: "0x1", fields: { name: "A", desc: "d" } }];
+    LOCKED_SERVED = true;
+    r = await lint("https://ok.test/q/v1");
+    if (!has(r, "served in the clear")) throw new Error("a paid payload that answers 200 on the public view must be blocking");
+    const leak = [...r.domains[0].findings].find((f) => f.what.includes("served in the clear"));
+    if (!leak.why.includes("20,916")) throw new Error("say how much is public, or the finding reads as theoretical");
+
+    // …and the same manifest, with the file actually gated, is silent.
+    LOCKED_SERVED = false;
+    if (has(await lint("https://ok.test/q/v1"), "served in the clear")) throw new Error("a payload that does not answer must not be reported as leaking");
+
+    // The false positive this rule nearly shipped with. Cloudflare Pages answers
+    // 200 with the index page for a path it does not have, so `res.ok` is true
+    // for every url on the host and the check would have reported a leak on a
+    // file that was correctly deleted.
+    LOCKED_SERVED = "html";
+    if (has(await lint("https://ok.test/q/v1"), "served in the clear")) throw new Error("a static host's HTML fallback is not a leaked payload");
+    LOCKED_SERVED = true;
 
     // A text role that is present, declared, and useless — the defect that cost
     // two buying agents their confidence in a corpus that was fine underneath.
@@ -398,6 +495,6 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
 
     if (!format(r).includes("films")) throw new Error("the report must name the domain");
     console.log("lint.js self-check ok — unreachable reported not thrown, missing coverage is blocking, a complete bake is silent, "
-        + "foreign model excluded, sniffed shape flagged, a dead end judged on the rows rather than the declaration, a text role that is really the filename caught, "
-        + "a paywall naming fields the free shard ships, and a text role sold whole with no free sample");
+        + "foreign model excluded, sniffed shape flagged, a dead end judged on the rows rather than the declaration and waived by a reference into another corpus, a text role that is really the filename caught, "
+        + "a paywall naming fields the free shard ships, a paid payload served in the clear from the public view without mistaking a host's HTML fallback for one, and a text role sold whole with no free sample");
 }

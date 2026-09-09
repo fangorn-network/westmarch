@@ -18,6 +18,9 @@ import { exportTaste, importTaste, recommend, taste, withProvenance } from "@fan
 import { tasteDoc } from "@fangorn/westmarch/taste-doc";
 import { actionsOf, collections, gatesOf, linkOf, priceLabel, rolesFrom, subtitleOf, textOf, titleOf, typeOf, values } from "@fangorn/westmarch/roles";
 import { EMBED_MODEL, embedQuery, warmEmbedder } from "@fangorn/westmarch/embed";
+import { seedTaste, steamLibrary, summarize as steamSummary } from "@fangorn/westmarch/steam";
+import { FREE, LOCKED, reactionCorpus } from "@fangorn/westmarch/reactions";
+import { MIN_COHORT, SLOTS, contribute, keypair, statistics } from "@fangorn/westmarch/cohort";
 import { brief, browse, describe, facet, getRow, neighbors, search } from "./tools.js";
 
 // The view: `serve-embeddings.js` in the sond3r repo, or any quickbeam view.
@@ -104,6 +107,76 @@ let ranked = false; // …and whether it actually was
 // open-corpus: carrying it across corpora is the entire point — it is a vector
 // in a space every publisher shares, not a profile scoped to one of them.
 let liked = [], disliked = [];
+
+// The LOG, which is a different object from the taste and has to be.
+//
+// `liked`/`disliked` are the kernel's inputs, and they COLLAPSE: a restored
+// session folds a whole previous visit into one synthetic entry carrying the old
+// `q`, which is exactly right for a half-life and destroys the evidence. But the
+// evidence is the thing with economic value — `publish/reactions.js` sells a log,
+// `publish/cohort.js` answers a publisher's question by counting one, and neither
+// can run on a vector that has forgotten what it was built from.
+//
+// So every reaction is also appended here, whole: which row, in which corpus,
+// which way, and when. This is the file that would be a surveillance record if
+// anyone but the reader held it. Nobody does — it is in this tab, and the two
+// verbs that let it leave (`share-reactions`, `answer-question`) are the only
+// ones on the page that say out loud what they disclose before they do it.
+let reactions = [];
+
+// The Steam file, if one has been dropped on the page this session.
+//
+// Held in a variable and never written anywhere: it is a list of everything the
+// person has played, and the argument this page makes is that such a list can be
+// used without being stored or sent. Storing it "for convenience" would be the
+// first small betrayal of exactly the claim the verb is here to demonstrate.
+let droppedVdf = "";
+
+const REACTIONS_KEY = "westmarch.reactions";
+/** Enough to answer a cohort question and price a corpus; not a lifetime. */
+const REACTION_CAP = 2000;
+
+function noteReaction(row, corpus, reaction, title) {
+    if (!row?.vector) return;
+    reactions.push({ id: row.id, corpus, title, reaction, at: Date.now(),
+                     vector: row.vector });
+    if (reactions.length > REACTION_CAP) reactions = reactions.slice(-REACTION_CAP);
+    saveReactions();
+}
+
+function saveReactions() {
+    try {
+        // Vectors are the bulk and they are recoverable from the corpus by id,
+        // so the stored log keeps the facts and drops the floats. A reader who
+        // comes back to a corpus that is gone has lost the ability to SELL the
+        // log, which is the correct failure — the reactions were about rows that
+        // no longer exist.
+        localStorage.setItem(REACTIONS_KEY, JSON.stringify(
+            reactions.map(({ vector, ...rest }) => rest)));
+    } catch { /* private window, or over quota — the log is not worth a crash */ }
+}
+
+function restoreReactions() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(REACTIONS_KEY) || "[]");
+        reactions = Array.isArray(saved) ? saved : [];
+    } catch { reactions = []; }
+}
+
+/** Re-attach vectors to a restored log from whatever corpora are open now.
+ *  A reaction whose row cannot be found keeps its facts and stays out of
+ *  anything that needs a vector — it is history, not signal. */
+function rehydrate() {
+    let found = 0;
+    for (const r of reactions) {
+        if (r.vector) { found++; continue; }
+        for (const c of loaded()) {
+            const row = c.rows.find((x) => x.id === r.id);
+            if (row?.vector) { r.vector = row.vector; found++; break; }
+        }
+    }
+    return found;
+}
 
 // …and it survives the tab. `exportTaste` already produces a few hundred bytes
 // of base64 int8 in the shared embedding space, which is the whole portable
@@ -216,12 +289,20 @@ function paintDirectory() {
         // scored 0.50 — and at a thousand publishers the only useful thing the
         // panel can say is which handful clear their own query's spread.
         const miss = ranked && c.affinity != null && !c.relevant ? " miss" : "";
+        // Two shelves that are one thing, said so. The subtitle domain and the
+        // film domain are baked separately and priced separately, and the panel
+        // listed them as unrelated publishers — which is the opposite of why the
+        // graph holds them together. Only knowable once the manifest has landed,
+        // so it appears on open rather than being guessed at from a catalog.
+        const ref = CORPORA.get(c.view)?.roles?.refers;
+        const into = ref ? `<div class="meta"><span class="why">an index into ${esc(ref.corpus)} — a hit here plays there</span></div>` : "";
         return `<div class="corpus${on ? " on" : held ? " held" : ""}${miss}" data-view="${esc(c.view)}">
             <div class="head"><b>${esc(c.domain)}</b>${on ? '<span class="dim">focused</span>'
                 : held ? `<button data-open="${esc(c.view)}">focus</button>`
                 : `<button data-open="${esc(c.view)}">open</button>`}</div>
             <div class="dim">${esc(c.description || "no description")}</div>
             <div class="meta">${num(c.rows)} rows · ${(c.bytes / 1e6).toFixed(1)} MB · ${c.entityTypes.join(" ") || "—"} · ${price}</div>
+            ${into}
             ${aff ? `<div class="meta">${aff}</div>` : ""}
           </div>`;
     }).join("") || "<div class=dim>no corpora configured — pass ?sources=&lt;url,url&gt;</div>";
@@ -235,8 +316,9 @@ function paintDirectory() {
     $("sources").innerHTML = known.map((c) => {
         const held = !!CORPORA.get(c.view)?.rows.length;
         const hot = ranked && c.relevant;
+        const ref = CORPORA.get(c.view)?.roles?.refers;
         return `<button class="chip${hot ? " hot" : held ? " held" : ""}" data-open="${esc(c.view)}"
-                 title="${esc(c.description || c.domain)}">${esc(c.domain)}</button>`;
+                 title="${esc(c.description || c.domain)}${ref ? ` — an index into ${esc(ref.corpus)}` : ""}">${esc(c.domain)}${ref ? ` → ${esc(ref.corpus)}` : ""}</button>`;
     }).join("") || "<span class=dim>no publishers configured</span>";
     for (const b of $("sources").querySelectorAll("button[data-open]")) {
         b.onclick = async () => {
@@ -275,13 +357,34 @@ async function openCorpus(view) {
     setView(view);
     S.focus = view;
     open = null;
-    if (!CORPORA.get(view)?.rows.length) await load(view);
+    // NOT `rows.length`. A shard paints partials as it streams, so a second
+    // caller arriving mid-download saw a few thousand of 20,986 rows and
+    // concluded the corpus was open. Everything downstream then ran against a
+    // fraction of it with no indication — a join that resolved 6 of 48, a facet
+    // that counted a tenth of the values, an agent told 20,986 rows exist and
+    // handed the first 3,000. `load` is now idempotent per view and returns the
+    // in-flight promise, so "open" means finished for every caller.
+    if (inflight.has(view) || !CORPORA.get(view)?.rows.length) await load(view);
     paintDirectory();
     paint();
 }
 
 // ── loading, painted as it streams ──────────────────────────────────────────
-async function load(view = trimView(VIEW)) {
+//
+// One load per view, shared. Two callers wanting the same corpus at the same
+// moment — the boot present following a reference, and `ask` opening what the
+// directory ranked — must await the SAME download and both see all of it.
+const inflight = new Map();
+function load(view = trimView(VIEW)) {
+    view = trimView(view);
+    const already = inflight.get(view);
+    if (already) return already;
+    const p = stream(view).finally(() => inflight.delete(view));
+    inflight.set(view, p);
+    return p;
+}
+
+async function stream(view) {
     const c = slot(view);
     c.stats = { shards: 0, ms: 0, started: performance.now() };
     // The view actually open, not the one the page booted with — open-corpus
@@ -445,6 +548,7 @@ function logCall(name, args, ms, result, error) {
 const POOL_FACTOR = 4;
 let POOL = [];                                     // [{ row, roles, corpus, score }]
 let LAST = { picks: [], limit: 12, heading: "", note: "" };
+let FOLLOWED = { n: 0, of: 0, into: "" };
 
 /** Fill the pool. Rows, not briefs — `brief()` resolves the publisher's LINK
  *  (`presentation.externalUrl`, a details page) and a player needs their FILE,
@@ -521,7 +625,13 @@ async function fillPool({ query, corpus, limit }) {
         // a moment in one; `archive-dialogue` is baked free and will resolve to
         // the second.
         at: (r) => (Number.isFinite(Number(r?.start)) ? Number(r.start) : null),
-    }).map((p) => (p.via
+    });
+    // Said out loud, because it is the answer to "why am I being shown a film for
+    // a line I typed" — and because when it is 2 of 12 rather than 12 of 12,
+    // something is wrong and nobody would otherwise know.
+    FOLLOWED = { of: POOL.length, n: POOL.filter((p) => p.via).length,
+                 into: [...new Set(POOL.filter((p) => p.via).map((p) => p.corpus))].join(", ") };
+    POOL = POOL.map((p) => (p.via
         // The words that matched, if they are free to read. `textOf` already
         // returns "" for a role the publisher locked, so a paid line is absent
         // rather than half-quoted.
@@ -892,16 +1002,22 @@ function register(mc) {
             const find = (id) => {
                 for (const c of cs) {
                     const r = c.rows.find((x) => x.id === id) ?? c.rows.find((x) => titleOf(x, c.roles) === id);
-                    if (r) return { r, roles: c.roles };
+                    if (r) return { r, roles: c.roles, corpus: c.name };
                 }
                 return null;
             };
             const miss = [];
-            for (const [ids, into] of [[like, liked], [dislike, disliked]]) {
+            for (const [ids, into, kind] of [[like, liked, "like"], [dislike, disliked, "skip"]]) {
                 for (const id of ids) {
                     const hit = find(id);
                     if (!hit?.r?.vector) { miss.push(id); continue; }
-                    into.push({ id: hit.r.id, title: titleOf(hit.r, hit.roles), vector: hit.r.vector });
+                    const title = titleOf(hit.r, hit.roles);
+                    into.push({ id: hit.r.id, title, vector: hit.r.vector });
+                    // The kernel gets the vector; the log gets the event. See the
+                    // note on `reactions` — a taste that has collapsed across a
+                    // reload cannot answer a publisher's question, and this is
+                    // the only place a reaction is ever created.
+                    noteReaction(hit.r, hit.corpus, kind, title);
                 }
             }
             const t = mine();
@@ -978,7 +1094,8 @@ function register(mc) {
                 note: `${POOL.length} candidates from ${cs.map((c) => c.name).join(", ")} · `
                     + (mine() ? "ordered by your taste"
                        : query ? "no taste yet — ordered by the question alone"
-                       : "no taste yet — spread as widely across these catalogues as the vectors allow"),
+                       : "no taste yet — spread as widely across these catalogues as the vectors allow")
+                    + (FOLLOWED.n ? ` · ${FOLLOWED.n} of ${FOLLOWED.of} reached through a matched passage, playing in ${FOLLOWED.into}` : ""),
             };
             if (!LAST.picks.length) return { error: "nothing to queue", note: LAST.note };
             const [now] = LAST.picks;
@@ -1021,6 +1138,158 @@ function register(mc) {
             const wire = exportTaste(t);
             return { taste: wire, bytes: JSON.stringify(wire).length,
                      note: "vectors are base64 int8 in the same space every corpus on this network uses" };
+        },
+    });
+
+    tool({
+        name: "seed-taste",
+        description: "Start from what someone has ACTUALLY played, instead of from nothing. Reads a Steam localconfig.vdf — the file Steam already wrote to their own disk, holding playtime and last-played per game — and turns it into a taste against the open corpus. No API key, no login, no request to Valve: the file is parsed in this tab and goes nowhere. Call it after the games corpus is open. The cold-start problem, solved by a file the person already has.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                vdf: str("The contents of localconfig.vdf. Omit if the person has already dropped the file on the page."),
+                apply: { type: "boolean", description: "Fold the result into the taste (default true). False previews what it WOULD do without changing anything." },
+            },
+        },
+        run: async ({ vdf = "", apply = true, corpus }) => {
+            const text = vdf || droppedVdf;
+            if (!text) {
+                return { error: "no Steam file yet",
+                         where: "Steam ▸ userdata ▸ <account id> ▸ config ▸ localconfig.vdf, inside the Steam install folder",
+                         how: "drop it on this page, or pass its contents as `vdf`" };
+            }
+            const lib = steamLibrary(text);
+            if (!lib.length) return { error: "that file parsed, but held no games with playtime — is it localconfig.vdf?" };
+
+            const cs = span(corpus ?? "*");
+            // One seed per open corpus, because appid only matches the corpus
+            // that declares it — and then the taste built from the games ranks
+            // every OTHER corpus too, which is the point of the whole network.
+            const seeds = cs.map((c) => ({ c, seed: seedTaste(lib, c.rows, { title: (r) => titleOf(r, c.roles) }) }))
+                            .filter(({ seed }) => seed.likes.length || seed.dislikes.length);
+            if (!seeds.length) {
+                return { error: `none of the ${lib.length} games in that library are in the open corpora`,
+                         opened: cs.map((c) => c.name),
+                         note: "open a Steam corpus first — appid is what these rows are matched on" };
+            }
+            const { c, seed } = seeds.sort((a, b) => b.seed.likes.length - a.seed.likes.length)[0];
+
+            if (apply) {
+                for (const l of seed.likes) {
+                    liked.push({ id: l.id, title: l.title, vector: l.vector });
+                    noteReaction({ id: l.id, vector: l.vector }, c.name, "like", l.title);
+                }
+                for (const d of seed.dislikes) {
+                    disliked.push({ id: d.id, title: d.title, vector: d.vector });
+                    noteReaction({ id: d.id, vector: d.vector }, c.name, "skip", d.title);
+                }
+                saveTaste();
+            }
+            const t = apply ? mine() : null;
+            return {
+                corpus: c.name,
+                library: lib.length,
+                summary: steamSummary(seed),
+                hours: seed.hours,
+                // Named, because a taste a person cannot read is one they cannot
+                // correct — and this one was built from a file, not from choices
+                // they made in front of the page.
+                liked: seed.likes.slice(-12).map((l) => l.title),
+                bouncedOff: seed.dislikes.slice(-8).map((d) => d.title),
+                unmatched: seed.unmatched.length,
+                applied: apply,
+                ...(t ? { builtFrom: t.from, heading: t.v ? "moving" : "settled" } : {}),
+                privacy: "parsed in this tab. Valve was not asked and cannot know this happened.",
+            };
+        },
+    });
+
+    tool({
+        name: "share-reactions",
+        description: "Turn what you reacted to into a corpus someone can BUY — and show, before anything is published, exactly which columns a buyer gets and which the free index discloses. This is the other side of the trade: a platform would take this stream for free, and here the publishers whose rows produced it are paid out of the sale. Call it to see the disclosure; it does not publish anything by itself.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                publisher: str("The address that gets paid. Omit to see the disclosure as a draft."),
+                price: str("Price in base units (default 250000 = 0.25 USDC)"),
+                name: str("What to call the corpus"),
+            },
+        },
+        run: ({ publisher, price = "250000", name = "reactions" }) => {
+            const n = rehydrate();
+            const usable = reactions.filter((r) => r.vector?.length);
+            if (!usable.length) {
+                return { error: "nothing to share yet — react to some rows first",
+                         logged: reactions.length,
+                         ...(reactions.length ? { note: `${reactions.length} reactions are in the log but their rows are not open, so their vectors cannot be recovered` } : {}) };
+            }
+            // A draft address so the disclosure can be inspected without a
+            // wallet. Seeing what you would be selling is the reason to call
+            // this verb; needing a key first would put the answer behind the
+            // decision it is supposed to inform.
+            const draft = !publisher;
+            const corpus = reactionCorpus(usable, {
+                publisher: publisher ?? `0x${"0".repeat(40)}`, name, price,
+            });
+            return {
+                draft,
+                ...(draft ? { warning: "no publisher address — this is a preview, not a publishable corpus" } : {}),
+                reactions: usable.length,
+                rehydrated: n,
+                corpora: [...new Set(usable.map((r) => r.corpus))],
+                free: FREE,
+                paid: LOCKED,
+                disclosure: "The free index carries coverage centroids, which corpus, and the month — the SHAPE of your attention. Which game, what it was called, and whether you liked it are the paid columns. No reaction ships a vector: a reaction's vector is a copy of a row anyone can download free, so publishing it would hand over the paid column for nothing.",
+                manifest: corpus.manifest,
+                price,
+            };
+        },
+    });
+
+    tool({
+        name: "answer-question",
+        description: "Answer a publisher's question about your reactions WITHOUT handing over your reactions. Evaluates the question against the local log and returns a masked share — your real answer plus values that cancel when the whole cohort is summed, so the publisher learns the total and nobody learns you. Refuses to emit a share for a cohort too small to hide in, which is the only thing standing between an aggregate and an interview.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                question: str("What the publisher is asking about, in natural language — it is embedded locally and matched against what you reacted to."),
+                peers: { type: "array", items: { type: "string" }, description: "Hex public keys of the OTHER readers in this round." },
+                round: int("The round number, so masks differ between rounds (default 0)"),
+                inCorpus: str("Only count reactions in this corpus"),
+            },
+        },
+        run: async ({ question = "", peers = [], round = 0, inCorpus }) => {
+            rehydrate();
+            const usable = reactions.filter((r) => r.vector?.length);
+            const near = question ? await embedQuery(question) : null;
+            const stats = statistics(usable, { near, corpus: inCorpus });
+            const counts = Object.fromEntries(SLOTS.map((s, i) => [s, Number(stats[i])]));
+
+            // Always report what YOUR answer is — it is your data, and the
+            // reader deciding whether to join a round needs to know what they
+            // would be contributing. (Named `answer`, not `mine`: the module's
+            // `mine()` is the taste accessor and shadowing it here would be a
+            // trap for the next verb added below.)
+            const answer = { question: question || "(everything)", ...counts,
+                             ofLogged: usable.length };
+
+            if (peers.length + 1 < MIN_COHORT) {
+                return {
+                    ...answer,
+                    share: null,
+                    refused: `a cohort of ${peers.length + 1} is an interview, not an aggregate`,
+                    why: `Masks cancel only across the whole cohort. Below ${MIN_COHORT} readers a "total" is close enough to one person's answer to name them, so no share is emitted — the round fails and nobody is paid, which is the correct failure.`,
+                };
+            }
+            const me = await keypair();
+            const raw = peers.map((p) => Uint8Array.from(p.replace(/^0x/, "").match(/../g).map((b) => parseInt(b, 16))));
+            const share = await contribute(stats, me, raw, round);
+            return {
+                ...answer,
+                publicKey: me.id,
+                share: share.map(String),
+                note: "This share is uniform over the ring until every other reader's is added to it. The publisher sees the total; your row of it is noise.",
+            };
         },
     });
 
@@ -1361,6 +1630,35 @@ watchShard(() => { for (const c of CORPORA.keys()) load(c); });
 // not on what happens to be in the corpus. An empty pane is the paralysis the
 // scaffolding argument is about; a generic one is nearly as bad.
 paintSets();
+restoreReactions();
+
+// Dropping a Steam config on the page seeds the taste from real playtime.
+//
+// A drop target rather than a file picker because there is nothing to choose
+// between — one file does this — and because the gesture is the explanation: you
+// hand the page a file, the page answers, and nothing in between touches a
+// network. `seed-taste` is the verb; this is the only way a browser can get the
+// bytes to it, since a tab cannot read the Steam folder on its own.
+for (const ev of ["dragover", "drop"]) {
+    document.addEventListener(ev, (e) => {
+        e.preventDefault();
+        if (ev !== "drop") return;
+        const file = e.dataTransfer?.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = async () => {
+            droppedVdf = String(reader.result ?? "");
+            const { view, out } = await call("seed-taste", { corpus: "*" });
+            $("answerMeta").textContent = out?.error
+                ? `${out.error} — ${out.where ?? ""}`
+                : `${out.summary} · read in this tab, nothing sent`;
+            if (!out?.error) render((await call("recommend", { corpus: "*", limit: 12 })).view, { list: true });
+            else if (view) render(view, { list: true });
+        };
+        reader.readAsText(file);
+    });
+}
+
 const remembered = restoreTaste();
 saveTaste();   // paints the nav count for a taste restored from a previous visit
 (async () => {

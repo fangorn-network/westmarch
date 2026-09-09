@@ -60,6 +60,9 @@ are what is left when you take the app out.
 | `similar-rows` | nearest by vector — explore a corpus whose vocabulary you don't know yet. |
 | `present` | play the answer instead of listing it. Fills a queue from a question (or from the taste alone), orders it by the taste, and returns a surface that PLAYS the first item — video, audio, image, place or reader, chosen from the row's own mime and the publisher's media role. Likes and skips inside it re-order the queue in place, without interrupting what is playing. |
 | `taste-doc` | the reader's taste as `taste.md` — what they are drawn to, what they pass on, which way they are moving, in the vocabulary the open publishers declared, above the reader's own standing instructions. Read it before recommending anything. |
+| `seed-taste` | start from what someone has actually played. Reads a Steam `localconfig.vdf` — the file Steam already wrote to their own disk — and turns playtime and last-played into a taste against the open corpus. No key, no login, no request to Valve. Drop the file on the page, or pass its contents. |
+| `share-reactions` | what you reacted to, as a corpus someone can buy — and, before anything is published, exactly which columns a buyer gets and which the free index discloses. |
+| `answer-question` | answer a publisher's question about your reactions without handing over your reactions. Returns a masked share that cancels across the cohort, and refuses to emit one for a cohort too small to hide in. |
 
 ## What the page shows
 
@@ -75,6 +78,49 @@ None of the left side is written for a dataset. `entity_types` says there are
 Business is displayed as a **Place**, and its link template is `{googleMapsUri}`.
 The archive bundle declares none of that, so it groups by raw type name with no
 icon and no links — which is wh at "sniffed" in the header means.
+
+## The whole arc, headless
+
+`steam-taste.mjs` runs the reader's side end to end on a real library, which is
+the version of this you can check rather than watch:
+
+```sh
+node steam-taste.mjs <view> "<Steam>/userdata/<accountid>/config/localconfig.vdf"
+```
+
+Read the library off the disk → seed a taste from playtime and recency → name
+what that taste is in the publisher's own declared tags → recommend games it was
+never shown → show what sharing the resulting log would disclose, column by
+column → answer a publisher's question from it, and refuse to emit a share
+because one reader is not a cohort.
+
+Every step is also a verb in the page. This file exists because the verbs are
+browser-only and the claims are specific enough to be worth testing.
+
+## The other side of the trade
+
+`publisher-console.mjs` is the half that BUYS. The reader's verbs above decide
+what leaves the tab; this decides what a publisher can learn from what did.
+
+```sh
+node publisher-console.mjs shelf  <view>              # which of your tags can name a region
+node publisher-console.mjs ask    <view> "<question>" --simulate 8 --out rounds.json
+node publisher-console.mjs report <view> rounds.json  # the verdict, per question
+```
+
+`ask` posts one question to a cohort, every reader answers it against their own
+log, and the masked shares are summed. The publisher reads a total and never a
+row — not "sees them and promises not to keep them", but *there are no rows in
+the input*. `report` names the direction in the publisher's own declared tags and
+measures it against their own shelf, returning one of five verdicts, each of
+which names an action with a budget line.
+
+A cohort needs five readers and there is one of you, so `--simulate` builds
+readers by drawing reaction logs out of the corpus. **Every output it produces is
+stamped as simulated**, and it is a test harness for the mechanism rather than
+evidence about any audience. Real shares — from a reader calling
+`answer-question` in the page — go in with `--shares`, and the aggregation cannot
+tell the two apart, which is the property that makes the whole thing work.
 
 ## Test
 

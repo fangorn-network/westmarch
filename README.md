@@ -116,6 +116,60 @@ held about them.
 node example/taste-demo.mjs        # films -> games, end to end
 ```
 
+## steam.js — the cold start, solved by a file you already have
+
+A taste needs picks and a new reader has none, so every recommender opens by
+asking you to rate ten things. The obvious fix for games is Steam's Web API:
+issue a key, call GetOwnedGames, receive the library. It works, and it means the
+first thing a recommender does — before recommending anything — is tell Valve
+that you asked.
+
+Steam already wrote your playtime to your own disk. `localconfig.vdf` holds one
+entry per app you have launched, with minutes played and a last-played
+timestamp. No key, no login, no network, and reading it is not a request anyone
+can log. `steamLibrary(text)` parses it, `seedTaste(library, rows)` matches it
+against a corpus on `appid`, and what comes back drives `taste.js` unchanged.
+
+The mapping is where the judgement is, and it is deliberately narrow:
+
+| in the library | becomes | why |
+|---|---|---|
+| played a lot | a like | you kept coming back |
+| launched, bounced off | a dislike | you tried it and stopped — the only negative signal a library actually contains |
+| never launched | **neither** | a backlog is not a rejection |
+
+That third row is the one that matters. `taste.js` applies GAMMA 0.6 to
+rejections, so a wrong dislike actively steers recommendations away from things
+you would have liked, and an unplayed game in a library is a sale or a bundle
+rather than a verdict. Playtime decides membership; `LastPlayed` decides order,
+because the half-life is what makes a taste steerable and sorting by hours would
+tell it that a game you adored in 2021 is where you are now.
+
+In a browser it is a drop target — parsed in the tab, going nowhere. In Node it
+is a path. Same parser either way.
+
+## Sharing back — what a publisher can learn, and what it cannot
+
+Three modules make the reverse direction honest, and until now none of them was
+reachable from an agent:
+
+- **`reactions.js`** turns a reader's log into a corpus someone can buy. The free
+  index carries coverage centroids, which corpus, and the month — the *shape* of
+  someone's attention. Which item, what it was called, and which way they reacted
+  are the paid columns, and no reaction ships a vector, because a reaction's
+  vector is a copy of a row anyone can download free.
+- **`cohort.js`** answers a publisher's question by pairwise-masked secure
+  aggregation. Every reader evaluates the question against their own log and
+  returns a share that is uniform over the ring; sum the cohort and the masks
+  cancel. Below five readers it refuses, because an aggregate over two people is
+  two people's data with a total sign on it.
+- **`demand.js`** names the resulting direction in the publisher's own declared
+  tag vocabulary, measures what their shelf holds along it in the shelf's own
+  sigma, and returns a verdict: commission, serve, fix, retire, cold.
+
+`example/main.js` exposes the reader's half as `share-reactions` and
+`answer-question`; `example/publisher-console.mjs` is the buyer's half.
+
 ## directory.js — searching FOR data, before searching IN it
 
 Every other module answers a question about rows you already have. An agent
@@ -217,3 +271,7 @@ fails, the extraction broke money.
 
 `example/` is a second consumer — five WebMCP verbs and a telemetry page — run
 against two unrelated bundles to prove the seam holds. See its README.
+
+`example-publisher/` is the other half: the smallest directory that publishes a
+priced, encrypted file to a Fangorn app. Its only dependency is this package —
+publishing to an app does not require a clone of that app. See its README.

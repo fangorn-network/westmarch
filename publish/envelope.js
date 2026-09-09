@@ -64,6 +64,22 @@ export async function pack(plain) {
     return out;
 }
 
+/**
+ * The inverse of pack(). It lives here, beside its inverse, because a packer and
+ * an unpacker in two repos is a format with two definitions — and the failure is
+ * not a crash but a file that uploads fine and is undecryptable forever.
+ */
+export async function unpack(bytes) {
+    if (bytes[0] === 0) return bytes.subarray(1);
+    // Not 0/1 means these bytes aren't packed at all — almost always ciphertext
+    // uploaded before the compression format landed. The publisher re-publishes;
+    // there is nothing the buyer can do.
+    if (bytes[0] !== 1) throw new Error(`unknown chunk encoding ${bytes[0]} — this file needs re-publishing`);
+    return new Uint8Array(await new Response(
+        new Response(bytes.subarray(1)).body.pipeThrough(new DecompressionStream("gzip")),
+    ).arrayBuffer());
+}
+
 /** GET the worker's static X25519 pubkey (what DEKs are sealed to). */
 export async function getWorkerPubkey(workerUrl) {
     const res = await fetch(`${workerUrl}/pubkey`);

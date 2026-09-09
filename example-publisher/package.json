@@ -1,0 +1,9 @@
+{
+  "name": "westmarch-example-publisher",
+  "private": true,
+  "type": "module",
+  "description": "The smallest thing that publishes a priced file to a Fangorn app.",
+  "dependencies": {
+    "@fangorn/westmarch": "link:.."
+  }
+}

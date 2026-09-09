@@ -21,23 +21,36 @@
     "./reactions": "./publish/reactions.js",
     "./cohort": "./publish/cohort.js",
     "./vault": "./publish/vault.js",
-    "./taste-doc": "./consume/taste-doc.js"
+    "./taste-doc": "./consume/taste-doc.js",
+    "./settle": "./publish/settle.js",
+    "./manifest": "./publish/manifest.js",
+    "./publish-cli": "./publish/cli.js",
+    "./demand": "./publish/demand.js",
+    "./steam": "./consume/steam.js"
   },
   "scripts": {
-    "test": "node publish/terms.js && node publish/reactions.js && node publish/cohort.js && node publish/vault.js && node publish/graph.js && node publish/envelope.js && node publish/enrich.js && node consume/embed.js && node consume/rank.js && node consume/apps.js && node consume/roles.js && node consume/shard.js && node consume/directory.js && node consume/taste.js && node consume/taste-doc.js && node consume/corpora.js && node consume/ui.js && node consume/lint.js && node example/tools.js",
+    "test": "node publish/terms.js && node publish/reactions.js && node publish/cohort.js && node publish/vault.js && node publish/graph.js && node publish/envelope.js && node publish/demand.js && node publish/settle.js && node publish/manifest.js && node publish/cli.js --selfcheck && node publish/enrich.js && node consume/embed.js && node consume/rank.js && node consume/apps.js && node consume/roles.js && node consume/shard.js && node consume/directory.js && node consume/taste.js && node consume/steam.js && node consume/taste-doc.js && node consume/corpora.js && node consume/ui.js && node consume/lint.js && node example/tools.js",
     "lint": "node consume/lint.js"
   },
   "peerDependencies": {
     "@huggingface/transformers": "^4.2.0",
-    "viem": "^2.55.1"
+    "viem": "^2.55.1",
+    "@fangorn-network/sdk": "^2026.8.18-dev"
   },
   "peerDependenciesMeta": {
     "@huggingface/transformers": {
+      "optional": true
+    },
+    "@fangorn-network/sdk": {
       "optional": true
     }
   },
   "devDependencies": {
     "@huggingface/transformers": "^4.2.0",
-    "viem": "^2.56.3"
+    "viem": "^2.56.3",
+    "@fangorn-network/sdk": "^2026.8.18-dev"
+  },
+  "bin": {
+    "westmarch-publish": "./publish/cli.js"
   }
 }
