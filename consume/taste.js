@@ -213,6 +213,16 @@ export function withProvenance(t, { carried = null, likes = [], dislikes = [] } 
 
 // ── self-check: `node consume/taste.js` ─────────────────────────────────────
 if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+
+    // recommend() returns {row, score} — NOT {row, s}. kingsfoil's agent read
+    // h.s and reported every recommendation with score: undefined.
+    {
+        const rows = [{ id: "a", vector: [1, 0], norm: 1 }, { id: "b", vector: [0, 1], norm: 1 }];
+        const out = recommend(rows, { q: [1, 0] });
+        if (!out.length) throw new Error("recommend must rank rows with vectors");
+        if (out[0].row === undefined) throw new Error("recommend rows carry .row");
+        if (typeof out[0].score !== "number") throw new Error("recommend rows carry .score (not .s)");
+    }
     const R = (id, vector, title = id) => ({ id, title, vector: Float32Array.from(vector), norm: norm(vector) });
     // A toy 3-d space: x = "bleak", y = "comic", z = "documentary".
     const bleak = [1, 0, 0], comic = [0, 1, 0], doc = [0, 0, 1];

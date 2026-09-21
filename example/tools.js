@@ -199,6 +199,7 @@ export function neighbors(rows, id, roles, { limit = 10, fields } = {}) {
 export function getRow(rows, id, roles) {
     // id first, then whatever the publisher calls a title — an agent that read a
     // title off a search result and passed it back must land on the same row.
+    if (!id) return null;   // else `x.path === undefined` matches the first row lacking one
     const r = rows.find((x) => x.id === id)
         ?? rows.find((x) => x.path === id || x.name === id || titleOf(x, roles) === id);
     if (!r) return null;
@@ -336,6 +337,21 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         // …and the floor is computed inside the filter, not outside it.
         const surf = search(pool, "cold war", rl, { qv: [0, 1], limit: 10, where: { year: 1964 } });
         if (surf[0]?.title !== "beach party") throw new Error("the floor must be measured over the filtered rows");
+    }
+
+    // The shape callers must code against. kingsfoil's agent surface read
+    // `search(...).hits` and returned [] for every query — silently, because
+    // undefined ?? [] is a valid empty result. Pin it.
+    {
+        const pool = [{ id: "a", name: "cold war thriller", vector: [1, 0], norm: 1 }];
+        const rl = { title: ["name"], subtitle: [], tags: [], text: ["name"], measures: [], fields: [] };
+        const out = search(pool, "cold war", rl, { qv: [1, 0], limit: 5 });
+        if (!Array.isArray(out)) throw new Error("search must return a flat array, not {hits}");
+        if (out[0].score === undefined || out[0].mode === undefined) throw new Error("search rows carry score+mode");
+        // A missing id must not match the first row lacking `path`/`name`.
+        for (const bad of [undefined, null, ""]) {
+            if (getRow(pool, bad, rl) !== null) throw new Error(`getRow(${JSON.stringify(bad)}) must be null`);
+        }
     }
 
     console.log("tools.js self-check ok — coverage not schema, semantic/lexical modes + z-floor, list-ish facets + where, neighbours, whole-row fetch, previews truncate");
