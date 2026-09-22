@@ -7,8 +7,8 @@ This walks one static site from nothing to "any agent can find it and use it":
 3. You register the card as an ERC-8004 agent, which makes it publicly searchable.
 4. Someone who has never heard of it discovers it, verifies it, and drives it.
 
-It runs on Arbitrum Sepolia. Every command and snippet here was run against the live
-chain; [Kingsfoil](#reference-kingsfoil) is the worked example, and its real values are
+It runs on Arbitrum Sepolia. Steps 1–5 and 7 were run against the live chain (step 6's
+publish commands are from the CLI's help and have not been run for Kingsfoil yet); [Kingsfoil](#reference-kingsfoil) is the worked example, and its real values are
 at the end.
 
 ```
@@ -19,8 +19,8 @@ at the end.
    AppAgentChanged log = the app directory        │ card names appId, fromBlock,
                                                   │ namespaces, views, WebMCP tools
                                                   ▼
-                               https://your.site  ← a browser (or headless Chrome)
-                               document.modelContext tools, static shards, no server
+                  https://your.site/tools-page  ← a browser, or fangorn-mcp driving Chrome
+                  document.modelContext tools, static shards, no server
 ```
 
 ## What you need
@@ -66,6 +66,16 @@ export function registerAgent(ctx) {
 }
 ```
 
+Call it only once the data the tools read has loaded, not at module top level. A human
+clicks after the page has settled; an agent calls the moment a tool appears, and a tool
+that answers before its data exists answers wrong without erroring. (Kingsfoil's first
+search routed to zero areas until its tools waited for `routes.json`.)
+
+```js
+const data = await loadIndex();   // whatever the tools read
+registerAgent(ctxOver(data));
+```
+
 `@fangorn/westmarch/tools` holds verbs that work on any corpus (describe, search, browse,
 facet, get, neighbours). Add a domain verb only when the generic ones can't express it.
 
@@ -86,7 +96,7 @@ const tools = await captureTools(() => registerAgent({}));
 const card = agentCard({
     name: "My App",
     description: "What a stranger gets from this, in two sentences.",
-    url: "https://my-app.pages.dev",          // the page the tools live on
+    url: "https://my-app.pages.dev/tools.html", // the page that REGISTERS the tools, not just the site
     version: "2026-09-22",
     tools,
     tags: ["my-app"],
@@ -242,7 +252,27 @@ registration file's `ipfs://` URI, and its `A2A` endpoint is the card.
 
 - **An agent:** open `card.url` in Chrome 150+ with `--enable-features=WebMCP` (headless
   works) and call the tools the card lists as `webmcp` skills. Queries run in that tab, and
-  nothing reaches a server.
+  nothing reaches a server. WebMCP is not a network MCP server: the tools exist only inside
+  a loaded tab, so an agent outside the browser (Claude Code, a script) needs something
+  that drives the tab for it. `card.url` must be the page that registers the tools, not
+  just the site's root. `fangorn-mcp` is that driver, for every app at once. Register it
+  once:
+
+  ```sh
+  claude mcp add fangorn -- node /path/to/westmarch/consume/mcp.js
+  ```
+
+  It starts with three tools. `list-apps` reads the apps off the chain and keeps the ones
+  whose cards verify. `open-app kingsfoil` verifies that app's card, opens `card.url` in a
+  tab of one shared Chrome with WebMCP on, and adds the page's tools as
+  `kingsfoil__search-trials` and so on. `call-app-tool` reaches the same tools for clients
+  that don't refresh their tool list. A new app needs no new registration: it shows up in
+  `list-apps` once its card is bound on chain.
+
+  It needs a local Chrome 150+ (`CHROME=/path/to/chrome` if it isn't `google-chrome`;
+  `--headed` to watch). The profile is kept under `~/.cache/westmarch-mcp/`, so page
+  downloads such as an embedding model happen once. `--from-block <n>` points it at another
+  deployment.
 - **Without a browser:** the views are plain HTTP (`<view>/cdn/catalog`, then the shards it
   names). Point `westmarch/consume/shard.js` at `views[i]`.
 - **The committed data itself:**
@@ -275,6 +305,9 @@ const { contents } = await fangorn.readNamespace(timelines[0].owner, namespaces[
 | a log scan misses a transaction you just sent | fixed in the SDK (uncached head block); upgrade to ≥ 2026.9.22-dev |
 | IPFS reads return "switching to a service worker gateway" | ipfs.io stopped serving raw content; use a Pinata gateway |
 | `app agent` signs as the wrong wallet | `~/.fangorn/config.json` beats `ETH_PRIVATE_KEY` |
+| an agent opens the page and finds no tools | `card.url` is the site root, but the tools register on another page |
+| an agent's first call returns empty, later calls work | the tools registered before their data loaded (step 1) |
+| `fangorn-mcp`: "Chrome did not start" | another `fangorn-mcp` holds the profile in `~/.cache/westmarch-mcp` |
 | the page isn't listed as a "Web" service on 8004scan | agent0-sdk has no web endpoint type; agents find the page through the card's `url` |
 
 ## Reference: Kingsfoil
@@ -282,6 +315,7 @@ const { contents } = await fangorn.readNamespace(timelines[0].owner, namespaces[
 | | |
 |---|---|
 | site | https://kingsfoil.pages.dev |
+| tools page (`card.url`) | https://kingsfoil.pages.dev/provider.html (the root is the patient view, with no tools) |
 | card | https://kingsfoil.pages.dev/.well-known/agent-card.json |
 | app | `kingsfoil` = `0x3069aaab9c73b01fb147a97106c7e595534850af5cab0e0ff7f2a55554d5c8ca` |
 | owner | `0x7a7849231cF7Ab1EA003BcF0063CB89704D7Cce9` |
