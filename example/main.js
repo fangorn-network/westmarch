@@ -21,7 +21,7 @@ import { EMBED_MODEL, embedQuery, warmEmbedder } from "@fangorn/westmarch/embed"
 import { seedTaste, steamLibrary, summarize as steamSummary } from "@fangorn/westmarch/steam";
 import { FREE, LOCKED, reactionCorpus } from "@fangorn/westmarch/reactions";
 import { MIN_COHORT, SLOTS, contribute, keypair, statistics } from "@fangorn/westmarch/cohort";
-import { brief, browse, describe, facet, getRow, neighbors, search } from "./tools.js";
+import { brief, browse, describe, facet, getRow, neighbors, search } from "@fangorn/westmarch/tools";
 
 // The view: `serve-embeddings.js` in the sond3r repo, or any quickbeam view.
 //   node scripts/serve-embeddings.js archive-videos-test-2.embeddings.ndjson

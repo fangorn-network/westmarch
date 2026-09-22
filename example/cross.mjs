@@ -14,7 +14,7 @@ import { recommend, taste } from "@fangorn/westmarch/taste";
 import { EMBED_MODEL, embedQuery } from "@fangorn/westmarch/embed";
 import { findCorpora } from "@fangorn/westmarch/directory";
 import { rankedList, uiResource } from "@fangorn/westmarch/ui";
-import { brief, search } from "./tools.js";
+import { brief, search } from "@fangorn/westmarch/tools";
 
 const BASE = process.env.BASE ?? "http://localhost:5180";
 const NAMES = ["archive-films", "archive-transcripts", "games", "places"];

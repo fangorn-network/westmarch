@@ -4,7 +4,7 @@ import { configure, domainManifests, loadShard, resetShard, setView } from "@fan
 import { rolesFrom, textOf, titleOf } from "@fangorn/westmarch/roles";
 import { findCorpora } from "@fangorn/westmarch/directory";
 import { EMBED_MODEL, embedQuery } from "@fangorn/westmarch/embed";
-import { browse, facet, getRow, neighbors, search } from "./tools.js";
+import { browse, facet, getRow, neighbors, search } from "@fangorn/westmarch/tools";
 
 const BASE = "http://localhost:5180";
 const SOURCES = ["archive-films", "archive-transcripts", "games", "places"].map((d) => `${BASE}/${d}`);

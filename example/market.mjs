@@ -31,7 +31,7 @@ import { configure, domainManifests, loadShard, resetShard, trimView } from "@fa
 import { rolesFrom, textOf } from "@fangorn/westmarch/roles";
 import { reactionCorpus } from "@fangorn/westmarch/reactions";
 import { MIN_COHORT, aggregate, contribute, keypair, readout, statistics } from "@fangorn/westmarch/cohort";
-import { search, browse } from "./tools.js";
+import { search, browse } from "@fangorn/westmarch/tools";
 
 const BASE = process.env.MARKET_BASE ?? "http://localhost:5180";
 const LEDGER = process.env.MARKET_LEDGER ?? new URL("./.market.json", import.meta.url).pathname;

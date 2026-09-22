@@ -1,7 +1,8 @@
 {
-  "name": "@fangorn/westmarch",
+  "name": "@fangorn-network/westmarch",
   "version": "0.1.0",
   "description": "Publisher and consumer surfaces for a Fangorn app: shape a graph, publish it, read it back as a searchable, agent-drivable catalog",
+  "license": "MIT",
   "type": "module",
   "exports": {
     "./graph": "./publish/graph.js",
@@ -25,19 +26,20 @@
     "./taste-doc": "./consume/taste-doc.js",
     "./settle": "./publish/settle.js",
     "./manifest": "./publish/manifest.js",
-    "./publish-cli": "./publish/cli.js",
     "./demand": "./publish/demand.js",
     "./steam": "./consume/steam.js",
-    "./tools": "./example/tools.js"
+    "./tools": "./consume/tools.js",
+    "./package.json": "./package.json"
   },
   "scripts": {
-    "test": "node publish/terms.js && node publish/reactions.js && node publish/cohort.js && node publish/vault.js && node publish/graph.js && node publish/envelope.js && node publish/demand.js && node publish/settle.js && node publish/manifest.js && node publish/agent-card.js && node publish/cli.js --selfcheck && node publish/enrich.js && node consume/embed.js && node consume/rank.js && node consume/apps.js && node consume/mcp.js --selfcheck && node consume/roles.js && node consume/shard.js && node consume/directory.js && node consume/taste.js && node consume/steam.js && node consume/taste-doc.js && node consume/corpora.js && node consume/ui.js && node consume/lint.js && node example/tools.js",
+    "test": "node publish/terms.js && node publish/reactions.js && node publish/cohort.js && node publish/vault.js && node publish/graph.js && node publish/envelope.js && node publish/demand.js && node publish/settle.js && node publish/manifest.js && node publish/agent-card.js && node publish/cli.js --selfcheck && node publish/enrich.js && node consume/embed.js && node consume/rank.js && node consume/apps.js && node consume/mcp.js --selfcheck && node consume/roles.js && node consume/shard.js && node consume/directory.js && node consume/taste.js && node consume/steam.js && node consume/taste-doc.js && node consume/corpora.js && node consume/ui.js && node consume/lint.js && node consume/tools.js",
     "lint": "node consume/lint.js"
   },
   "peerDependencies": {
     "@huggingface/transformers": "^4.2.0",
     "viem": "^2.55.1",
-    "@fangorn-network/sdk": "^2026.9.22-dev"
+    "@fangorn-network/sdk": "^2026.9.22-dev",
+    "@noble/curves": "^1.9.1"
   },
   "peerDependenciesMeta": {
     "@huggingface/transformers": {
@@ -47,7 +49,8 @@
   "devDependencies": {
     "@huggingface/transformers": "^4.2.0",
     "viem": "^2.56.3",
-    "@fangorn-network/sdk": "^2026.9.22-dev"
+    "@fangorn-network/sdk": "^2026.9.22-dev",
+    "@noble/curves": "^1.9.1"
   },
   "bin": {
     "westmarch-publish": "./publish/cli.js",
@@ -56,8 +59,12 @@
   "files": [
     "consume",
     "publish",
-    "example/tools.js",
-    "docs",
-    "README.md"
-  ]
+    "docs/app-to-agent.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

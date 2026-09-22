@@ -49,7 +49,7 @@ import { demandReport, brief } from "@fangorn/westmarch/demand";
 import { configure, domainManifests, loadShard, resetShard, trimView } from "@fangorn/westmarch/shard";
 import { rolesFrom, textOf } from "@fangorn/westmarch/roles";
 import { SettlementRegistryClient, packResourceUri, resourceIdOf } from "@fangorn-network/sdk";
-import { search } from "./tools.js";
+import { search } from "@fangorn/westmarch/tools";
 const X402 = "/home/driemworks/fangorn/x402f/packages/fetch/dist/index.js";
 const { FangornX402Middleware, accessMessageHash } = await import(X402);
 

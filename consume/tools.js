@@ -11,8 +11,8 @@
 //
 // Pure functions, so `node tools.js` checks them with no browser and no network.
 
-import { bestPassage, cosine, lexScore, norm, zFloor } from "@fangorn/westmarch/rank";
-import { briefOf, collections, linkOf, titleOf, typeOf, values } from "@fangorn/westmarch/roles";
+import { bestPassage, cosine, lexScore, norm, zFloor } from "./rank.js";
+import { briefOf, collections, linkOf, titleOf, typeOf, values } from "./roles.js";
 
 /** Fields that are plumbing rather than content — never worth faceting or
  *  showing as "what this corpus holds". */
@@ -209,7 +209,7 @@ export function getRow(rows, id, roles) {
 
 // ── self-check: `node tools.js` — no browser, no network ────────────────────
 if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
-    const { rolesFrom } = await import("@fangorn/westmarch/roles");
+    const { rolesFrom } = await import("./roles.js");
     const row = (id, fields, vector) => ({
         id, owner: "0xa", ...fields,
         text: [fields.name, fields.desc].filter(Boolean).join(" "),

@@ -1,7 +1,7 @@
 // A view through the real library, no browser.  `node probe.mjs [viewUrl]`
 import { configure, domainManifests, loadShard } from "@fangorn/westmarch/shard";
 import { rolesFrom, textOf, titleOf } from "@fangorn/westmarch/roles";
-import { browse, describe, facet, getRow, neighbors, search } from "./tools.js";
+import { browse, describe, facet, getRow, neighbors, search } from "@fangorn/westmarch/tools";
 
 const VIEW = process.argv[2] ?? "http://localhost:8090";
 configure({ resolveView: () => VIEW,

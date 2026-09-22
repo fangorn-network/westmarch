@@ -61,7 +61,7 @@ const server = createServer((req, res) => {
 await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
 
 const M = await import("./market.mjs");
-const { search } = await import("./tools.js");
+const { search } = await import("@fangorn/westmarch/tools");
 const { label } = await import("@fangorn/westmarch/terms");
 const { taste, recommend, exportTaste } = await import("@fangorn/westmarch/taste");
 const { demandReport, brief } = await import("@fangorn/westmarch/demand");

@@ -125,7 +125,7 @@ tell the two apart, which is the property that makes the whole thing work.
 ## Test
 
 ```sh
-pnpm test        # tools.js self-check: pure functions, no browser, no network
+pnpm test        # consume/tools.js self-check: pure functions, no browser, no network
 node probe.mjs   # the same verbs against a running view on :8090
 ```
 

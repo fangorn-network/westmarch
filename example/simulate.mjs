@@ -20,7 +20,7 @@ import { taste, recommend, exportTaste } from "@fangorn/westmarch/taste";
 import { label, splitPayment } from "@fangorn/westmarch/terms";
 import { MIN_COHORT, aggregate, contribute, keypair, readout, statistics } from "@fangorn/westmarch/cohort";
 import { reactionCorpus } from "@fangorn/westmarch/reactions";
-import { search } from "./tools.js";
+import { search } from "@fangorn/westmarch/tools";
 import { SEED, ADDR, wallet, buy, sellTaste, cohort, books } from "./market.mjs";
 
 const BASE = process.env.MARKET_BASE ?? "http://127.0.0.1:5180";

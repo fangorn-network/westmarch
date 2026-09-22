@@ -62,7 +62,7 @@ much, so you do not rebuild it. At minimum, read and run:
 | **the exact static layout** | `westmarch/example/bake-steam.sh` | operator layout ≠ served layout. This script is the mapping. It exists because getting it wrong is a corpus that 404s its own catalog |
 | the deploy | `westmarch/example/deploy.sh` | re-bake + `vite build` + `wrangler pages deploy` + lint against the **deployed origin** |
 | the consumer | `westmarch/consume/` — `shard.js`, `rank.js`, `embed.js`, `corpora.js` | reader-side ranking, in-tab, query never leaves the browser |
-| the agent surface | `westmarch/example/tools.js`, `example/README.md` | the WebMCP verbs that already work over any corpus, dataset-agnostic |
+| the agent surface | `westmarch/consume/tools.js`, `example/README.md` | the WebMCP verbs that already work over any corpus, dataset-agnostic |
 | **the money** | `westmarch/publish/terms.js`, `settle.js`, `demand.js` | app cut + publisher lineage, in bps, already implemented |
 | the acceptance check | `westmarch/consume/lint.js` | run it against the live origin, not local files |
 

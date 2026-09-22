@@ -31,7 +31,7 @@ import { findCorpora, sourcesFromRegistry } from "../../consume/directory.js";
 import { linkOf, rolesFrom, textOf, titleOf } from "../../consume/roles.js";
 import { exportTaste, recommend, taste } from "../../consume/taste.js";
 import { EMBED_MODEL, embedQuery, packVec, unpackVec } from "../../consume/embed.js";
-import { browse, describe, facet, getRow, neighbors, search } from "../../example/tools.js";
+import { browse, describe, facet, getRow, neighbors, search } from "../../consume/tools.js";
 
 const HOME = process.env.FANGORN_HOME ?? join(homedir(), ".fangorn");
 const TASTE = join(HOME, "taste.json");

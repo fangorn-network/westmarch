@@ -1,7 +1,7 @@
 import { configure, domainManifests, loadShard, resetShard, setView } from "@fangorn/westmarch/shard";
 import { rolesFrom, textOf, titleOf } from "@fangorn/westmarch/roles";
 import { embedQuery } from "@fangorn/westmarch/embed";
-import { browse, facet, search } from "./tools.js";
+import { browse, facet, search } from "@fangorn/westmarch/tools";
 
 const V = "http://localhost:5180/games";
 let roles = rolesFrom([], []);
