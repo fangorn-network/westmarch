@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Every Fangorn app's WebMCP tools, behind one stdio MCP server.
 //
-//   fangorn-mcp [--headed] [--from-block <n>]
+//   fangorn-mcp [--cdp <url>] [--headed] [--from-block <n>]
 //   claude mcp add fangorn -- fangorn-mcp
+//   claude mcp add fangorn -e FANGORN_MCP_CDP=ws://browser:9222 -- fangorn-mcp
 //
 // WebMCP tools live on `document.modelContext` inside a loaded tab. There is no
 // endpoint, so an agent outside the browser cannot reach them, and one MCP
@@ -14,14 +15,13 @@
 //                  tools to this server as `<app>__<tool>` (tools/list_changed)
 //   call-app-tool  the same call by name, for clients that ignore list_changed
 //
-// One Chrome, WebMCP on, headless unless --headed; one tab per opened app. Calls
+// One browser, one tab per opened app: a WebMCP browser at --cdp, or else a
+// local Chrome with WebMCP on, headless unless --headed. Calls
 // are relayed to the tab's own `modelContext.executeTool`, so the tools, their
 // schemas and their answers are the page's, and queries still run in the tab.
-// The profile persists (~/.cache/westmarch-mcp), so a page's downloads, such as
-// an embedding model, are fetched once.
-//
-// ponytail: a tab that crashes or navigates away stays dead until restart. Add
-// reopen-on-close when a page needs it.
+// A local Chrome's profile persists (~/.cache/westmarch-mcp), so a page's
+// downloads, such as an embedding model, are fetched once. A tab or browser that
+// dies is reopened on the next call.
 
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, existsSync, rmSync } from "node:fs";
@@ -55,58 +55,126 @@ async function resolveCard(cardUrl) {
     return { card, page: page.toString(), verified: fangornApp };
 }
 
-let chrome;
-/** One Chrome for every app; its DevTools port. */
-function browser({ headed }) {
-    return chrome ??= (async () => {
-        const profile = `${homedir()}/.cache/westmarch-mcp`;
-        mkdirSync(profile, { recursive: true });
-        rmSync(`${profile}/DevToolsActivePort`, { force: true });   // a stale one points at a dead port
-        const bin = process.env.CHROME ?? "google-chrome";
-        const proc = spawn(bin, [
-            ...(headed ? [] : ["--headless=new"]),
-            "--enable-features=WebMCP", "--remote-debugging-port=0", "--no-first-run",
-            "--no-default-browser-check", `--user-data-dir=${profile}`, "about:blank",
-        ], { stdio: "ignore" });
-        proc.on("error", (e) => log(`cannot launch ${bin} (set CHROME): ${e.message}`));
-        for (const sig of ["exit", "SIGINT", "SIGTERM"]) process.on(sig, () => { proc.kill(); if (sig !== "exit") process.exit(0); });
-        for (let i = 0; i < 100; i++) {
-            await new Promise((r) => setTimeout(r, 100));
-            if (existsSync(`${profile}/DevToolsActivePort`)) return readFileSync(`${profile}/DevToolsActivePort`, "utf-8").split("\n")[0];
-        }
-        throw new Error("Chrome did not start (is another fangorn-mcp using ~/.cache/westmarch-mcp?)");
-    })();
+// ── the browser ─────────────────────────────────────────────────────────────
+// Anything that speaks the Chrome DevTools Protocol and has WebMCP: a headless
+// Chromium service, a hosted browser, or the local Chrome. `--cdp` (or
+// FANGORN_MCP_CDP) names it as http(s)://host:port or a ws(s):// browser
+// endpoint. Without it, a local Chrome is reused if one is already serving
+// this profile (another session's), else launched.
+//
+// Everything goes over the one browser-level WebSocket (Target.* plus flat
+// sessions). That is the endpoint every CDP host exposes, where the per-tab
+// /json HTTP routes are not.
+
+const PROFILE = `${homedir()}/.cache/westmarch-mcp`;
+
+/** An http(s) DevTools address → its browser WebSocket, reached via the host we were given. */
+async function browserWs(http) {
+    const v = await (await fetch(new URL("/json/version", http), { signal: AbortSignal.timeout(3000) })).json();
+    const ws = new URL(v.webSocketDebuggerUrl), base = new URL(http);
+    ws.host = base.host;                                  // the service reports its own view of itself
+    if (base.protocol === "https:") ws.protocol = "wss:";
+    return ws.toString();
+}
+
+async function localChrome({ headed }) {
+    mkdirSync(PROFILE, { recursive: true });
+    const portFile = `${PROFILE}/DevToolsActivePort`;
+    if (existsSync(portFile)) {
+        const ws = await browserWs(`http://127.0.0.1:${readFileSync(portFile, "utf-8").split("\n")[0]}`).catch(() => null);
+        if (ws) { log("reusing the Chrome already serving this profile"); return { ws }; }
+        rmSync(portFile, { force: true });                // stale: that Chrome is gone
+    }
+    const bin = process.env.CHROME ?? "google-chrome";
+    const proc = spawn(bin, [
+        ...(headed ? [] : ["--headless=new"]),
+        "--enable-features=WebMCP", "--remote-debugging-port=0", "--no-first-run",
+        "--no-default-browser-check", `--user-data-dir=${PROFILE}`, "about:blank",
+    ], { stdio: "ignore" });
+    const failed = new Promise((_, j) => proc.on("error", (e) => j(new Error(
+        `no browser: cannot launch ${bin} (${e.code}). Point --cdp / FANGORN_MCP_CDP at a WebMCP browser, or set CHROME.`))));
+    for (let i = 0; i < 100; i++) {
+        await Promise.race([new Promise((r) => setTimeout(r, 100)), failed]);
+        if (existsSync(portFile)) return { ws: await browserWs(`http://127.0.0.1:${readFileSync(portFile, "utf-8").split("\n")[0]}`), proc };
+    }
+    proc.kill();
+    throw new Error(`${bin} did not start`);
+}
+
+let conn;
+/** The browser connection, opened once and reopened after it drops. */
+function browser(opts) {
+    return conn ??= (async () => {
+        const { cdp } = opts;
+        const { ws: url, proc } = !cdp ? await localChrome(opts)
+            : /^wss?:/.test(cdp) ? { ws: cdp } : { ws: await browserWs(cdp) };
+        const ws = new WebSocket(url);
+        await new Promise((r, j) => { ws.onopen = r; ws.onerror = () => j(new Error(`cannot connect to the browser at ${url}`)); });
+        let id = 0; const pending = new Map(), dead = new Set();
+        ws.onmessage = (m) => {
+            const d = JSON.parse(m.data);
+            if (d.method === "Target.detachedFromTarget") dead.add(d.params.sessionId);
+            if (d.id !== undefined) { pending.get(d.id)?.(d); pending.delete(d.id); }
+        };
+        ws.onclose = () => { conn = null; for (const r of pending.values()) r({ error: { message: "browser connection closed" } }); };
+        const send = (method, params = {}, sessionId) => new Promise((res, rej) => {
+            if (ws.readyState !== WebSocket.OPEN) return rej(new Error("browser connection closed"));
+            pending.set(++id, (d) => (d.error ? rej(new Error(d.error.message)) : res(d.result)));
+            ws.send(JSON.stringify({ id, method, params, ...(sessionId && { sessionId }) }));
+        });
+        const tabs = new Set();
+        // Close what we opened. A shared or remote browser outlives this process.
+        const bye = async () => {
+            await Promise.race([Promise.all([...tabs].map((t) => send("Target.closeTarget", { targetId: t }).catch(() => {}))),
+                                new Promise((r) => setTimeout(r, 500))]);
+            // A local Chrome may be serving another session: leave it running
+            // while anyone else has a tab open; the last one out closes it.
+            const others = await Promise.race([send("Target.getTargets").then((r) => r.targetInfos.filter((t) => t.type === "page" && t.url !== "about:blank").length).catch(() => 0),
+                                               new Promise((r) => setTimeout(() => r(0), 500))]);
+            // Never a --cdp browser: that one is somebody's service.
+            if (!cdp && !others) await Promise.race([send("Browser.close").catch(() => {}), new Promise((r) => setTimeout(r, 500))]);
+            proc?.kill();
+            process.exit(0);
+        };
+        process.once("SIGINT", bye); process.once("SIGTERM", bye); process.stdin.once("end", bye);
+        log(`browser: ${cdp ?? (proc ? "launched local Chrome" : "local Chrome")}`);
+        return { send, dead, tabs };
+    })().catch((e) => { conn = null; throw e; });
 }
 
 /** A new tab on `page`; returns `ev(expr)`, which evaluates in it. */
 async function openTab(page, opts) {
-    const port = await browser(opts);
-    const target = await (await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(page)}`, { method: "PUT" })).json();
-    const ws = new WebSocket(target.webSocketDebuggerUrl);
-    await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
-    let id = 0; const pending = new Map();
-    ws.onmessage = (m) => { const d = JSON.parse(m.data); pending.get(d.id)?.(d); pending.delete(d.id); };
+    const { send, dead, tabs } = await browser(opts);
+    const { targetId } = await send("Target.createTarget", { url: page });
+    tabs.add(targetId);
+    const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
     return async (expression) => {
-        if (ws.readyState !== WebSocket.OPEN) throw new Error(`the tab for ${page} closed; restart fangorn-mcp`);
-        const r = await new Promise((res) => {
-            pending.set(++id, res);
-            ws.send(JSON.stringify({ id, method: "Runtime.evaluate", params: { expression, awaitPromise: true, returnByValue: true } }));
-        });
-        const ex = r.result?.exceptionDetails;
-        if (ex) throw new Error(ex.exception?.description ?? ex.text);
-        return r.result.result.value;
+        if (dead.has(sessionId)) throw new Error(`tab closed: ${page}`);
+        const r = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId)
+            .catch((e) => { throw new Error(`tab closed: ${page} (${e.message})`); });
+        if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
+        return r.result.value;
     };
 }
 
 /** The tab's tools in MCP's shape. Waits for the page to register them. */
 async function tabTools(ev) {
+    let hasWebMCP = false;
     for (let i = 0; i < 150; i++) {
-        const tools = await ev(`document.modelContext?.getTools?.().then((ts) =>
-            ts.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })))`).catch(() => null);
-        if (tools?.length) return tools.map((t) => ({ ...t, inputSchema: t.inputSchema ? JSON.parse(t.inputSchema) : { type: "object" } }));
+        const got = await ev(`(async () => {
+            const mc = document.modelContext;
+            if (!mc?.getTools) return { webmcp: false, loaded: location.protocol.startsWith("http") && document.readyState === "complete" };
+            return { webmcp: true, tools: (await mc.getTools()).map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) };
+        })()`).catch(() => null);
+        hasWebMCP ||= !!got?.webmcp;
+        // modelContext is there from the first script or never; no need to wait out the page.
+        if (got && !got.webmcp && got.loaded) break;
+        if (got?.tools?.length) return got.tools.map((t) => ({ ...t, inputSchema: t.inputSchema ? JSON.parse(t.inputSchema) : { type: "object" } }));
         await new Promise((r) => setTimeout(r, 200));
     }
-    throw new Error("the page registered no WebMCP tools in 30s (is card.url the page that registers them?)");
+    throw new Error(hasWebMCP
+        ? "the page registered no WebMCP tools in 30s (is card.url the page that registers them?)"
+        : "this browser has no WebMCP (document.modelContext.getTools): it needs Chrome 150+ with --enable-features=WebMCP, or a Chromium built with it");
 }
 
 /** One call, relayed. WebMCP takes the arguments as a JSON string and returns one. */
@@ -186,7 +254,14 @@ export function handlers(deps) {
     async function call(app, tool, args) {
         const o = findOpen(app);
         if (!o) throw new Error(`${app} is not open; call open-app first`);
-        return deps.tabCall(o.ev, tool, args);
+        try { return await deps.tabCall(o.ev, tool, args); }
+        catch (e) {
+            if (!/tab closed/.test(e.message)) throw e;
+            // The tab or the whole browser went away. Reopen once; the tools keep their names.
+            o.ev = await deps.openTab(o.page);
+            await deps.tabTools(o.ev);
+            return deps.tabCall(o.ev, tool, args);
+        }
     }
 
     const run = {
@@ -233,70 +308,74 @@ export function handlers(deps) {
 }
 
 // ── main / self-check ───────────────────────────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
-    if (process.argv[2] === "--selfcheck") {
-        const { PassThrough } = await import("node:stream");
-        const input = new PassThrough(), output = new PassThrough();
-        const replies = [];
-        createInterface({ input: output }).on("line", (l) => replies.push(JSON.parse(l)));
-        let opened = 0;
-        const deps = {
-            findApps: async () => ({ apps: [{ name: "Kings Foil", desc: "trials", card: "https://k.test/card", appId: "0xk", tools: ["greet"] }], rejected: [{}] }),
-            resolveCard: async () => ({ card: { name: "Kings Foil" }, page: "https://k.test/p", verified: true }),
-            openTab: async () => (opened++, "ev"),
-            tabTools: async () => [{ name: "greet", description: "Hi.", inputSchema: { type: "object" } }],
-            tabCall: async (ev, name, args) => (name === "boom" ? Promise.reject(new Error("no tool boom")) : text({ ev, name, args })),
-        };
-        deps.notify = serve(handlers(deps), { input, output });
-        const rpc = (id, method, params) => input.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-        const wait = () => new Promise((r) => setTimeout(r, 20));
-        const call = (id, name, args) => rpc(id, "tools/call", { name, arguments: args });
-        const res = (id) => replies.find((r) => r.id === id);
-        const body = (id) => JSON.parse(res(id).result.content[0].text);
-        const assert = (c, m) => { if (!c) throw new Error(m); };
-
-        rpc(1, "initialize", {}); rpc(2, "tools/list"); call(3, "list-apps", { query: "TRIAL" }); call(4, "kings-foil__greet"); await wait();
-        assert(res(1).result.capabilities.tools.listChanged, "advertises list_changed");
-        assert(res(2).result.tools.length === 3, "only the meta tools before anything is open");
-        assert(body(3).apps[0].app === "kings-foil" && body(3).unverified === 1, "list-apps filters and slugs");
-        assert(res(4).result.isError && /not open/.test(res(4).result.content[0].text), "an unopened app's tool is an error");
-
-        call(5, "open-app", { app: "Kings Foil" }); await wait();
-        call(6, "open-app", { app: "https://k.test/card" }); await wait();
-        assert(body(5).tools[0].name === "greet" && opened === 1, "open once, by name or by card URL");
-        assert(replies.some((r) => r.method === "notifications/tools/list_changed"), "opening notifies");
-        rpc(7, "tools/list"); call(8, "kings-foil__greet", { who: "a" }); call(9, "call-app-tool", { app: "kings-foil", tool: "greet" });
-        call(10, "call-app-tool", { app: "kings-foil", tool: "boom" }); call(11, "open-app", { app: "nope" }); rpc(12, "nope"); await wait();
-        assert(res(7).result.tools.some((t) => t.name === "kings-foil__greet"), "opened tools are listed under the app");
-        assert(body(8).args.who === "a" && body(9).name === "greet", "both call paths reach the tab");
-        assert(res(10).result.isError && res(11).result.isError, "failures are tool errors");
-        assert(res(12).error.code === -32601, "unknown method");
-        console.log("mcp.js self-check ok — one server, apps opened on demand, their tools listed as <app>__<tool>");
-        process.exit(0);
-    }
-
-    const argv = process.argv.slice(2);
-    const fb = argv.indexOf("--from-block");
-    const fromBlock = fb >= 0 ? BigInt(argv[fb + 1]) : DEFAULT_FROM_BLOCK;
-    const headed = argv.includes("--headed");
-    let found, foundAt = 0;
+// A command, not a module: installed as a bin, argv[1] is the symlink, so there is no is-main check.
+if (process.argv[2] === "--selfcheck") {
+    const { PassThrough } = await import("node:stream");
+    const input = new PassThrough(), output = new PassThrough();
+    const replies = [];
+    createInterface({ input: output }).on("line", (l) => replies.push(JSON.parse(l)));
+    let opened = 0;
     const deps = {
-        // ponytail: cached for a minute. The scan is a few RPC calls plus a fetch per card.
-        findApps: async () => {
-            if (!found || Date.now() - foundAt > 60_000) {
-                const { apps, rejected } = await listApps(await fangorn(), { fromBlock });
-                found = { rejected, apps: await Promise.all(apps.map(async (a) => {
-                    const card = await (await fetch(a.card)).json().catch(() => ({}));
-                    return { ...a, tools: card.skills?.filter((s) => s.tags?.includes("webmcp")).map((s) => s.id) ?? [] };
-                })) };
-                foundAt = Date.now();
-            }
-            return found;
-        },
-        resolveCard,
-        openTab: (page) => openTab(page, { headed }),
-        tabTools, tabCall,
+        findApps: async () => ({ apps: [{ name: "Kings Foil", desc: "trials", card: "https://k.test/card", appId: "0xk", tools: ["greet"] }], rejected: [{}] }),
+        resolveCard: async () => ({ card: { name: "Kings Foil" }, page: "https://k.test/p", verified: true }),
+        openTab: async () => (opened++ ? "ev" : "dead"),   // the first tab dies
+        tabTools: async () => [{ name: "greet", description: "Hi.", inputSchema: { type: "object" } }],
+        tabCall: async (ev, name, args) => (name === "boom" ? Promise.reject(new Error("no tool boom"))
+            : ev === "dead" ? Promise.reject(new Error("tab closed: x")) : text({ ev, name, args })),
     };
-    deps.notify = serve(handlers(deps));
-    log(`ready: apps from block ${fromBlock}, Chrome starts on the first open-app`);
+    deps.notify = serve(handlers(deps), { input, output });
+    const rpc = (id, method, params) => input.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    const wait = () => new Promise((r) => setTimeout(r, 20));
+    const call = (id, name, args) => rpc(id, "tools/call", { name, arguments: args });
+    const res = (id) => replies.find((r) => r.id === id);
+    const body = (id) => JSON.parse(res(id).result.content[0].text);
+    const assert = (c, m) => { if (!c) throw new Error(m); };
+
+    rpc(1, "initialize", {}); rpc(2, "tools/list"); call(3, "list-apps", { query: "TRIAL" }); call(4, "kings-foil__greet"); await wait();
+    assert(res(1).result.capabilities.tools.listChanged, "advertises list_changed");
+    assert(res(2).result.tools.length === 3, "only the meta tools before anything is open");
+    assert(body(3).apps[0].app === "kings-foil" && body(3).unverified === 1, "list-apps filters and slugs");
+    assert(res(4).result.isError && /not open/.test(res(4).result.content[0].text), "an unopened app's tool is an error");
+
+    call(5, "open-app", { app: "Kings Foil" }); await wait();
+    call(6, "open-app", { app: "https://k.test/card" }); await wait();
+    assert(body(5).tools[0].name === "greet" && opened === 1, "open once, by name or by card URL");
+    call(50, "kings-foil__greet", { who: "b" }); await wait();
+    assert(body(50).ev === "ev" && opened === 2, "a dead tab is reopened and the call retried");
+    assert(replies.some((r) => r.method === "notifications/tools/list_changed"), "opening notifies");
+    rpc(7, "tools/list"); call(8, "kings-foil__greet", { who: "a" }); call(9, "call-app-tool", { app: "kings-foil", tool: "greet" });
+    call(10, "call-app-tool", { app: "kings-foil", tool: "boom" }); call(11, "open-app", { app: "nope" }); rpc(12, "nope"); await wait();
+    assert(res(7).result.tools.some((t) => t.name === "kings-foil__greet"), "opened tools are listed under the app");
+    assert(body(8).args.who === "a" && body(9).name === "greet", "both call paths reach the tab");
+    assert(res(10).result.isError && res(11).result.isError, "failures are tool errors");
+    assert(res(12).error.code === -32601, "unknown method");
+    console.log("mcp.js self-check ok — one server, apps opened on demand, their tools listed as <app>__<tool>");
+    process.exit(0);
 }
+
+const argv = process.argv.slice(2);
+const fb = argv.indexOf("--from-block");
+const fromBlock = fb >= 0 ? BigInt(argv[fb + 1]) : DEFAULT_FROM_BLOCK;
+const headed = argv.includes("--headed");
+const ci = argv.indexOf("--cdp");
+const cdp = ci >= 0 ? argv[ci + 1] : process.env.FANGORN_MCP_CDP || undefined;
+let found, foundAt = 0;
+const deps = {
+    // ponytail: cached for a minute. The scan is a few RPC calls plus a fetch per card.
+    findApps: async () => {
+        if (!found || Date.now() - foundAt > 60_000) {
+            const { apps, rejected } = await listApps(await fangorn(), { fromBlock });
+            found = { rejected, apps: await Promise.all(apps.map(async (a) => {
+                const card = await (await fetch(a.card)).json().catch(() => ({}));
+                return { ...a, tools: card.skills?.filter((s) => s.tags?.includes("webmcp")).map((s) => s.id) ?? [] };
+            })) };
+            foundAt = Date.now();
+        }
+        return found;
+    },
+    resolveCard,
+    openTab: (page) => openTab(page, { headed, cdp }),
+    tabTools, tabCall,
+};
+deps.notify = serve(handlers(deps));
+log(`ready: apps from block ${fromBlock}; browser ${cdp ?? "local Chrome"}, connected on the first open-app`);

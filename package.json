@@ -28,8 +28,7 @@
     "./publish-cli": "./publish/cli.js",
     "./demand": "./publish/demand.js",
     "./steam": "./consume/steam.js",
-    "./tools": "./example/tools.js",
-    "./mcp": "./consume/mcp.js"
+    "./tools": "./example/tools.js"
   },
   "scripts": {
     "test": "node publish/terms.js && node publish/reactions.js && node publish/cohort.js && node publish/vault.js && node publish/graph.js && node publish/envelope.js && node publish/demand.js && node publish/settle.js && node publish/manifest.js && node publish/agent-card.js && node publish/cli.js --selfcheck && node publish/enrich.js && node consume/embed.js && node consume/rank.js && node consume/apps.js && node consume/mcp.js --selfcheck && node consume/roles.js && node consume/shard.js && node consume/directory.js && node consume/taste.js && node consume/steam.js && node consume/taste-doc.js && node consume/corpora.js && node consume/ui.js && node consume/lint.js && node example/tools.js",
@@ -43,9 +42,6 @@
   "peerDependenciesMeta": {
     "@huggingface/transformers": {
       "optional": true
-    },
-    "@fangorn-network/sdk": {
-      "optional": true
     }
   },
   "devDependencies": {
@@ -56,5 +52,12 @@
   "bin": {
     "westmarch-publish": "./publish/cli.js",
     "fangorn-mcp": "./consume/mcp.js"
-  }
+  },
+  "files": [
+    "consume",
+    "publish",
+    "example/tools.js",
+    "docs",
+    "README.md"
+  ]
 }

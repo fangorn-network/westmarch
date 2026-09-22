@@ -259,8 +259,18 @@ registration file's `ipfs://` URI, and its `A2A` endpoint is the card.
   once:
 
   ```sh
-  claude mcp add fangorn -- node /path/to/westmarch/consume/mcp.js
+  claude mcp add fangorn -- npx -y -p @fangorn/westmarch fangorn-mcp
   ```
+
+  or, for any MCP client:
+
+  ```json
+  { "mcpServers": { "fangorn": {
+      "command": "npx", "args": ["-y", "-p", "@fangorn/westmarch", "fangorn-mcp"],
+      "env": { "FANGORN_MCP_CDP": "ws://your-browser:9222" } } } }
+  ```
+
+  Drop `env` to use the local Chrome.
 
   It starts with three tools. `list-apps` reads the apps off the chain and keeps the ones
   whose cards verify. `open-app kingsfoil` verifies that app's card, opens `card.url` in a
@@ -269,10 +279,20 @@ registration file's `ipfs://` URI, and its `A2A` endpoint is the card.
   that don't refresh their tool list. A new app needs no new registration: it shows up in
   `list-apps` once its card is bound on chain.
 
-  It needs a local Chrome 150+ (`CHROME=/path/to/chrome` if it isn't `google-chrome`;
-  `--headed` to watch). The profile is kept under `~/.cache/westmarch-mcp/`, so page
-  downloads such as an embedding model happen once. `--from-block <n>` points it at another
-  deployment.
+  **Where the browser comes from.** Anything that speaks the Chrome DevTools Protocol and
+  has WebMCP will do: a headless Chromium service, a hosted browser, or the local Chrome.
+
+  | setting | browser |
+  |---|---|
+  | `FANGORN_MCP_CDP=http://host:9222` (or `--cdp`) | a running browser's DevTools address |
+  | `FANGORN_MCP_CDP=ws://host:9222/devtools/browser/…` | a browser WebSocket endpoint, which is what hosted services hand out |
+  | neither | the local Chrome 150+ (`CHROME=/path` if it isn't `google-chrome`), headless (`--headed` to watch) |
+
+  A remote browser is never closed. Only the tabs the server opened are. A local Chrome is
+  shared by every session on the machine and closes when the last one exits. Its profile
+  (`~/.cache/westmarch-mcp/`) keeps page downloads such as an embedding model.
+  `--from-block <n>` points the server at another deployment.
+
 - **Without a browser:** the views are plain HTTP (`<view>/cdn/catalog`, then the shards it
   names). Point `westmarch/consume/shard.js` at `views[i]`.
 - **The committed data itself:**
@@ -307,7 +327,8 @@ const { contents } = await fangorn.readNamespace(timelines[0].owner, namespaces[
 | `app agent` signs as the wrong wallet | `~/.fangorn/config.json` beats `ETH_PRIVATE_KEY` |
 | an agent opens the page and finds no tools | `card.url` is the site root, but the tools register on another page |
 | an agent's first call returns empty, later calls work | the tools registered before their data loaded (step 1) |
-| `fangorn-mcp`: "Chrome did not start" | another `fangorn-mcp` holds the profile in `~/.cache/westmarch-mcp` |
+| `fangorn-mcp`: "this browser has no WebMCP" | the browser at `FANGORN_MCP_CDP` (or the local Chrome) lacks `document.modelContext`; it needs Chrome 150+ with `--enable-features=WebMCP`, or a build with it on |
+| `fangorn-mcp`: "no browser: cannot launch google-chrome" | no local Chrome; set `FANGORN_MCP_CDP` |
 | the page isn't listed as a "Web" service on 8004scan | agent0-sdk has no web endpoint type; agents find the page through the card's `url` |
 
 ## Reference: Kingsfoil
