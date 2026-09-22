@@ -22,9 +22,9 @@
 // still well under a second. Past that, the directory needs its own coverage
 // index, which is the same trick one level up.
 
-import { loadShard, trimView } from "./shard.js";
+import { trimView } from "./shard.js";
 import { rankDomains, zFloor } from "./rank.js";
-import { toApp } from "./apps.js";
+import { listApps } from "./apps.js";
 
 /** Catalog URL for a view base, tolerating either form the registry prints. */
 const catalogUrl = (view) => `${trimView(view)}/cdn/catalog`;
@@ -43,8 +43,8 @@ async function readJson(url, timeoutMs) {
  * Every corpus a set of publishers offers, with what it is about and what it
  * costs — but not its contents.
  *
- * `sources` are view bases. A registry namespace (apps.js) resolves to a list of
- * them; this takes the list, so the directory works with a registry, a
+ * `sources` are view bases. The on-chain app list (apps.js) resolves to a list
+ * of them; this takes the list, so the directory works with a registry, a
  * hand-written array, or one URL a user pasted.
  *
  * A publisher that is down, slow, or serving something that isn't a catalog is
@@ -159,11 +159,12 @@ export async function findCorpora(query, { sources = [], embed, model, limit = 1
     };
 }
 
-/** Registry namespace → the view bases it lists. A thin pass-through of
- *  apps.js so a caller does not need both modules to run a survey. */
-export async function sourcesFromRegistry(registryUrl) {
-    const rows = await loadShard(trimView(registryUrl));
-    return rows.map(toApp).filter(Boolean);
+/** Every app bound on chain → the view bases their cards list, as survey()
+ *  sources. A thin pass-through of apps.js so a caller does not need both
+ *  modules to run a survey. Rejected cards come back beside the sources. */
+export async function sourcesFromChain(fangorn, opts) {
+    const { apps, rejected } = await listApps(fangorn, opts);
+    return { sources: apps.flatMap((a) => a.views.map((view) => ({ view, name: a.name, appId: a.appId }))), rejected };
 }
 
 // ── self-check: `node consume/directory.js` ─────────────────────────────────

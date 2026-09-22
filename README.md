@@ -2,6 +2,9 @@
 
 Everything you need to get started building apps with Fangorn.
 
+**Start here:** [docs/app-to-agent.md](docs/app-to-agent.md) takes a static site from nothing
+to a Fangorn app and ERC-8004 agent that any agent can discover, verify and drive.
+
 
 **For Publishers** — shape a tree into a commit graph, describe what's in it, seal and upload the bytes. Needs `fangorn`. Runs anywhere: a script, a server, a browser.
 
@@ -19,7 +22,7 @@ publish/                                       consume/
   lint.js      …and whether any of that WORKED   taste.js      what YOU like, portably
                                                  rank.js       rows + query → hits
                                                  embed.js      text → 256-d vector
-                                                 apps.js       the registry of apps
+                                                 apps.js       every app bound on chain
                                                  corpora.js    SEVERAL corpora, open at once
                                                  ui.js         previews, from the role_map
 ```

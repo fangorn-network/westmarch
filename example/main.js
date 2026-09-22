@@ -10,7 +10,7 @@
 // happens — arguments, latency, result size — because watching an agent work
 // out a corpus it has never seen is the thing worth looking at.
 import { configure, domainManifests, loadShard, setView, trimView, watchShard } from "@fangorn/westmarch/shard";
-import { findCorpora, sourcesFromRegistry } from "@fangorn/westmarch/directory";
+import { findCorpora, sourcesFromChain } from "@fangorn/westmarch/directory";
 import { follow, merge, session } from "@fangorn/westmarch/corpora";
 import { diversify } from "@fangorn/westmarch/rank";
 import { bars, rankedList, record, shapeOf, stage, stageItems, uiResource } from "@fangorn/westmarch/ui";
@@ -38,30 +38,39 @@ const Q = new URLSearchParams(location.search);
 // The archive bundle is 20 MB and paints as it streams, which is the right
 // trade for the one screen that has to make the case by itself.
 const DEMO = ["/archive-films", "/games", "/archive-transcripts", "/places"];
-// Every corpus this page can reach. A registry namespace resolves to exactly
-// this list (see directory.js `sourcesFromRegistry`); passing it directly means
-// the directory works from a pasted URL, a local file, or a chain-published
-// registry with no code change.
+// Every corpus this page can reach. The on-chain app list resolves to exactly
+// this list (see directory.js `sourcesFromChain`); passing it directly means
+// the directory works from a pasted URL, a local file, or the chain with no
+// code change.
 let SOURCES = (Q.get("sources") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 if (!SOURCES.length) SOURCES = DEMO;
 const VIEW = Q.get("view") ?? SOURCES[0];
-// …or `?registry=<view>`, a quickbeam view holding the `apps:` namespace. Same
-// list either way — the registry is a baked domain like any other, so discovery
-// of publishers is a shard read, not an API. This is the difference between a
-// page that knows about the corpora someone typed into its URL and one that
-// finds what has been registered on chain since it was written.
-const REGISTRY = Q.get("registry") ?? "";
+// …or `?fromBlock=<n>`: every app whose owner bound an agent card on chain, and the
+// views those cards list. The AppRegistry's AppAgentChanged log is the
+// directory, so this page finds apps registered after it was written, and asks
+// no server but the RPC. The SDK loads only when asked for; the default page
+// does not pay for it. `n` is where the log scan starts: at or before the
+// AppRegistry's deployment. The deployer knows it; the page cannot find it.
+const FROM_BLOCK = Q.get("fromBlock") ?? "";
 let PUBLISHERS = [];
 async function discover() {
-    if (!REGISTRY) return;
+    if (!FROM_BLOCK) return;
     try {
-        PUBLISHERS = await sourcesFromRegistry(REGISTRY);
-        // Objects, not strings: the directory carries publisher name and owner
+        if (!/^\d+$/.test(FROM_BLOCK)) throw new Error(`?fromBlock must be a block number, got ${JSON.stringify(FROM_BLOCK)}`);
+        const { Fangorn, FangornConfig } = await import("@fangorn-network/sdk");
+        const { generatePrivateKey } = await import("viem/accounts");
+        // ponytail: throwaway key. discoverApp and the log scan only read, but
+        // Fangorn.create insists on a signer. A read-only create would drop this.
+        const fangorn = Fangorn.create({ privateKey: generatePrivateKey(), config: FangornConfig });
+        const { sources, rejected } = await sourcesFromChain(fangorn, { fromBlock: BigInt(FROM_BLOCK) });
+        if (rejected.length) console.warn("apps with cards that did not verify —", rejected);
+        PUBLISHERS = sources;
+        // Objects, not strings: the directory carries the app's name and id
         // through to every listing, so an agent can say WHOSE corpus it opened.
         SOURCES = [...PUBLISHERS, ...SOURCES];
     } catch (e) {
-        console.warn(`registry ${REGISTRY} unreadable —`, e);
-        $("dirMeta").textContent = `registry unreadable: ${e.message}`;
+        console.warn("on-chain app list unreadable —", e);
+        $("dirMeta").textContent = `app list unreadable: ${e.message}`;
     }
 }
 configure({
@@ -760,7 +769,7 @@ function register(mc) {
         }),
         run: async ({ query = "", limit = 10 }) => {
             if (!SOURCES.length) {
-                return { note: "No directory configured. Pass ?sources=<viewUrl,viewUrl> — or a registry namespace, which resolves to the same list." };
+                return { note: "No directory configured. Pass ?sources=<viewUrl,viewUrl> — or ?fromBlock=<n>, which lists every app bound on chain since block n." };
             }
             const r = await findCorpora(query, {
                 sources: SOURCES, embed: embedQuery, model: EMBED_MODEL, limit,
