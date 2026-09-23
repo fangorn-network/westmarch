@@ -7,9 +7,9 @@ browser and any agent can find, verify and query. By the end you have:
 - **a schema** committed on chain: what your data's types are, which field is what, and
   which relations are allowed between them;
 - **your data** committed on chain under your namespace;
-- **a quickbeam view** of it: embedded, sharded and served for you, and kept current as
-  you commit;
-- **a static site** with no server and no embedding of its own: a page for people;
+- **a view** of it: your committed data embedded and sharded as static files, so people
+  and agents can search it by meaning, updated with one command after each commit;
+- **a static site** with no server: the view, and a page for people;
 - **an agent card** bound to the app on chain, and registered as an ERC-8004 agent;
 - **agents using it:** anyone running `fangorn-mcp` can `open-app` it by name.
 
@@ -20,35 +20,38 @@ which anything can produce: a scraper, a database export, a converted spreadshee
  your data ─► data/graph.json ─► fangorn commit/push ─┐
  schema/graph.json ─► fangorn commit/push ────────────┤  (namespace fangorn.schema)
                                                       ▼
-                                                    chain ─► quickbeam watches the app
-                                                              embeds each commit, applies the schema,
-                                                              serves the view at {registry}/q/{viewId}
-                                                                        │
- app/ (page) ─► vite build ─► site/ ◄── the page loads the view ◄───────┤
- pipeline/agent-card.mjs ─► site/.well-known/agent-card.json (views: [the view]) ─► deploy
+                                                    chain ─► westmarch-view ─► site/view/
+                                                             (embeds only what changed, applies the schema)
+ app/ (page) ─► vite build ─► site/ ◄── the page loads site/view
+ pipeline/agent-card.mjs ─► site/.well-known/agent-card.json (views: [site/view]) ─► deploy
                                                                         │
  fangorn app agent ─► ERC-8004 registration + AppRegistry agent_uri = card URL
                                                                         │
  fangorn-mcp: open-app my-app ─► reads the binding, verifies the card, searches the view
 ```
 
-**Who does what.** You commit data and a schema; that's all the data work you do.
-quickbeam turns commits into a searchable view: it embeds on a GPU, ships only what each
-commit changed (removals included), and fits the routing sketch agents use. You don't run
-it: Fangorn runs a hosted instance, and you ask it to watch your app (step 7). You can
-also run it yourself (see the quickbeam README).
+**Two tiers, one format.**
+- **Free, local:** `westmarch-view` (step 7). It turns your commits into a view on your
+  own machine or CI. It embeds on CPU, ~14 records/s, only what changed since the last
+  run, and you host the files with your site.
+- **Hosted:** quickbeam watches apps on chain, embeds on a GPU, and serves the view
+  itself. It will also do things one app's files can't, such as state across apps. It
+  writes the same files, so moving an app to it means changing the `views` URL in its
+  card.
 
 It runs on Arbitrum Sepolia. **What was run:**
 
-- **Steps 4–7, without the chain, on 2026-09-23:** the guide's example schema and data
-  went through quickbeam's real watcher (in-memory Qdrant, CPU embedding) into a view
-  served by `quickbeam cdn serve`. `lint.js` found nothing to fix, and westmarch's data
-  tools searched it by meaning with the declared links.
+- **Step 7's `westmarch-view`, against a stand-in chain:** its self-check runs the whole
+  cycle and the real reader. That covers a schema, a first run, a run with nothing new,
+  a changed and a removed record, and a rebake. Its domain names and embedded text were
+  checked byte-for-byte against quickbeam's.
+- **quickbeam, with the same schema and data, without the chain:** the output linted
+  clean and searched by meaning with the declared links.
 - **Steps 8–9** (page, card) were run against a local view: the page's tools worked in
   headless Chrome.
 - **Chain steps (1–3, 10)** were run for Kingsfoil, the reference app at the end.
-- **Not run yet:** `commit`/`push` for a new app, view creation (step 7), and the hosted
-  quickbeam instance with schema support, which needs to be deployed first.
+- **Not run yet:** `commit`/`push` for a new app, and `westmarch-view` reading it back from
+  the chain. No app has data under the current contracts yet.
 
 ## What you need
 
@@ -57,8 +60,6 @@ It runs on Arbitrum Sepolia. **What was run:**
 - A wallet on Arbitrum Sepolia with a little ETH. **It owns the app forever**, so use the
   wallet that will publish the data.
 - A Pinata JWT. Registering the ERC-8004 agent (step 11) pins a file to IPFS.
-- An active Fangorn storage subscription for that wallet: the hosted quickbeam watches
-  apps for subscribers (step 7).
 - A static host that serves `/.well-known/` and custom headers. Cloudflare Pages does
   both, and is what the commands below use.
 
@@ -70,8 +71,8 @@ npm i @fangorn-network/westmarch @huggingface/transformers vite
 mkdir -p data schema pipeline app
 ```
 
-The Fangorn SDK and viem come with westmarch as peer dependencies. transformers is only
-for the page: it embeds the reader's query in their browser, never your data.
+The Fangorn SDK and viem come with westmarch as peer dependencies. transformers embeds:
+your records in `westmarch-view`, and the reader's query in their browser.
 
 ## 1. Set up the CLI
 
@@ -156,7 +157,7 @@ The schema says what your data is. You commit it to a reserved namespace,
 - **Types:** each is a vertex tagged `fangorn.type.v1`.
 - **Relations:** the relations allowed between types are edges between those vertices.
 
-quickbeam reads it for every record it embeds, so it decides:
+`westmarch-view` (and hosted quickbeam) read it for every record they embed, so it decides:
 - **what gets embedded:** the `text` role, plus title, subtitle and tags;
 - **what readers see:** titles, links, labels;
 - **what agents can do:** filters, counts, and choosing among views by their description.
@@ -202,9 +203,9 @@ schema is committed from its own `schema/` folder.
   field called `desc` or `nct` isn't recognized, and a `price` can end up as the date.
   Declare every type you publish.
 - **Only the app owner's schema counts.** Any publisher can write a namespace called
-  `fangorn.schema`; quickbeam ignores all but the owner's.
-- **You can change it at any time** with another commit. Views update their role map and
-  description at once. **Records already embedded keep the text they were embedded
+  `fangorn.schema`; only the owner's is read.
+- **You can change it at any time** with another commit. A view takes the new role map and
+  description on its next `westmarch-view` run. **Records already embedded keep the text they were embedded
   with** until they're re-embedded, so change the `text` role early.
 - **Relations** (edges between type vertices, e.g. `{ "rel": "grows_in", "from": "tree",
   "to": "region" }`) declare which edges the app allows. Nothing enforces them yet; they
@@ -223,39 +224,38 @@ fangorn push                                              # the on-chain transac
 removed. Without it, the commit adds to what's already there. `fangorn status` compares
 your local tip with the one on chain.
 
-## 7. Get a quickbeam view
-
-A view is a named set of namespaces that quickbeam watches and serves. One view per app,
-over every publisher in it, is the usual shape:
-
-For now a view is created with a signed request, via the registry's example script
-(`webworker/quickbeam-registry/examples/manage-views.mjs`). A CLI command or a page for it
-is still to come.
+## 7. Publish the view
 
 ```sh
-node manage-views.mjs --worker https://quickbeam-registry.quickbeam.workers.dev \
-  --key $PRIVATE_KEY --app my-app --name my-app --source '*:*'
-# → id qb_…, cdnUrl https://quickbeam-registry.quickbeam.workers.dev/q/qb_…/cdn
+npx westmarch-view --app my-app --namespace my-app --out site/view --from-block 311700000
+# my-app: 1 publisher(s) since block 311700000
+# …-my-app: +20 embedded, -0 removed, 20 live
 ```
 
-The key only signs, locally; it's never sent. The view is `…/q/<id>` (the `cdnUrl` without
-`/cdn`). That URL goes in the page (step 8) and the card (step 9). `--source '*:*'` covers
-every publisher and namespace in the app, so data from publishers who join later shows up
-without a new view.
-
-After each push, quickbeam:
-- embeds the records that commit added or changed;
-- ships them as a new shard;
-- marks removed ones as deleted;
-- applies your schema;
+It reads the chain and writes files; it needs no key. For every publisher of each
+`--namespace` in the app, it:
+- reads their records;
+- embeds the ones the view doesn't hold yet, with your schema's roles;
+- marks the ones that were removed as deleted;
+- writes a new shard;
 - refits the coverage sketch once the view has doubled.
+
+The view's own files are its state, so a second run with nothing new on chain changes
+nothing, and it runs the same on a laptop, in CI, or from an agent. The first run
+downloads the embedding model (131 MB, kept in `~/.cache/fangorn-mcp/models`, shared with
+`fangorn-mcp`). Use `--from-block` with the block you noted in step 2.
+
+```
+site/view/cdn/catalog                                   every publisher's domain, with descriptions and coverage
+site/view/cdn/domains/<app>-<publisher>-<ns>/manifest   role map, embedder, shards with their sha256, tombstones
+site/view/cdn/domains/<app>-<publisher>-<ns>/shards/shard-NNNN-<sha>.ndjson.gz
+```
 
 Check it the way a reader will:
 
 ```sh
-VIEW=https://quickbeam-registry.quickbeam.workers.dev/q/qb_…
-curl -s $VIEW/cdn/catalog | head -c 400
-node node_modules/@fangorn-network/westmarch/consume/lint.js $VIEW
+(cd site && python3 -m http.server 8765 &)
+node node_modules/@fangorn-network/westmarch/consume/lint.js http://127.0.0.1:8765/view
 # …-my-app — 20 rows — nothing to fix
 ```
 
@@ -266,11 +266,15 @@ node node_modules/@fangorn-network/westmarch/consume/lint.js $VIEW
 
 The fix for most findings is in the schema (step 5).
 
+A view remembers which embedder made it, and `westmarch-view` refuses to add to a view
+another one built. Vectors from two encoders don't compare. Pass `--rebake` to start
+a view over.
+
 ## 8. The page
 
 A page for people, with the same search exposed to agents in the browser as WebMCP tools.
-It reads the quickbeam view directly: shards are checked against their manifests'
-sha256, the query is embedded in the reader's tab, and nothing about the query leaves it.
+It reads the view: shards are checked against their manifests' sha256, the query is
+embedded in the reader's tab, and nothing about the query leaves it.
 
 ```js
 // app/agent.js — the page's tools for agents in a browser. `ctx` holds the loaded rows.
@@ -305,7 +309,7 @@ import { search } from "@fangorn-network/westmarch/tools";
 import { embedQuery } from "@fangorn-network/westmarch/embed";
 import { registerAgent } from "./agent.js";
 
-export const VIEW = "https://quickbeam-registry.quickbeam.workers.dev/q/qb_…";   // step 7
+export const VIEW = new URL("view", location.href).href;   // step 7
 
 const ctx = { rows: [], roles: rolesFrom([]), queryVector: (q) => embedQuery(q).catch(() => null) };
 configure({ onManifests: (ms) => { ctx.roles = rolesFrom(ms); }, rowText: (f) => textOf(f, ctx.roles) });
@@ -347,7 +351,7 @@ export default {
     // westmarch's embedder finds its worker by `new URL(…, import.meta.url)`;
     // pre-bundling loses that and search silently drops to word matching.
     optimizeDeps: { exclude: ["@fangorn-network/westmarch"] },
-    build: { outDir: "../site", emptyOutDir: true },
+    build: { outDir: "../site", emptyOutDir: false },   // keep site/view
 };
 ```
 
@@ -368,12 +372,12 @@ exactly what the page registers. No `execute` runs.
 
 ```js
 // pipeline/agent-card.mjs — site/ → site/.well-known/agent-card.json + site/_headers
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { agentCard, captureTools } from "@fangorn-network/westmarch/agent-card";
 import { registerAgent } from "../app/agent.js";
 
 const SITE = "https://my-app.pages.dev";
-const VIEW = "https://quickbeam-registry.quickbeam.workers.dev/q/qb_…";   // step 7
+const VIEW = `${SITE}/view`;   // step 7; a hosted quickbeam view's URL goes here instead
 
 const card = agentCard({
     name: "My App",
@@ -392,11 +396,15 @@ const card = agentCard({
 mkdirSync("site/.well-known", { recursive: true });
 writeFileSync("site/.well-known/agent-card.json", JSON.stringify(card, null, 1));
 
-// The card is read from other origins, so it needs CORS. The bundles are named by
-// their digest, so they never change: tell caches so.
+// The card is read from other origins, so it needs CORS, and so does the view, for
+// agents and pages elsewhere. Bundles and shards are named by their digest, so they
+// never change: tell caches so. (Pages allows one * per rule, hence a rule per domain.)
+const immutable = "  Cache-Control: public, max-age=31536000, immutable\n";
 writeFileSync("site/_headers",
     "/.well-known/agent-card.json\n  Access-Control-Allow-Origin: *\n"
-    + "/assets/*\n  Cache-Control: public, max-age=31536000, immutable\n");
+    + "/view/*\n  Access-Control-Allow-Origin: *\n"
+    + `/assets/*\n${immutable}`
+    + readdirSync("site/view/cdn/domains").map((d) => `/view/cdn/domains/${d}/shards/*\n${immutable}`).join(""));
 ```
 
 ```sh
@@ -464,15 +472,18 @@ the binding points back at exactly that URL. Only then does it add the tools.
 
 ## 13. Update it
 
-New or changed data is a commit, and nothing else:
+New or changed data is a commit, then the view, then a deploy:
 
 ```sh
 node pipeline/graph.mjs && fangorn commit data/graph.json -m "…" --replace && fangorn push
+npx westmarch-view --app my-app --namespace my-app --out site/view --from-block 311700000
+node pipeline/agent-card.mjs && npx wrangler pages deploy site --project-name my-app
 ```
 
-quickbeam picks it up. The page and agents see it on their next load, since the view URL,
-the card and the on-chain binding all stay the same. Rebuild and redeploy the site only
-when the page changes. Run `fangorn app agent` again only if the card moves.
+Only what changed is embedded and uploaded. The page and agents see it on their next
+load, since the view URL, the card and the on-chain binding all stay the same. Run
+`fangorn app agent` again only if the card moves. Anything that can run those three lines
+can keep an app current: a cron job, a CI workflow, or an agent that just published.
 
 ---
 
@@ -626,7 +637,9 @@ const { contents } = await fangorn.readNamespace(timelines[0].owner, namespaces[
 | an agent opens the page and finds no tools | `card.url` is not the page that registers them |
 | `search` ignores what records say, or titles are ids | the type isn't declared in the schema, so its roles were guessed; declare it (step 5) |
 | a schema change didn't change search results | records keep the text they were embedded with; only newly embedded records use the new `text` role |
-| the view is empty after a push | quickbeam isn't watching the app (step 7), or the push hasn't landed; `fangorn status` |
+| the view is empty after a push | `westmarch-view` wasn't rerun, `--from-block` is after your commits, or the push hasn't landed (`fangorn status`) |
+| `westmarch-view`: "vectors from two encoders are not comparable" | the view was built by another embedder (e.g. quickbeam); `--rebake`, or keep publishing it with that tool |
+| `westmarch-view` runs for minutes before doing anything | `--from-block` is far too early; the log scan is 1000 blocks per call |
 | lint: "nowhere to go" | no `presentation.externalUrl` in the schema, so a hit links nowhere |
 | `fangorn-mcp`: "this browser has no WebMCP" | page tools only: the browser lacks `document.modelContext`; it needs Chrome 150+ with `--enable-features=WebMCP` |
 | `fangorn-mcp`: "no browser: cannot launch google-chrome" | page tools only: no local Chrome; set `FANGORN_MCP_CDP` |

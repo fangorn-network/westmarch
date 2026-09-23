@@ -200,7 +200,10 @@ export function getRow(rows, id, roles) {
     // id first, then whatever the publisher calls a title — an agent that read a
     // title off a search result and passed it back must land on the same row.
     if (!id) return null;   // else `x.path === undefined` matches the first row lacking one
+    // A view built from commits keys rows by vertex CID, so the publisher's own id
+    // (the declared identity field) has to find them too.
     const r = rows.find((x) => x.id === id)
+        ?? (roles?.identity ? rows.find((x) => String(x[roles.identity]) === String(id)) : null)
         ?? rows.find((x) => x.path === id || x.name === id || titleOf(x, roles) === id);
     if (!r) return null;
     const { vector, norm: _n, ...rest } = r;
