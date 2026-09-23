@@ -212,7 +212,7 @@ export function withProvenance(t, { carried = null, likes = [], dislikes = [] } 
 }
 
 // ── self-check: `node consume/taste.js` ─────────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/taste.js")) {
 
     // recommend() returns {row, score} — NOT {row, s}. kingsfoil's agent read
     // h.s and reported every recommendation with score: undefined.

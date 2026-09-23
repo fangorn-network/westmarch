@@ -69,7 +69,7 @@ export async function listApps(fangorn, { fromBlock, toBlock } = {}) {
 }
 
 // ── self-check: `node consume/apps.js` ──────────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/apps.js")) {
     const j = (x) => JSON.stringify(x, (_, v) => (typeof v === "bigint" ? `${v}n` : v));
     const eq = (a, b, m) => { if (j(a) !== j(b)) throw new Error(`${m}: ${j(a)} != ${j(b)}`); };
     const A = "0x" + "a".repeat(64), B = "0x" + "b".repeat(64), C = "0x" + "c".repeat(64);

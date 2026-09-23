@@ -183,7 +183,7 @@ export function treeFromGraph(contents) {
 // `process` doesn't exist in the browser, and consumers import nest() from here
 // to build a viewer tree — so this guard has to survive being evaluated by a
 // browser.
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/graph.js")) {
     // sond3r's pinned names, which is also the case with every option exercised.
     const SOND3R = {
         file: "video",

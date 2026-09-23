@@ -1,4 +1,4 @@
-# @fangorn/westmarch
+# @fangorn-network/westmarch
 
 Everything you need to get started building apps with Fangorn.
 
@@ -235,7 +235,7 @@ like: a short file that holds the constants still and re-exports the rest.
 ## What an app has to wire
 
 ```js
-import { configure } from "@fangorn/westmarch/shard";
+import { configure } from "@fangorn-network/westmarch/shard";
 
 configure({
   // How to learn WHICH view to read. A callback, not a constant: a view id

@@ -1,169 +1,384 @@
-# From app to agent: registering and discovering a runtime-free backend
+# From nothing to a running Fangorn app
 
-This walks one static site from nothing to "any agent can find it and use it":
+This walks an app owner from an empty directory to a live app that people can use in a
+browser and any agent can find, verify and query. By the end you have:
 
-1. The site exposes WebMCP tools and an A2A agent card.
-2. You claim a Fangorn app and point it at that card.
-3. You register the card as an ERC-8004 agent, which makes it publicly searchable.
-4. Someone who has never heard of it discovers it, verifies it, and drives it.
+- **an app** claimed on Fangorn, owned by your wallet;
+- **your data** committed on chain under your namespace;
+- **a static site** with no server: the data as searchable views, and a page for people;
+- **an agent card** bound to the app on chain, and registered as an ERC-8004 agent;
+- **agents using it:** anyone running `fangorn-mcp` can `open-app` it by name.
 
-It runs on Arbitrum Sepolia. Steps 1–5 and 7 were run against the live chain (step 6's
-publish commands are from the CLI's help and have not been run for Kingsfoil yet); [Kingsfoil](#reference-kingsfoil) is the worked example, and its real values are
-at the end.
+Where the data comes from is up to you. The guide starts from a JSON array of objects,
+which anything can produce: a scraper, a database export, a converted spreadsheet.
 
 ```
- ERC-8004 identity registry ──(A2A endpoint)──┐
-   (searchable on 8004scan)                   ▼
-                                  https://your.site/.well-known/agent-card.json
- Fangorn AppRegistry ──(agent_uri)────────────▲   │
-   AppAgentChanged log = the app directory        │ card names appId, fromBlock,
-                                                  │ namespaces, views, WebMCP tools
-                                                  ▼
-                  https://your.site/tools-page  ← a browser, or fangorn-mcp driving Chrome
-                  document.modelContext tools, static shards, no server
+ your data ──► data/rows.json ──► pipeline/bake.mjs ─┬─► data/graph.json ──► fangorn commit/push ──► chain
+                                                     └─► site/v1/  (the view: catalog, manifest, shard)
+ app/ (page + WebMCP tools) ──► vite build ──► site/
+ pipeline/agent-card.mjs ──► site/.well-known/agent-card.json ──► deploy ──► fangorn app agent
+                                                                              │
+ ERC-8004 identity registry ◄── registration file (card URL) ◄────────────────┤
+ Fangorn AppRegistry ◄── agent_uri = card URL ◄───────────────────────────────┘
+        ▲
+        └── fangorn-mcp: open-app my-app → reads the binding, verifies the card, searches site/v1
 ```
+
+It runs on Arbitrum Sepolia. **What was run:**
+
+- Steps 4, 5 and 7–8 (bake, lint, page, card) and the data tools were run end to end on
+  this guide's example on 2026-09-23. That covered: bake and lint, the page's tools in
+  headless Chrome, and search by meaning through the data tools.
+- The chain steps (1–3, 10) were run for Kingsfoil, the reference app at the end.
+- Step 6 (`repo init`/`commit`/`push`) is checked against the CLI source, but has not been
+  run for an app yet.
 
 ## What you need
 
-- Node 22, and the SDK/CLI: `npm i -g @fangorn-network/sdk@2026.9.22-dev` (gives `fangorn`)
-- A wallet on Arbitrum Sepolia with a little ETH. **It owns the app forever**; use the
+- Node 22.
+- The Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.9.22-dev` (gives `fangorn`).
+- A wallet on Arbitrum Sepolia with a little ETH. **It owns the app forever**, so use the
   wallet that will publish the data.
-- A Pinata JWT. ERC-8004 registration pins a registration file to IPFS.
-- A static host that serves `/.well-known/` and custom headers (Cloudflare Pages does both).
-- `@fangorn/westmarch` for the card generator and the discovery helpers.
+- A Pinata JWT. Registering the ERC-8004 agent (step 10) pins a file to IPFS.
+- A static host that serves `/.well-known/` and custom headers. Cloudflare Pages does
+  both, and is what the commands below use.
 
-Configure the CLI once:
+Start the project:
 
 ```sh
-fangorn init          # writes ~/.fangorn/config.json: key, Pinata JWT, gateway
-fangorn wallet        # confirm which address will sign
+mkdir my-app && cd my-app && npm init -y && npm pkg set type=module
+npm i @fangorn-network/westmarch @huggingface/transformers vite
+mkdir -p data pipeline app
+```
+
+The Fangorn SDK and viem come with westmarch as peer dependencies. A cold install took
+about 4 minutes with bun; most of it is transformers, the embedding library.
+
+## 1. Set up the CLI
+
+```sh
+fangorn init              # writes ~/.fangorn/config.json: key, Pinata JWT, gateway
+fangorn wallet            # confirm which address will sign
+fangorn set-app my-app    # the app every later command uses; --app <name> overrides it once
 ```
 
 > The config file wins over `ETH_PRIVATE_KEY` in the environment. If `fangorn wallet`
 > shows the wrong address, that's why.
 
-## 1. Expose tools with WebMCP
+## 2. Claim the app
 
-The site's agent surface is a function that registers tools on `document.modelContext`.
-Guard it, since most browsers don't have WebMCP yet:
-
-```js
-// app/agent.js
-import { search, getRow } from "@fangorn/westmarch/tools";
-
-const ok = (o) => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
-
-export function registerAgent(ctx) {
-    const mc = document.modelContext;
-    if (!mc?.registerTool) return 0;
-    mc.registerTool({
-        name: "search-rows",
-        description: "Search the corpus by meaning. Call this first.",
-        inputSchema: { type: "object", properties: { query: { type: "string" } } },
-        execute: async ({ query }) => ok(search(ctx.rows(), query, ctx.roles(), { qv: await ctx.queryVector(query) })),
-    });
-    // …more tools
-}
-```
-
-Call it only once the data the tools read has loaded, not at module top level. A human
-clicks after the page has settled; an agent calls the moment a tool appears, and a tool
-that answers before its data exists answers wrong without erroring. (Kingsfoil's first
-search routed to zero areas until its tools waited for `routes.json`.)
-
-```js
-const data = await loadIndex();   // whatever the tools read
-registerAgent(ctxOver(data));
-```
-
-`@fangorn/westmarch/tools` holds verbs that work on any corpus (describe, search, browse,
-facet, get, neighbours). Add a domain verb only when the generic ones can't express it.
-
-## 2. Generate the agent card
-
-A WebMCP tool only exists inside a loaded tab, so the card is the only machine-readable
-record that the tools exist. Don't write the tool list by hand. `captureTools` runs your
-register function against a recording stub, so the card lists exactly what the browser
-registers. No `execute` runs during capture.
-
-```js
-// pipeline/agent-card.mjs — run at build time, after the site is built
-import { writeFileSync, mkdirSync } from "node:fs";
-import { agentCard, captureTools } from "@fangorn/westmarch/agent-card";
-import { registerAgent } from "../app/agent.js";
-
-const tools = await captureTools(() => registerAgent({}));
-const card = agentCard({
-    name: "My App",
-    description: "What a stranger gets from this, in two sentences.",
-    url: "https://my-app.pages.dev/tools.html", // the page that REGISTERS the tools, not just the site
-    version: "2026-09-22",
-    tools,
-    tags: ["my-app"],
-    fangorn: {
-        app: "my-app",                          // the name you will claim in step 4
-        fromBlock: 311671082,                   // see below
-        namespaces: ["my-app"],                 // where your data is published
-        views: ["https://my-app.pages.dev/v1"], // baked quickbeam views, if any
-    },
-});
-
-mkdirSync("site/.well-known", { recursive: true });
-writeFileSync("site/.well-known/agent-card.json", JSON.stringify(card, null, 1));
-// Discovery runs in other sites' tabs: without CORS the browser won't hand over the card.
-writeFileSync("site/_headers", "/.well-known/agent-card.json\n  Access-Control-Allow-Origin: *\n");
-```
-
-The `fangorn` block becomes an A2A extension (`https://fangorn.network/a2a/app/v1`) holding
-the chain, the registry addresses (taken from the SDK, so they can't drift), your appId,
-`fromBlock`, `namespaces` and `views`. `agentCard` validates these fields the same way
-readers will, so a bad card fails your build, not someone else's discovery.
-
-**`fromBlock`** is where readers start scanning for your data. Set it to the current block
-**before** you claim the app:
+First, note the current block. It becomes the card's `fromBlock` (step 8), which is where
+readers start scanning the chain for your app:
 
 ```sh
 node -e 'const {createPublicClient,http}=require("viem");const {arbitrumSepolia}=require("viem/chains");
 createPublicClient({chain:arbitrumSepolia,transport:http()}).getBlockNumber().then(String).then(console.log)'
 ```
 
-Too early is only slow: readers query logs 1000 blocks per call. Leave it at 0 and a reader
-makes hundreds of thousands of calls.
-
-**Hard-code these values once the app is claimed.** A rebuild that drops the extension
-publishes a card that every reader rejects.
-
-## 3. Deploy and check the card
+Then claim the name:
 
 ```sh
-npx wrangler pages deploy site --project-name my-app
-curl -sD - https://my-app.pages.dev/.well-known/agent-card.json -o /dev/null | grep -iE "^HTTP|content-type|access-control"
-# HTTP/2 200 · content-type: application/json · access-control-allow-origin: *
-```
-
-The card has to be live before step 5, because the CLI fetches it.
-
-## 4. Claim the app
-
-```sh
-fangorn --app my-app app info     # "unclaimed", and the wallet you expect
-fangorn --app my-app app claim    # first come, first served; permanent
+fangorn app info     # "unclaimed", and the wallet you expect
+fangorn app claim    # first come, first served; permanent
 ```
 
 With no flags, `claim` uses placeholder terms. Publish real ones later with
 `fangorn app terms <hash> <uri>`; anyone who joined under the old terms has to accept again.
-`--fee <wei>` sets a join fee.
+`--fee <wei>` sets what joining costs other publishers.
 
-## 5. Register the agent and bind the card
+## 3. Become a publisher in it
+
+Owning the app makes you its first publisher. You still need global standing:
 
 ```sh
-fangorn --app my-app app agent https://my-app.pages.dev/.well-known/agent-card.json
-# Agent ID:  421614:226
+fangorn register     # DataRegistry.register(), then joins this app
+fangorn app info     # DataRegistry: registered · This app: joined
+```
+
+Without the join, every push reverts with `NotRegisteredForApp`.
+
+## 4. Your data, as rows
+
+`data/rows.json` is an array of flat objects:
+
+```json
+[
+ { "id": "oak", "name": "Oak", "species": "Quercus robur", "family": "Fagaceae", "region": "Europe",
+   "description": "Long-lived deciduous tree with lobed leaves and acorns; hard durable timber …" },
+ { "id": "baobab", "name": "Baobab", "species": "Adansonia digitata", "family": "Malvaceae", "region": "Africa",
+   "description": "Massive trunk stores water through the dry season; fruit pulp is rich in vitamin C." }
+]
+```
+
+What makes rows work well:
+
+- **A stable id.** The same thing keeps the same id across re-publishes.
+- **Text that says what the row is, in words.** This is what gets embedded, so it's what
+  "search by meaning" matches. A title alone is weak; a sentence or a paragraph is good.
+- **Fields worth filtering or counting on**, such as a category, a region, or a date. Agents
+  use these with `where` and `count`.
+
+## 5. Bake: the commit and the view
+
+One script turns the rows into both outputs: the graph you commit (step 6) and the view
+readers load.
+
+```js
+// pipeline/bake.mjs — data/rows.json → data/graph.json (the commit) + site/v1 (the view)
+import { readFileSync, writeFileSync } from "node:fs";
+import { bakeView } from "@fangorn-network/westmarch/view";
+
+const rows = JSON.parse(readFileSync("data/rows.json", "utf8"));
+
+// The commit: every row as a vertex. `tag` is a free-form schema id.
+writeFileSync("data/graph.json", JSON.stringify({
+    vertices: rows.map((r) => ({ id: r.id, tag: "my-app.tree.v1", payload: r })),
+}));
+
+// The view: which field is what, then embed and write the files readers load.
+await bakeView(rows, {
+    out: "site/v1",
+    name: "trees",
+    description: "Tree species: what they are, where they grow, and what they are good for.",
+    type: "Tree",
+    presentation: { externalUrl: { Tree: "https://en.wikipedia.org/wiki/{species}" } },
+    roleMap: { identity: "id", title: "name", subtitle: "species", tags: ["family", "region"], text: ["description"] },
+    owner: process.env.OWNER,   // your wallet, stamped on each row
+    onProgress: (n, of) => n % 100 === 0 || n === of ? console.log(`embedded ${n}/${of}`) : null,
+});
+```
+
+```sh
+OWNER=$(fangorn wallet | awk '/^Address/ {print $2}') node pipeline/bake.mjs
+```
+
+**`roleMap`** tells every reader which field is what, so no app code has to know your
+schema:
+
+| role | means | used for |
+|---|---|---|
+| `identity` | the id field (required) | `get`, links, updates |
+| `text` | the field(s) to embed (required) | search by meaning |
+| `title`, `subtitle` | what a hit is called | result lists |
+| `tags` | categories | filters, `count` |
+| `temporal`, `spatial`, `measures`, `relations`, `media` | dates, places, numbers, links to other rows, playable media | sorting, facets, previews |
+
+**The view** is three kinds of static file:
+
+```
+site/v1/cdn/catalog                               what the view holds, plus a coverage sketch
+site/v1/cdn/domains/trees/manifest                role_map, model, and the shard's sha256
+site/v1/cdn/domains/trees/shards/shard-0000-<sha>.ndjson.gz   the rows, with vectors
+```
+
+- Readers check the shard against the manifest's sha256, so any host or CDN can serve it.
+- The **coverage sketch** is 32 centroids of the view's vectors. It lets an agent choose
+  which of an app's views to read for a question without downloading any of them.
+- The shard is named by its digest. A re-bake writes a new name and removes the old file.
+- One view is fine up to roughly 100k rows. Past that, bake several (`site/v1`,
+  `site/v2`, split by topic), which also makes that choosing step worth more.
+
+The first bake downloads the embedding model (131 MB) once. After that, the example's 20
+rows baked in about 2 seconds.
+
+Check the view the way a reader will see it:
+
+```sh
+(cd site && python3 -m http.server 8765 &)
+node node_modules/@fangorn-network/westmarch/consume/lint.js http://127.0.0.1:8765/v1
+# trees — 20 rows — nothing to fix
+```
+
+`lint.js` reports three levels:
+- **blocking:** readers can't find you (no coverage, wrong model);
+- **findable, but not readable** (no text role);
+- **readable, but a dead end** (nowhere for a hit to link to).
+
+## 6. Commit and push
+
+```sh
+fangorn repo init my-app                                  # the namespace; tracked in .fangorn/repo.json
+fangorn commit data/graph.json -m "first bake" --replace  # local; builds and uploads the commit
+fangorn push                                              # the on-chain transaction
+```
+
+`--replace` makes the file the namespace's whole state, so rows you removed are removed.
+Without it, the commit adds to what's already there. `fangorn status` compares your local
+tip with the one on chain.
+
+The commit is the record; the view is how people and agents read it. They come from the
+same rows in the same script, so they don't drift.
+
+## 7. The page
+
+A page for people, with the same search exposed to agents in the browser as WebMCP tools.
+
+```js
+// app/agent.js — the page's tools for agents in a browser. `ctx` holds the loaded rows.
+import { search, getRow } from "@fangorn-network/westmarch/tools";
+
+const ok = (o) => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
+
+export function registerAgent(ctx) {
+    const mc = document.modelContext;
+    if (!mc?.registerTool) return;   // most browsers have no WebMCP yet
+    mc.registerTool({
+        name: "search-trees",
+        description: "Search tree species by meaning: a question in plain words. Call this first.",
+        inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } }, required: ["query"] },
+        execute: async ({ query, limit = 10 }) =>
+            ok(search(ctx.rows, query, ctx.roles, { qv: await ctx.queryVector(query), limit })),
+    });
+    mc.registerTool({
+        name: "get-tree",
+        description: "One tree species in full, by the id search returns.",
+        inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+        execute: async ({ id }) => ok(getRow(ctx.rows, id, ctx.roles) ?? { error: `no tree ${id}` }),
+    });
+}
+```
+
+```js
+// app/main.js
+import { configure, loadShard } from "@fangorn-network/westmarch/shard";
+import { rolesFrom, textOf } from "@fangorn-network/westmarch/roles";
+import { search } from "@fangorn-network/westmarch/tools";
+import { embedQuery } from "@fangorn-network/westmarch/embed";
+import { registerAgent } from "./agent.js";
+
+const ctx = { rows: [], roles: rolesFrom([]), queryVector: (q) => embedQuery(q).catch(() => null) };
+configure({ onManifests: (ms) => { ctx.roles = rolesFrom(ms); }, rowText: (f) => textOf(f, ctx.roles) });
+ctx.rows = await loadShard(new URL("v1", location.href).href);   // checked against the manifest's sha256
+registerAgent(ctx);   // only now: a tool called before its data loads answers wrong, silently
+
+// The human side: the same search, as a list.
+const input = document.querySelector("input"), list = document.querySelector("ul");
+input.placeholder = `Search ${ctx.rows.length} trees…`;
+input.oninput = async () => {
+    const q = input.value;
+    const hits = search(ctx.rows, q, ctx.roles, { qv: await ctx.queryVector(q), limit: 10 });
+    if (q !== input.value) return;   // a newer keystroke won
+    list.replaceChildren(...hits.map((h) => {
+        const li = document.createElement("li"), a = document.createElement("a");
+        a.textContent = h.title; if (h.url) a.href = h.url;
+        li.append(a, ` — ${h.subtitle ?? ""}`);
+        return li;
+    }));
+};
+```
+
+```html
+<!-- app/index.html -->
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My App</title>
+<h1>My App</h1>
+<input type="search" autofocus placeholder="Loading…">
+<ul></ul>
+<script type="module" src="./main.js"></script>
+```
+
+```js
+// app/vite.config.js
+export default {
+    base: "./",
+    // westmarch's embedder finds its worker by `new URL(…, import.meta.url)`;
+    // pre-bundling loses that and search silently drops to word matching.
+    optimizeDeps: { exclude: ["@fangorn-network/westmarch"] },
+    build: { outDir: "../site", emptyOutDir: false },   // keep site/v1
+};
+```
+
+```sh
+(cd app && npx vite build)
+```
+
+Search runs in the reader's own tab: the shard and the model are downloaded, and the query
+never leaves the browser. `@fangorn-network/westmarch/tools` also has `describe`, `browse`,
+`facet` and `neighbors`, if the page needs more than search.
+
+## 8. The agent card
+
+A WebMCP tool only exists inside a loaded tab, so the card is the only machine-readable
+record that the app, its tools and its views exist. The tool list isn't written by hand:
+`captureTools` runs your register function against a recording stub, so the card lists
+exactly what the page registers. No `execute` runs.
+
+```js
+// pipeline/agent-card.mjs — site/ → site/.well-known/agent-card.json + site/_headers
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { agentCard, captureTools } from "@fangorn-network/westmarch/agent-card";
+import { registerAgent } from "../app/agent.js";
+
+const SITE = "https://my-app.pages.dev";
+const VIEWS = ["v1"];   // every directory bakeView wrote
+
+const card = agentCard({
+    name: "My App",
+    description: "Tree species: what they are, where they grow, and what they are good for. Search by meaning.",
+    url: `${SITE}/`,                               // the page that registers the tools
+    version: "1",
+    tools: await captureTools(() => registerAgent({})),
+    tags: ["trees"],
+    fangorn: {
+        app: "my-app",                             // the name you claimed
+        fromBlock: 311700000,                      // the block you noted before claiming
+        namespaces: ["my-app"],                    // what `fangorn repo init` created
+        views: VIEWS.map((v) => `${SITE}/${v}`),
+    },
+});
+mkdirSync("site/.well-known", { recursive: true });
+writeFileSync("site/.well-known/agent-card.json", JSON.stringify(card, null, 1));
+
+// The card is read from other origins, so it needs CORS. Shards and bundles are
+// named by their digest, so they never change: tell caches so.
+const immutable = "  Cache-Control: public, max-age=31536000, immutable\n";
+writeFileSync("site/_headers",
+    "/.well-known/agent-card.json\n  Access-Control-Allow-Origin: *\n"
+    + `/assets/*\n${immutable}`
+    + VIEWS.map((v) => readdirSync(`site/${v}/cdn/domains`).map((d) => `/${v}/cdn/domains/${d}/shards/*\n${immutable}`).join("")).join(""));
+```
+
+```sh
+node pipeline/agent-card.mjs    # card: 2 tools → site/.well-known/agent-card.json
+```
+
+- **The `fangorn` block** becomes an A2A extension (`https://fangorn.network/a2a/app/v1`).
+  It holds the chain, the registry addresses (taken from the SDK, so they can't drift), your
+  appId, `fromBlock`, `namespaces` and `views`. `agentCard` validates them the same way
+  readers will, so a bad card fails your build, not someone else's discovery.
+- **`views` is what agents search:** `fangorn-mcp` reads them directly, with no browser.
+- **`url` is the page that registers the tools,** not just any page on the site.
+- **`fromBlock`** only affects speed: readers query logs 1000 blocks per call, so an early
+  block is slow, and 0 means hundreds of thousands of calls.
+- **Keep these values fixed.** A rebuild that drops the extension or changes `url`
+  publishes a card every reader rejects.
+
+## 9. Deploy and check
+
+```sh
+npx wrangler pages deploy site --project-name my-app
+curl -sD - https://my-app.pages.dev/.well-known/agent-card.json -o /dev/null | grep -iE "^HTTP|access-control"
+# HTTP/2 200 · access-control-allow-origin: *
+curl -sI https://my-app.pages.dev/v1/cdn/domains/trees/shards/$(ls site/v1/cdn/domains/trees/shards) | grep -i cache-control
+# cache-control: public, max-age=31536000, immutable
+node node_modules/@fangorn-network/westmarch/consume/lint.js https://my-app.pages.dev/v1
+```
+
+Open `https://my-app.pages.dev/` and search: that's the app for people. The card must be
+live before step 10, because the CLI fetches it.
+
+## 10. Register the agent and bind the card
+
+```sh
+fangorn app agent https://my-app.pages.dev/.well-known/agent-card.json
+# Agent ID:  421614:…
 # Card:      https://my-app.pages.dev/.well-known/agent-card.json
 # Tx:        0x…
 ```
 
-This command does two things:
+This does two things:
 
 1. **ERC-8004.** It builds a registration file from the card (name, description, A2A
    endpoint = the card URL, trust = reputation, x402 only if a skill is tagged `x402`),
@@ -171,34 +386,121 @@ This command does two things:
    `0x8004A818BFB912233c491871b3d84c89A494BD9e`. That's the same address as on Ethereum
    and Base Sepolia. [8004scan](https://8004scan.io) indexes it within minutes.
 2. **Fangorn.** It calls `setAppAgentUri(cardUrl)`, which emits `AppAgentChanged`. That log
-   is the app directory: westmarch's `listApps` reads it.
+   is the app directory: `list-apps` and `listApps` read it.
 
-`--skip-register` does only the second step, e.g. to move a card that's already registered
-to a new URL.
+`--skip-register` does only the second step, e.g. to move an already-registered card to a
+new URL.
 
-## 6. Publish data into the app
+## 11. Use it as an agent would
 
-The owner is the app's first publisher, but still needs global standing:
+Register `fangorn-mcp` once (see [Using Fangorn apps from an agent](#using-fangorn-apps-from-an-agent)),
+then in any agent:
 
-```sh
-fangorn --app my-app register
-fangorn --app my-app repo init my-app
-fangorn --app my-app commit graph.json -m "first bake" --replace
-fangorn --app my-app push
+```
+open-app my-app               → verified: true, data_tools: true
+my-app__describe              → the view "trees": 20 rows, its description
+my-app__search "trees that survive fire"   → redwood, oak, …  (ranked by meaning)
+my-app__get "baobab"          → the whole row
 ```
 
-`graph.json` is `{ vertices: [{id, tag, payload}], edges?: [{rel, from, to}] }`.
-`westmarch/publish/graph.js` builds one from a file tree.
+`open-app` reads your app's binding from the registry, fetches the card, and checks that
+the binding points back at exactly that URL. Only then does it add the tools.
 
-## 7. Discover it
+## 12. Update it
 
-Every route below ends in `discoverApp(cardUrl)`, which accepts a card only if:
+Data changes are the same loop, and need no new binding:
+
+```sh
+node pipeline/bake.mjs                                # new graph.json, new view (new shard name)
+fangorn commit data/graph.json -m "…" --replace && fangorn push
+(cd app && npx vite build) && node pipeline/agent-card.mjs
+npx wrangler pages deploy site --project-name my-app
+```
+
+The card URL stays the same, so the on-chain binding stays valid. Run `fangorn app agent`
+again only if the card moves.
+
+---
+
+## Using Fangorn apps from an agent
+
+`fangorn-mcp` is one MCP server for every Fangorn app: a new app needs no new
+registration. You can install it as a single file (Linux x64/arm64): no node, no install,
+and search by meaning included.
+
+```sh
+curl -fLo fangorn-mcp https://github.com/fangorn-network/westmarch/releases/latest/download/fangorn-mcp-linux-x64
+chmod +x fangorn-mcp
+claude mcp add fangorn -- "$PWD/fangorn-mcp"
+```
+
+Or through npm, wherever node is:
+
+```sh
+claude mcp add fangorn -- npx -y -p @fangorn-network/westmarch -p @huggingface/transformers fangorn-mcp
+```
+
+Without `-p @huggingface/transformers`, the install is ~500 MB lighter and `search` ranks by
+words, not meaning. For any MCP client:
+
+```json
+{ "mcpServers": { "fangorn": { "command": "/path/to/fangorn-mcp" } } }
+```
+
+`bun build-bin.js` in westmarch builds the file (bun ≥ 1.2).
+
+It starts with three tools:
+- **`list-apps`** reads the apps off the chain and keeps the ones whose cards verify.
+- **`open-app <name>`** reads that app's binding from the registry (one call), verifies its
+  card, and adds the app's tools as `<name>__<tool>`.
+- **`call-app-tool`** reaches the same tools, for clients that don't refresh their tool list.
+
+**Two kinds of tools.**
+- **Data tools:** an app whose card names `views` gets these at once, with no browser:
+  `describe`, `search`, `get`, `similar`, `count`, `browse`. westmarch runs them over the
+  app's shards, checked against their manifests' sha256. `search` reads the 3 views whose
+  coverage sketch best matches the query and names the next candidates.
+- **Page tools:** `open-app` with `page: true` also opens `card.url` in a browser for the
+  page's own WebMCP tools. An app with no views gets only these.
+
+**How fast** (Kingsfoil: 23 views, 60,760 trials):
+
+| | time |
+|---|---|
+| `open-app` | 0.4–2 s |
+| `describe` | under 5 ms |
+| first `search`, caches warm | 0.4–1.8 s |
+| later searches | ~0.2–0.5 s |
+| first `search` from an empty machine (single file) | ~3.5 s, by words while the model downloads |
+| page tools (browser) | 5–15 s to open, ~2 GB of memory |
+
+On a new machine, the embedding model (131 MB, kept in `~/.cache/fangorn-mcp/models`)
+downloads in the background. Until it lands, `search` ranks by words and says so in
+`ranked_by`; then it switches to meaning. Shards are downloaded once and kept by content
+hash.
+
+**Where the browser comes from (page tools only).** Anything that speaks the Chrome DevTools
+Protocol and has WebMCP will do: a headless Chromium service, a hosted browser, or the local
+Chrome.
+
+| setting | browser |
+|---|---|
+| `FANGORN_MCP_CDP=http://host:9222` (or `--cdp`) | a running browser's DevTools address |
+| `FANGORN_MCP_CDP=ws://host:9222/devtools/browser/…` | a browser WebSocket endpoint, which is what hosted services hand out |
+| neither | the local Chrome 150+ (`CHROME=/path` if it isn't `google-chrome`), headless (`--headed` to watch) |
+
+A remote browser is never closed; only the tabs the server opened are. A local Chrome is
+shared by every session on the machine and closes when the last one exits. Its profile is
+`~/.cache/westmarch-mcp/`. `--from-block <n>` points the server at another deployment.
+
+## Discovering apps in code
+
+Every route ends in `discoverApp(cardUrl)`, which accepts a card only if:
 
 - the card carries the Fangorn extension for **this** chain and **this** AppRegistry, and
 - `appAgentUri(card.appId)` on chain is **exactly** the card URL.
 
 The registry and the index are where you look. The on-chain binding is what you trust.
-
 `example/discover.mjs` runs all three routes:
 
 ```sh
@@ -207,13 +509,7 @@ node example/discover.mjs chain  311637349          # every app bound since this
 node example/discover.mjs search Kingsfoil          # the public ERC-8004 index
 ```
 
-```
-Kingsfoil  https://kingsfoil.pages.dev/.well-known/agent-card.json
-  app 0x3069…c8ca  data from block 311671082  namespaces kingsfoil
-  open https://kingsfoil.pages.dev — WebMCP tools: list-areas, search-trials, get-trial, …
-```
-
-**From a card URL** (someone handed it to you):
+**From a card URL:**
 
 ```js
 import { Fangorn, FangornConfig } from "@fangorn-network/sdk";
@@ -226,17 +522,13 @@ const { card, appId, fromBlock, namespaces } = await fangorn.discoverApp(cardUrl
 **From the chain** (every Fangorn app; no index, no server):
 
 ```js
-import { listApps } from "@fangorn/westmarch/apps";
+import { listApps } from "@fangorn-network/westmarch/apps";
 const { apps, rejected } = await listApps(fangorn, { fromBlock: 311637349n });
 // apps: [{ name, appId, card, url, views, namespaces, fromBlock }]
 // rejected: [{ card, why }]: unreachable or not bound, reported rather than dropped
 ```
 
-`sourcesFromChain` in `@fangorn/westmarch/directory` turns that into `findCorpora` sources,
-so an agent can rank every app's corpora against a question without downloading a shard.
-In the example page, `?fromBlock=311637349` does the same thing in a browser.
-
-**From ERC-8004** (general-purpose agents that know nothing about Fangorn):
+**From ERC-8004** (for general-purpose agents that know nothing about Fangorn):
 
 ```js
 const api = "https://8004scan.io/api/v1/agents";
@@ -245,57 +537,7 @@ const detail = await (await fetch(`${api}/421614/${items[0].token_id}`)).json();
 const found = await fangorn.discoverApp(detail.services.a2a.endpoint);
 ```
 
-Without the index, read it straight from the registry: `tokenURI(agentId)` returns the
-registration file's `ipfs://` URI, and its `A2A` endpoint is the card.
-
-### Use it
-
-- **An agent:** open `card.url` in Chrome 150+ with `--enable-features=WebMCP` (headless
-  works) and call the tools the card lists as `webmcp` skills. Queries run in that tab, and
-  nothing reaches a server. WebMCP is not a network MCP server: the tools exist only inside
-  a loaded tab, so an agent outside the browser (Claude Code, a script) needs something
-  that drives the tab for it. `card.url` must be the page that registers the tools, not
-  just the site's root. `fangorn-mcp` is that driver, for every app at once. Register it
-  once:
-
-  ```sh
-  claude mcp add fangorn -- npx -y -p @fangorn/westmarch fangorn-mcp
-  ```
-
-  or, for any MCP client:
-
-  ```json
-  { "mcpServers": { "fangorn": {
-      "command": "npx", "args": ["-y", "-p", "@fangorn/westmarch", "fangorn-mcp"],
-      "env": { "FANGORN_MCP_CDP": "ws://your-browser:9222" } } } }
-  ```
-
-  Drop `env` to use the local Chrome.
-
-  It starts with three tools. `list-apps` reads the apps off the chain and keeps the ones
-  whose cards verify. `open-app kingsfoil` verifies that app's card, opens `card.url` in a
-  tab of one shared Chrome with WebMCP on, and adds the page's tools as
-  `kingsfoil__search-trials` and so on. `call-app-tool` reaches the same tools for clients
-  that don't refresh their tool list. A new app needs no new registration: it shows up in
-  `list-apps` once its card is bound on chain.
-
-  **Where the browser comes from.** Anything that speaks the Chrome DevTools Protocol and
-  has WebMCP will do: a headless Chromium service, a hosted browser, or the local Chrome.
-
-  | setting | browser |
-  |---|---|
-  | `FANGORN_MCP_CDP=http://host:9222` (or `--cdp`) | a running browser's DevTools address |
-  | `FANGORN_MCP_CDP=ws://host:9222/devtools/browser/…` | a browser WebSocket endpoint, which is what hosted services hand out |
-  | neither | the local Chrome 150+ (`CHROME=/path` if it isn't `google-chrome`), headless (`--headed` to watch) |
-
-  A remote browser is never closed. Only the tabs the server opened are. A local Chrome is
-  shared by every session on the machine and closes when the last one exits. Its profile
-  (`~/.cache/westmarch-mcp/`) keeps page downloads such as an embedding model.
-  `--from-block <n>` points the server at another deployment.
-
-- **Without a browser:** the views are plain HTTP (`<view>/cdn/catalog`, then the shards it
-  names). Point `westmarch/consume/shard.js` at `views[i]`.
-- **The committed data itself:**
+**The committed data itself:**
 
 ```js
 fangorn.setAppId(appId);
@@ -312,26 +554,35 @@ const { contents } = await fangorn.readNamespace(timelines[0].owner, namespaces[
   wasn't changed after binding. The card is live HTTP, not content-addressed, and the
   binding is to the URL. That's deliberate: the card is mostly endpoints, which change, and
   pinning each version would cost a transaction for nothing. The data's integrity comes
-  from the commits, not from the card.
+  from the commits and the shard digests, not from the card.
 
 ## Gotchas
 
 | symptom | cause |
 |---|---|
+| push reverts `NotRegisteredForApp` | registered globally but not joined; `fangorn register` does both |
 | `not bound to app … on-chain agent_uri is …` | URLs must match exactly. A trailing slash, `http` vs `https`, or a different path counts as a different card. |
-| card rejected after a rebuild | the build dropped the `fangorn` block or changed `fromBlock`/`url`; hard-code them |
+| card rejected after a rebuild | the build dropped the `fangorn` block or changed `fromBlock`/`url`; keep them fixed |
 | discovery works in Node, fails in a browser | no `Access-Control-Allow-Origin` on the card |
 | `listApps` takes forever | `fromBlock` is too early; the scan is 1000 blocks per RPC call |
+| `app agent`: "ERC-8004 registration pins the registration file to IPFS" | no Pinata JWT in `fangorn init` |
+| `app agent` signs as the wrong wallet | `~/.fangorn/config.json` beats `ETH_PRIVATE_KEY` |
+| search on the page matches words, never meaning | the bundler pre-bundled westmarch; `optimizeDeps.exclude` it |
+| an agent's first call returns empty, later calls work | the tools registered before their data loaded (step 7) |
+| an agent opens the page and finds no tools | `card.url` is not the page that registers them |
+| `search` routes to the wrong views | thin coverage sketch or vague view descriptions; `bakeView` fits 32 centroids, and a description should say what's in the view |
+| every visit re-downloads shards | no `immutable` header on the shards (step 8) |
+| lint: "nowhere to go" | no `presentation.externalUrl`, so a hit links nowhere |
+| `fangorn-mcp`: "this browser has no WebMCP" | page tools only: the browser lacks `document.modelContext`; it needs Chrome 150+ with `--enable-features=WebMCP` |
+| `fangorn-mcp`: "no browser: cannot launch google-chrome" | page tools only: no local Chrome; set `FANGORN_MCP_CDP` |
 | a log scan misses a transaction you just sent | fixed in the SDK (uncached head block); upgrade to ≥ 2026.9.22-dev |
 | IPFS reads return "switching to a service worker gateway" | ipfs.io stopped serving raw content; use a Pinata gateway |
-| `app agent` signs as the wrong wallet | `~/.fangorn/config.json` beats `ETH_PRIVATE_KEY` |
-| an agent opens the page and finds no tools | `card.url` is the site root, but the tools register on another page |
-| an agent's first call returns empty, later calls work | the tools registered before their data loaded (step 1) |
-| `fangorn-mcp`: "this browser has no WebMCP" | the browser at `FANGORN_MCP_CDP` (or the local Chrome) lacks `document.modelContext`; it needs Chrome 150+ with `--enable-features=WebMCP`, or a build with it on |
-| `fangorn-mcp`: "no browser: cannot launch google-chrome" | no local Chrome; set `FANGORN_MCP_CDP` |
 | the page isn't listed as a "Web" service on 8004scan | agent0-sdk has no web endpoint type; agents find the page through the card's `url` |
 
 ## Reference: Kingsfoil
+
+Kingsfoil has 60,760 clinical trials in 23 views, baked by its own pipeline
+(`kingsfoil/pipeline/bake.mjs`) rather than `bakeView`, because it predates it.
 
 | | |
 |---|---|

@@ -90,7 +90,7 @@ export function manifestFromTree(files, { defaultPrice = "1000", newUid: uid = n
 }
 
 // ── self-check: `node publish/manifest.js` ───────────────────────────────────
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/manifest.js")) {
     const assert = (c, m) => { if (!c) throw new Error(m); };
 
     // PINNED. sond3r's manifests are already in R2 under this exact key; if this

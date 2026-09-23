@@ -105,7 +105,7 @@ export function tasteFrom(vertices = []) {
 }
 
 // ── self-check: `node publish/vault.js` ───────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/vault.js")) {
     const { privateKeyToAccount } = await import("viem/accounts");
     const KEY_A = `0x${"11".repeat(32)}`, KEY_B = `0x${"22".repeat(32)}`;
     // A "machine": a fresh client over the same key, holding no state at all.

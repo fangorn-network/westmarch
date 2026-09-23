@@ -189,7 +189,7 @@ export function follow(picks = [], corpora = [], { at = null } = {}) {
 }
 
 // ── self-check: `node consume/corpora.js` ───────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/corpora.js")) {
     const s = session();
     const add = (view, name, n) => {
         const c = s.slot(view);

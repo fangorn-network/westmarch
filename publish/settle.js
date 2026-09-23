@@ -70,7 +70,7 @@ export async function encryptAndUpload({ file, resourceId, workerUrl, uploadToke
 // under test here is the ENCRYPTOR: chunk addressing, the AAD index binding, the
 // ragged tail, and that pack/unpack round trip. An app's full publisher→buyer
 // round trip belongs in that app, against its own buyer.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/settle.js")) {
     const { writeFileSync, rmSync } = await import("node:fs");
     const { unseal } = await import("@fangorn-network/sdk");
     const { x25519 } = await import("@noble/curves/ed25519");

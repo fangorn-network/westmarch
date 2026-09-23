@@ -53,7 +53,9 @@
 import { packVec } from "../consume/embed.js";
 import { lineage } from "./terms.js";
 
-export const COVERAGE_K = 8;
+// 32, not 8: on Kingsfoil the top 3 of 23 views held 92% of the true top 10 with 32
+// centroids and 86% with 8, and 8 missed whole topics (ALS → neurology).
+export const COVERAGE_K = 32;
 export const COVERAGE_DIM = 128;
 /** Fewest reactions that may stand behind one published centroid. */
 export const MIN_PER_CENTROID = 8;
@@ -235,7 +237,7 @@ export function reactionCorpus(events = [], {
 }
 
 // ── self-check: `node publish/reactions.js` ────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/reactions.js")) {
     const { splitPayment } = await import("./terms.js");
     const A = (n) => `0x${String(n).repeat(40).slice(0, 40)}`;
     const vec = (a, b) => { const v = new Float32Array(256); v[0] = a; v[1] = b; return v; };

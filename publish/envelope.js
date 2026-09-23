@@ -157,7 +157,7 @@ export async function deleteResource({ workerUrl, uploadToken, resourceId, chunk
 // every resourceId ever minted by fangorn.tv is derived by this function, and a
 // change here that shifts one byte makes ciphertext already in R2 unreachable from
 // the resource anyone paid for. If this fails, the extraction broke money.
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/envelope.js")) {
     const owner = `0x${"11".repeat(20)}`;
     const uid = "Show/S1/a.mp4";
 

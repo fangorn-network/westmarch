@@ -24,15 +24,20 @@
 // dies is reopened on the next call.
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, existsSync, rmSync, writeFileSync, renameSync } from "node:fs";
+import { createHash } from "node:crypto";
+import net from "node:net";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline";
-import { APP_EXTENSION, listApps } from "./apps.js";
+import { APP_EXTENSION, listApps, toApp } from "./apps.js";
 
 // The current AppRegistry's first event on Arbitrum Sepolia. A reader's
 // default, not deployment config: pass --from-block for another deployment.
 const DEFAULT_FROM_BLOCK = 311637349n;
 const log = (...a) => console.error("[fangorn-mcp]", ...a);   // stdout is the protocol
+// FANGORN_MCP_TRACE=1: step timings on stderr, for finding where an answer waits.
+const T0 = performance.now();
+const trace = process.env.FANGORN_MCP_TRACE ? (what) => log(`${Math.round(performance.now() - T0)}ms ${what}`) : () => {};
 
 let client;
 async function fangorn() {
@@ -40,6 +45,15 @@ async function fangorn() {
         const [{ Fangorn, FangornConfig }, { generatePrivateKey }] = await Promise.all([
             import("@fangorn-network/sdk"), import("viem/accounts")]);
         client = Fangorn.create({ privateKey: generatePrivateKey(), config: FangornConfig });   // reads only
+        // list-apps verifies every card and open-app verifies one again: once a minute is enough.
+        const verify = client.discoverApp.bind(client), seen = new Map();
+        client.discoverApp = (url) => {
+            const hit = seen.get(url);
+            if (hit && Date.now() - hit.at < 60_000) return hit.p;
+            const p = verify(url).catch((e) => { seen.delete(url); throw e; });
+            seen.set(url, { at: Date.now(), p });
+            return p;
+        };
     }
     return client;
 }
@@ -49,10 +63,69 @@ async function fangorn() {
 async function resolveCard(cardUrl) {
     const card = await (await fetch(cardUrl)).json();
     const fangornApp = card.capabilities?.extensions?.some((e) => e.uri === APP_EXTENSION);
-    if (fangornApp) await (await fangorn()).discoverApp(cardUrl);
+    // Views only from a verified card, and only http(s) ones (toApp filters).
+    const views = fangornApp ? toApp(await (await fangorn()).discoverApp(cardUrl), cardUrl).views : [];
     const page = new URL(card.url);
     if (page.protocol !== "https:" && page.protocol !== "http:") throw new Error(`card.url is not http(s): ${card.url}`);
-    return { card, page: page.toString(), verified: fangornApp };
+    return { card, page: page.toString(), verified: fangornApp, views };
+}
+
+// ── the network ─────────────────────────────────────────────────────────────
+// Every byte an answer waits on, cached where it is safe to:
+//   - a content-addressed file (`…-<12 hex>.<ext>`, every shard) never changes,
+//     so it is kept on disk forever. shard.js still checks it against the
+//     manifest's sha256, so a bad cache entry fails loudly, not silently.
+//   - catalogs, manifests and cards change on a rebake: held for a minute, so
+//     one search (or resolving then verifying a card) does not fetch each twice.
+const CACHE = `${homedir()}/.cache/fangorn-mcp`;
+/** Stale-while-revalidate from disk: the last copy at once, a fresh one fetched
+ *  behind it for next time. Only for reads where stale is harmless. */
+function staleFetch(fetcher) {
+    mkdirSync(`${CACHE}/stale`, { recursive: true });
+    return async (url) => {
+        const f = `${CACHE}/stale/${createHash("sha256").update(url).digest("hex")}`;
+        const refresh = fetcher(url).then(async (r) => {
+            if (!r.ok) return r;
+            const b = new Uint8Array(await r.arrayBuffer());
+            writeFileSync(`${f}.tmp`, b); renameSync(`${f}.tmp`, f);
+            return new Response(b);
+        });
+        if (existsSync(f)) { refresh.catch(() => {}); return new Response(readFileSync(f)); }
+        return refresh;
+    };
+}
+
+function cachingFetch(real = globalThis.fetch) {
+    mkdirSync(`${CACHE}/blobs`, { recursive: true });
+    const memo = new Map();
+    return async (input, init) => {
+        const url = String(input?.url ?? input);
+        if ((init?.method ?? input?.method ?? "GET") !== "GET" || !/^https?:/.test(url)) return real(input, init);
+        const path = new URL(url).pathname;
+        if (/-[0-9a-f]{12}\.[a-z.]+$/.test(path)) {
+            const f = `${CACHE}/blobs/${createHash("sha256").update(url).digest("hex")}`;
+            if (existsSync(f)) return new Response(readFileSync(f));
+            const r = await real(input, init);
+            if (!r.ok) return r;
+            const b = new Uint8Array(await r.arrayBuffer());
+            writeFileSync(`${f}.tmp`, b); renameSync(`${f}.tmp`, f);   // never a torn file
+            return new Response(b, { headers: r.headers });
+        }
+        // A card, catalog or manifest is small: 8s without one means the host is
+        // down, and a dead card in the directory must not stall a listing for a
+        // TCP timeout. Shards get no deadline; a big file on a slow link is legitimate.
+        init = { ...init, signal: init?.signal ?? AbortSignal.timeout(8000) };
+        if (/\/cdn\/catalog$|\/manifest$|\/agent-card\.json$/.test(path)) {
+            const hit = memo.get(url);
+            if (hit && Date.now() - hit.at < 60_000) return new Response(hit.body, { headers: hit.headers });
+            const r = await real(input, init);
+            if (!r.ok) return r;
+            const body = new Uint8Array(await r.arrayBuffer());
+            memo.set(url, { at: Date.now(), body, headers: r.headers });
+            return new Response(body, { headers: r.headers });
+        }
+        return real(input, init);
+    };
 }
 
 // ── the browser ─────────────────────────────────────────────────────────────
@@ -93,7 +166,8 @@ async function localChrome({ headed }) {
     ], { stdio: "ignore" });
     const failed = new Promise((_, j) => proc.on("error", (e) => j(new Error(
         `no browser: cannot launch ${bin} (${e.code}). Point --cdp / FANGORN_MCP_CDP at a WebMCP browser, or set CHROME.`))));
-    for (let i = 0; i < 100; i++) {
+    // 30s: a cold start on a loaded machine or CI box has taken 16s.
+    for (let i = 0; i < 300; i++) {
         await Promise.race([new Promise((r) => setTimeout(r, 100)), failed]);
         if (existsSync(portFile)) return { ws: await browserWs(`http://127.0.0.1:${readFileSync(portFile, "utf-8").split("\n")[0]}`), proc };
     }
@@ -211,8 +285,8 @@ const META = [
       description: "List the Fangorn apps registered on chain whose agent cards verify: name, description, card URL, and the WebMCP tools each page offers. Filter with `query`. Call open-app on one to use its tools.",
       inputSchema: { type: "object", properties: { query: { type: "string", description: "Case-insensitive match on name or description" } } } },
     { name: "open-app",
-      description: "Verify an app's card against the chain, open its page in a browser tab, and add its tools to this server as `<app>__<tool>`. Returns the tools and their input schemas. `app` is a name from list-apps, an appId, or a card URL.",
-      inputSchema: { type: "object", properties: { app: { type: "string" } }, required: ["app"] } },
+      description: "Verify an app's card against the chain and add its tools to this server as `<app>__<tool>`. An app that publishes views gets fast data tools (describe, search, get, similar, count, browse) with no browser. `page: true` also opens the app's page in a browser for its own WebMCP tools (slower). `app` is a name from list-apps, an appId, or a card URL.",
+      inputSchema: { type: "object", properties: { app: { type: "string" }, page: { type: "boolean", description: "Also load the page's own WebMCP tools in a browser" } }, required: ["app"] } },
     { name: "call-app-tool",
       description: "Call one tool of an opened app. Same as calling `<app>__<tool>` directly.",
       inputSchema: { type: "object", properties: { app: { type: "string" }, tool: { type: "string" }, arguments: { type: "object" } }, required: ["app", "tool"] } },
@@ -221,46 +295,73 @@ const META = [
 /**
  * The server. `deps` is the outside world, so the self-check can fake it:
  *   findApps()          → { apps: [{ name, desc, card, appId }], rejected }
- *   resolveCard(url)    → { card, page, verified }
+ *   findByName(name)    → { card, appId } | null     (optional: a direct registry read)
+ *   resolveCard(url)    → { card, page, verified, views }
+ *   viewTools(app)      → { tools, call(name, args) } | null   (no browser)
  *   openTab(page)       → ev
  *   tabTools(ev), tabCall(ev, name, args)
  *   notify(method)      set after serve()
  */
 export function handlers(deps) {
-    const open = new Map();   // slug → { name, card, verified, ev, tools }
+    const open = new Map();   // slug → { name, card, verified, page, views?, pages?, tools }
 
     const findOpen = (app) => open.get(slug(app)) ?? [...open.values()].find((o) => o.card === app || o.appId === app);
+    const retool = (o) => {
+        const taken = new Set(o.views?.tools.map((t) => t.name));
+        // A page tool that shares a data tool's name is kept, under `page-<name>`.
+        o.pageNames = new Map((o.pageTools ?? []).map((t) => [taken.has(t.name) ? `page-${t.name}` : t.name, t.name]));
+        o.tools = [...(o.views?.tools ?? []), ...(o.pageTools ?? []).map((t) => ({ ...t, name: taken.has(t.name) ? `page-${t.name}` : t.name }))];
+    };
+    async function openPage(o) {
+        o.ev = await deps.openTab(o.page);
+        o.pageTools = await deps.tabTools(o.ev);
+    }
 
-    async function openApp(app) {
+    async function openApp(app, { page = false } = {}) {
         const hit = findOpen(app);
-        if (hit) return hit;
-        let cardUrl = app, appId;
-        if (!/^https?:\/\//.test(app)) {
-            const { apps } = await deps.findApps();
-            const a = apps.find((x) => x.appId === app || slug(x.name) === slug(app));
-            if (!a) throw new Error(`no verified app named ${JSON.stringify(app)}; see list-apps`);
-            ({ card: cardUrl, appId } = a);
+        if (hit && (hit.ev || !page)) return hit;
+        let o = hit;
+        if (!o) {
+            let cardUrl = app, appId;
+            if (!/^https?:\/\//.test(app)) {
+                // One registry read when the name is the app's own; the scan only when it is not.
+                trace(`open ${app}: lookup`);
+                const a = await deps.findByName?.(app)
+                    ?? (await deps.findApps()).apps.find((x) => x.appId === app || slug(x.name) === slug(app));
+                if (!a) throw new Error(`no verified app named ${JSON.stringify(app)}; see list-apps`);
+                ({ card: cardUrl, appId } = a);
+            }
+            trace(`open ${app}: resolve ${cardUrl}`);
+            const { card, page: url, verified, views } = await deps.resolveCard(cardUrl);
+            trace(`open ${app}: verified`);
+            let s = slug(card.name ?? app);
+            while (open.has(s)) s += "-";
+            o = { slug: s, name: card.name, card: cardUrl, appId, verified, page: url,
+                  views: deps.viewTools?.({ name: card.name, desc: card.description, views }) ?? null };
         }
-        const { card, page, verified } = await deps.resolveCard(cardUrl);
-        let s = slug(card.name ?? app);
-        while (open.has(s)) s += "-";
-        const ev = await deps.openTab(page);
-        const entry = { slug: s, name: card.name, card: cardUrl, appId, verified, page, ev, tools: await deps.tabTools(ev) };
-        open.set(s, entry);
+        // The browser only when asked, or when there is no other way in.
+        if (page || !o.views) await openPage(o);
+        retool(o);
+        trace(`open ${app}: ready`);
+        open.set(o.slug, o);
         deps.notify?.("notifications/tools/list_changed");
-        return entry;
+        return o;
     }
 
     async function call(app, tool, args) {
         const o = findOpen(app);
         if (!o) throw new Error(`${app} is not open; call open-app first`);
-        try { return await deps.tabCall(o.ev, tool, args); }
+        if (!o.pageNames?.has(tool)) {
+            if (o.views?.tools.some((t) => t.name === tool)) return o.views.call(tool, args);
+            throw new Error(`${o.slug} has no tool ${tool}${o.ev ? "" : " (its page tools load with open-app page: true)"}`);
+        }
+        const name = o.pageNames.get(tool);
+        try { return await deps.tabCall(o.ev, name, args); }
         catch (e) {
             if (!/tab closed/.test(e.message)) throw e;
             // The tab or the whole browser went away. Reopen once; the tools keep their names.
-            o.ev = await deps.openTab(o.page);
-            await deps.tabTools(o.ev);
-            return deps.tabCall(o.ev, tool, args);
+            await openPage(o);
+            return deps.tabCall(o.ev, name, args);
         }
     }
 
@@ -276,9 +377,10 @@ export function handlers(deps) {
                 unverified: rejected.length,
             });
         },
-        "open-app": async ({ app }) => {
-            const o = await openApp(app);
-            return text({ app: o.slug, name: o.name, page: o.page, verified: o.verified,
+        "open-app": async ({ app, page }) => {
+            const o = await openApp(app, { page });
+            return text({ app: o.slug, name: o.name, verified: o.verified,
+                          data_tools: !!o.views, page_tools: o.ev ? o.page : false,
                           call_as: `${o.slug}__<tool>, or call-app-tool`, tools: o.tools });
         },
         "call-app-tool": async ({ app, tool, arguments: args }) => call(app, tool, args),
@@ -289,7 +391,7 @@ export function handlers(deps) {
             protocolVersion: p.protocolVersion ?? "2025-06-18",
             capabilities: { tools: { listChanged: true } },
             serverInfo: { name: "fangorn-mcp", version: "0.1.0" },
-            instructions: "Fangorn apps are static sites whose tools run in the browser. list-apps to find one, open-app to load it, then call its tools as <app>__<tool>.",
+            instructions: "Fangorn apps are static sites anchored on chain. list-apps to find one, open-app to load it, then call its tools as <app>__<tool>. Start with <app>__describe when it exists.",
         }),
         ping: async () => ({}),
         "tools/list": async () => ({ tools: [
@@ -349,11 +451,40 @@ if (process.argv[2] === "--selfcheck") {
     assert(body(8).args.who === "a" && body(9).name === "greet", "both call paths reach the tab");
     assert(res(10).result.isError && res(11).result.isError, "failures are tool errors");
     assert(res(12).error.code === -32601, "unknown method");
-    console.log("mcp.js self-check ok — one server, apps opened on demand, their tools listed as <app>__<tool>");
+
+    // An app with views: data tools, no browser, until page: true.
+    {
+        const out2 = new PassThrough(), in2 = new PassThrough(), r2 = [];
+        createInterface({ input: out2 }).on("line", (l) => r2.push(JSON.parse(l)));
+        let tabs = 0;
+        const d2 = { ...deps,
+            resolveCard: async () => ({ card: { name: "Kings Foil" }, page: "https://k.test/p", verified: true, views: ["https://k.test/v"] }),
+            viewTools: (app) => ({ tools: [{ name: "search" }, { name: "greet" }], call: async (n, a) => text({ via: "views", n, a, views: app.views }) }),
+            openTab: async () => (tabs++, "ev"),
+        };
+        d2.notify = serve(handlers(d2), { input: in2, output: out2 });
+        const q = (id, name, args) => in2.write(JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }) + "\n");
+        const got = (id) => r2.find((r) => r.id === id)?.result;
+        q(1, "open-app", { app: "Kings Foil" }); await wait(); q(2, "kings-foil__search", { query: "x" }); await wait();
+        assert(tabs === 0 && JSON.parse(got(1).content[0].text).data_tools, "views mean no browser");
+        assert(JSON.parse(got(2).content[0].text).via === "views", "data tools answer from the views");
+        q(3, "open-app", { app: "kings-foil", page: true }); await wait();
+        const names = JSON.parse(got(3).content[0].text).tools.map((t) => t.name);
+        assert(tabs === 1 && names.includes("search") && names.includes("greet") && names.includes("page-greet"), `page: true adds page tools, a clash renamed: ${names}`);
+        q(4, "kings-foil__page-greet", { who: "p" }); q(5, "kings-foil__greet", {}); await wait();
+        assert(JSON.parse(got(4).content[0].text).ev === "ev" && JSON.parse(got(5).content[0].text).via === "views", "each name reaches its own side");
+    }
+    console.log("mcp.js self-check ok — one server, apps opened on demand, data tools without a browser, page tools on request");
     process.exit(0);
 }
 
 const argv = process.argv.slice(2);
+globalThis.fetch = cachingFetch();
+// Node gives each address 250ms before trying the next; on a slow link, or a
+// host with no working IPv6, every attempt times out and fetch fails outright.
+net.setDefaultAutoSelectFamilyAttemptTimeout?.(2000);
+const vt = await import("./view-tools.js");
+const stale = staleFetch(globalThis.fetch);
 const fb = argv.indexOf("--from-block");
 const fromBlock = fb >= 0 ? BigInt(argv[fb + 1]) : DEFAULT_FROM_BLOCK;
 const headed = argv.includes("--headed");
@@ -373,9 +504,37 @@ const deps = {
         }
         return found;
     },
+    findByName: async (name) => {
+        const [f, { appId }] = await Promise.all([fangorn(), import("@fangorn-network/sdk")]);
+        const reg = f.getAppRegistry();
+        for (const id of /^0x[0-9a-fA-F]{64}$/.test(name) ? [name] : [...new Set([name, name.toLowerCase()])].map(appId)) {
+            const card = await reg.appAgentUri(id).catch(() => "");
+            if (card) return { card, appId: id };
+        }
+        return null;
+    },
     resolveCard,
+    viewTools: (app) => {
+        const v = vt.viewTools(app, { fetchCatalog: stale });
+        if (v) vt.warm({ cacheDir: `${CACHE}/models` });   // already started at initialize; this is the fallback
+        return v;
+    },
     openTab: (page) => openTab(page, { headed, cdp }),
     tabTools, tabCall,
 };
-deps.notify = serve(handlers(deps));
+const h = handlers(deps);
+// The client starts this server with the session, long before an agent opens an
+// app: load the SDK and the embedding model then, behind the agent's first
+// thought. After the initialize reply, not before: both block the thread while
+// they load, and the client is waiting on that reply.
+const reply = h.initialize;
+h.initialize = async (p) => {
+    setImmediate(() => {
+        fangorn().then(() => trace("sdk ready"), () => {});
+        vt.warm({ cacheDir: `${CACHE}/models` }).then((ok) => ok ? trace("embedder ready")
+            : log(`embedder unavailable, searching by words: ${vt.warmError}`));
+    });
+    return reply(p);
+};
+deps.notify = serve(h);
 log(`ready: apps from block ${fromBlock}; browser ${cdp ?? "local Chrome"}, connected on the first open-app`);

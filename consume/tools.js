@@ -208,7 +208,7 @@ export function getRow(rows, id, roles) {
 }
 
 // ── self-check: `node tools.js` — no browser, no network ────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/tools.js")) {
     const { rolesFrom } = await import("./roles.js");
     const row = (id, fields, vector) => ({
         id, owner: "0xa", ...fields,

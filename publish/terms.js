@@ -137,7 +137,7 @@ export function splitPayment(amount, { terms, publisher, lineage: up = [] } = {}
 export const label = (base, currency = "USDC") => `${(Number(base) / 1e6).toFixed(2)} ${currency}`;
 
 // ── self-check: `node publish/terms.js` ────────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/terms.js")) {
     const A = "0x" + "a".repeat(40);   // app owner
     const P = "0x" + "b".repeat(40);   // publisher
     const S1 = "0x" + "c".repeat(40);  // a source

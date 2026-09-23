@@ -155,7 +155,7 @@ export function enrichText({ name, path, desc, mime, abs = null }) {
 // in the same browser that already runs the embedder at publish time.
 
 // ── self-check: `node server/enrich.js` — no files, no model ──────────────────
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/enrich.js")) {
     const { deflateSync } = await import("node:zlib");
     const eq = (got, want, msg) => { if (got !== want) throw new Error(`${msg}: got ${JSON.stringify(got)}`); };
 

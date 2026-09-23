@@ -168,7 +168,7 @@ export async function sourcesFromChain(fangorn, opts) {
 }
 
 // ── self-check: `node consume/directory.js` ─────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/directory.js")) {
     const warn = console.warn; console.warn = () => {};
     const cov = (...vectors) => ({ dim: 2, sampled: 100, vectors, counts: vectors.map(() => 50) });
 

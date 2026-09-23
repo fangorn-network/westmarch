@@ -247,7 +247,7 @@ export function readout(total, cohort, { minSupport = MIN_SUPPORT } = {}) {
 }
 
 // ── self-check: `node publish/cohort.js` ──────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/cohort.js")) {
     const vec = (a, b) => { const v = new Float32Array(STAT_DIM); v[0] = a; v[1] = b; return v; };
     const log = (n, seed) => Array.from({ length: n }, (_, i) => ({
         id: `row-${seed}-${i}`, corpus: "films", reaction: i % 4 === 3 ? "skip" : "like",

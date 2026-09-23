@@ -159,7 +159,7 @@ export function rankDomains(domains = [], q) {
 }
 
 // ── self-check: `node consume/rank.js` ──────────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/rank.js")) {
     // Word boundaries: the bug this replaced ranked "intoxicated" for "cat".
     if (lexScore({ text: "intoxicated education" }, "cat") !== 0) throw new Error("substring matched — word boundaries lost");
     if (lexScore({ text: "a cat sat" }, "cat") <= 0) throw new Error("whole word must match");

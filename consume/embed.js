@@ -214,7 +214,7 @@ export const warmEmbedder = () => {
 };
 
 // ── self-check: `node src/llm/embed.js` — quantization only, no model download ────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/embed.js")) {
     const v = matryoshka(Array.from({ length: 768 }, (_, i) => Math.sin(i)));
     let norm = 0;
     for (const x of v) norm += x * x;

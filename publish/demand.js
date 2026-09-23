@@ -383,7 +383,7 @@ export function brief(rep, { title = "demand" } = {}) {
 }
 
 // ── self-check: `node publish/demand.js` ────────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/demand.js")) {
     const { keypair, statistics, contribute, aggregate, readout } = await import("./cohort.js");
 
     // A shelf with two genuine regions and a hole between them. 128 dims so the

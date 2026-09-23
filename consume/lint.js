@@ -306,7 +306,7 @@ export function format(r) {
 }
 
 // ── cli + self-check: `node consume/lint.js [viewUrl]` ─────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/lint.js")) {
     const arg = process.argv.slice(2).find((a) => !a.startsWith("--"));
     if (arg) {
         console.log(format(await lint(arg, { rows: !process.argv.includes("--no-rows") })));
