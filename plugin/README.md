@@ -1,8 +1,18 @@
 # fangorn-index
 
-A Claude Code plugin that makes the Fangorn app index usable by an agent: find
+A Claude Code plugin with two skills.
+
+**`fangorn-app`** builds an app: records → graph → schema → commit → view →
+page → agent card → on-chain binding, with the API shapes and the pins that
+cannot change stated up front. It is the agent-facing form of
+`docs/app-to-agent.md`, and points at that guide section by section rather than
+repeating it. It triggers on anything like "put this dataset on Fangorn" or "make
+this searchable by agents".
+
+**`fangorn-index`** makes the Fangorn app index usable by an agent: find
 which publisher has what, read enough of it to decide, and hand off to the app
 that owns it — carrying a taste kernel that works in every corpus on the network.
+The rest of this file is about that skill.
 
 Ships inside the `@fangorn/westmarch` repo, and imports it by relative path. It
 is not standalone.

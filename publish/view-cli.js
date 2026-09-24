@@ -7,6 +7,7 @@
 // `views`. Run it after every push, by hand, in CI, or from an agent.
 
 import { homedir } from "node:os";
+import { readFileSync } from "node:fs";
 
 const flags = { namespace: [] };
 for (let i = 2; i < process.argv.length; i++) {
@@ -26,7 +27,15 @@ const [{ Fangorn, FangornConfig }, { generatePrivateKey }, { env }, { publishVie
 ]);
 // Shared with fangorn-mcp, so a machine downloads the model once.
 env.cacheDir = `${homedir()}/.cache/fangorn-mcp/models`;
-const fangorn = Fangorn.create({ privateKey: generatePrivateKey(), config: FangornConfig });   // reads only
+// Reads only, but the SDK reads blocks through its storage backend, so it needs one. Blocks
+// come from an IPFS gateway; ipfs.io no longer serves raw content, so take the Pinata gateway
+// `fangorn init` stored (or IPFS_GATEWAY), falling back to the SDK default.
+const gateway = process.env.IPFS_GATEWAY || storedGateway() || FangornConfig.ipfsGateway;
+const fangorn = Fangorn.create({ privateKey: generatePrivateKey(), config: { ...FangornConfig, ipfsGateway: gateway },
+    storage: { signedUrl: { gateway } } });   // no JWT: the signed-url backend reads by CID from the gateway
+function storedGateway() {
+    try { return JSON.parse(readFileSync(`${homedir()}/.fangorn/config.json`, "utf8")).pinataGateway || null; } catch { return null; }
+}
 
 const t0 = Date.now();
 const report = await publishView({

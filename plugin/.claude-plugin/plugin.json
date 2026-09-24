@@ -1,7 +1,7 @@
 {
   "name": "fangorn-index",
   "version": "0.1.0",
-  "description": "Discover the apps registered on Fangorn and read their corpora on the user's behalf: rank every publisher against a question without downloading any of them, search the one that wins, and hand off to the app that owns it — carrying a taste kernel that lives on the filesystem and works in every corpus, not one app's localStorage.",
+  "description": "Two skills. fangorn-index: discover the apps registered on Fangorn and read their corpora — rank every publisher against a question without downloading any of them, search the one that wins, hand off to the app that owns it, carrying a taste kernel that lives on the filesystem. westmarch-app: build one — records to graph, schema, commit, westmarch-view, page, agent card, on-chain binding.",
   "author": {
     "name": "Tony Riemer"
   }
