@@ -12,7 +12,7 @@
 // Pure functions, so `node tools.js` checks them with no browser and no network.
 
 import { bestPassage, cosine, lexScore, norm, zFloor } from "./rank.js";
-import { briefOf, collections, linkOf, titleOf, typeOf, values } from "./roles.js";
+import { briefOf, collections, linkOf, subtitleOf, titleOf, typeOf, values } from "./roles.js";
 
 /** Fields that are plumbing rather than content — never worth faceting or
  *  showing as "what this corpus holds". */
@@ -72,7 +72,27 @@ export function describe(rows) {
  * `qv` is passed in, not computed: embedding is async and model-shaped, and
  * keeping it out here is what lets this file be a pure-function self-check.
  */
-export function search(rows, query, roles, { qv = null, limit = 10, fields, where } = {}) {
+/** How much an exact word match adds to a cosine. Meaning alone ranks "wisconsin rapids"
+ *  by what the towns have in common (every row is in Wisconsin), so an Eau Claire item
+ *  about a bike ride "across Wisconsin" beat every Wisconsin Rapids one. The words decide
+ *  among rows that mean about the same thing; they never outvote meaning outright.
+ *  Measured on Quorum's eval (quorum/eval/search.mjs, 11k rows), top-5 precision / known @1:
+ *  0 → towns 92%, topics 88%, @1 91%;  0.1 → 100/94/97;  0.15 → 100/98/98.5;  0.3 → 100/98/97. */
+export const LEX_BOOST = 0.15;
+
+// The words a row can be found by: its title, subtitle and tags, not only its prose.
+// A town, a body or a kind lives in the tags, and "Plover" should find Plover's items.
+const lexCache = new WeakMap();
+const lexText = (r, roles) => {
+    let t = lexCache.get(r);
+    if (t === undefined) {
+        t = [titleOf(r, roles), subtitleOf(r, roles) ?? "", ...(roles.tags ?? []).flatMap((f) => values(r[f] ?? "")), r.text ?? ""].join(" ");
+        lexCache.set(r, t);
+    }
+    return t;
+};
+
+export function search(rows, query, roles, { qv = null, limit = 10, fields, where, lexBoost = LEX_BOOST } = {}) {
     const ql = query.trim().toLowerCase();
     if (!ql) return [];
     const qn = qv ? norm(qv) : 1;
@@ -84,8 +104,8 @@ export function search(rows, query, roles, { qv = null, limit = 10, fields, wher
     // ever answers the question the way it was asked.
     if (where) rows = rows.filter((r) => matches(r, where));
     const scored = rows.map((r) => (qv && r.vector
-        ? { r, score: cosine(r, qv, qn), mode: "semantic" }
-        : { r, score: lexScore(r, ql), mode: "lexical" }));
+        ? { r, score: cosine(r, qv, qn) + (lexBoost ? lexBoost * lexScore({ text: lexText(r, roles) }, ql) : 0), mode: "semantic" }
+        : { r, score: lexScore({ text: lexText(r, roles) }, ql), mode: "lexical" }));
     // The floor is per QUERY over the whole corpus, so it is measured before
     // anything is dropped. Raw cosine is offset per query, not per corpus: on this
     // catalog every row scores 0.38–0.65 against anything, and `score > 0` admits

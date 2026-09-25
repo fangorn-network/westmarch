@@ -1,6 +1,6 @@
 {
   "name": "@fangorn-network/westmarch",
-  "version": "0.0.1-dev",
+  "version": "0.0.3-dev",
   "description": "Publisher and consumer surfaces for a Fangorn app: shape a graph, publish it, read it back as a searchable, agent-drivable catalog",
   "license": "MIT",
   "type": "module",
@@ -30,17 +30,20 @@
     "./demand": "./publish/demand.js",
     "./steam": "./consume/steam.js",
     "./tools": "./consume/tools.js",
+    "./x402": "./consume/x402.js",
     "./package.json": "./package.json"
   },
   "scripts": {
-    "test": "node publish/terms.js && node publish/reactions.js && node publish/cohort.js && node publish/vault.js && node publish/graph.js && node publish/envelope.js && node publish/demand.js && node publish/settle.js && node publish/manifest.js && node publish/agent-card.js && node publish/view.js && node publish/cli.js --selfcheck && node publish/enrich.js && node consume/embed.js && node consume/rank.js && node consume/apps.js && node consume/mcp.js --selfcheck && node consume/roles.js && node consume/shard.js && node consume/directory.js && node consume/taste.js && node consume/steam.js && node consume/taste-doc.js && node consume/corpora.js && node consume/ui.js && node consume/lint.js && node consume/tools.js",
+    "build": "tsc -p .",
+    "prepare": "tsc -p .",
+    "test": "node publish/terms.js && node publish/reactions.js && node publish/cohort.js && node publish/vault.js && node publish/graph.js && node publish/envelope.js && node publish/demand.js && node publish/settle.js && node publish/manifest.js && node publish/agent-card.js && node publish/view.js && node publish/ship.js --selfcheck && node publish/eval.ts --selfcheck && node publish/cli.js --selfcheck && node publish/enrich.js && node consume/embed.js && node consume/rank.js && node consume/apps.js && node consume/mcp.js --selfcheck && node consume/roles.js && node consume/shard.js && node consume/directory.js && node consume/taste.js && node consume/steam.js && node consume/taste-doc.js && node consume/corpora.js && node consume/ui.js && node consume/lint.js && node consume/tools.js && node consume/x402.js && node site/feed.js && node site/store.js",
     "lint": "node consume/lint.js"
   },
   "peerDependencies": {
-    "@huggingface/transformers": "^4.2.0",
-    "viem": "^2.55.1",
     "@fangorn-network/sdk": "^2026.9.22-dev",
-    "@noble/curves": "^1.9.1"
+    "@huggingface/transformers": "^4.2.0",
+    "@noble/curves": "^1.9.1",
+    "viem": "^2.55.1"
   },
   "peerDependenciesMeta": {
     "@huggingface/transformers": {
@@ -48,20 +51,29 @@
     }
   },
   "devDependencies": {
-    "@huggingface/transformers": "^4.2.0",
-    "viem": "^2.56.3",
     "@fangorn-network/sdk": "^2026.9.22-dev",
-    "@noble/curves": "^1.9.1"
+    "@huggingface/transformers": "^4.2.0",
+    "@noble/curves": "^1.9.1",
+    "typescript": "^5.9.3",
+    "viem": "^2.56.3"
   },
   "bin": {
     "westmarch-publish": "./publish/cli.js",
     "fangorn-mcp": "./consume/mcp.js",
-    "westmarch-view": "./publish/view-cli.js"
+    "westmarch-view": "./publish/view-cli.js",
+    "westmarch-ship": "./publish/ship.js",
+    "westmarch-eval": "./dist/ts/eval.js"
   },
   "files": [
     "consume",
     "publish",
-    "docs/app-to-agent.md"
+    "docs/app-to-agent.md",
+    "site/agent.js",
+    "site/dist",
+    "site/feed.js",
+    "site/worker.js",
+    "site/store.js",
+    "dist/ts"
   ],
   "engines": {
     "node": ">=20"

@@ -64,10 +64,10 @@ async function resolveCard(cardUrl) {
     const card = await (await fetch(cardUrl)).json();
     const fangornApp = card.capabilities?.extensions?.some((e) => e.uri === APP_EXTENSION);
     // Views only from a verified card, and only http(s) ones (toApp filters).
-    const views = fangornApp ? toApp(await (await fangorn()).discoverApp(cardUrl), cardUrl).views : [];
+    const app = fangornApp ? toApp(await (await fangorn()).discoverApp(cardUrl), cardUrl) : null;
     const page = new URL(card.url);
     if (page.protocol !== "https:" && page.protocol !== "http:") throw new Error(`card.url is not http(s): ${card.url}`);
-    return { card, page: page.toString(), verified: fangornApp, views };
+    return { card, page: page.toString(), verified: fangornApp, views: app?.views ?? [], paid: app?.paid ?? null };
 }
 
 // ── the network ─────────────────────────────────────────────────────────────
@@ -332,12 +332,12 @@ export function handlers(deps) {
                 ({ card: cardUrl, appId } = a);
             }
             trace(`open ${app}: resolve ${cardUrl}`);
-            const { card, page: url, verified, views } = await deps.resolveCard(cardUrl);
+            const { card, page: url, verified, views, paid } = await deps.resolveCard(cardUrl);
             trace(`open ${app}: verified`);
             let s = slug(card.name ?? app);
             while (open.has(s)) s += "-";
             o = { slug: s, name: card.name, card: cardUrl, appId, verified, page: url,
-                  views: deps.viewTools?.({ name: card.name, desc: card.description, views }) ?? null };
+                  views: deps.viewTools?.({ name: card.name, desc: card.description, views, paid }) ?? null };
         }
         // The browser only when asked, or when there is no other way in.
         if (page || !o.views) await openPage(o);

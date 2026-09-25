@@ -408,6 +408,37 @@ never opened.
 - A search phrased by *meaning* (not a title) returns the right records with
   `ranked_by: "meaning"`.
 
+## Keeping it current, and improving it safely
+
+For an app whose data keeps arriving (meetings, alerts, filings), offer this once it is
+verified: it is what lets an agent keep the app running and improve it without a person
+checking every run. It needs the app on `westmarch-ship` (`app.json`, guide *The short
+way*); an app built by hand moves there first. Read the guide's *Grading a change before
+it ships* before starting.
+
+1. **Questions, with the person.** Write `eval/golden.jsonl`: 10–20 questions they would
+   actually ask, each with a predicate over the fields that makes a hit a hit (a town, a
+   county, a heading pattern), plus `count` checks for the filters agents will use. If
+   records can name private people, add `records` checks for what must never show (names,
+   addresses) with `"hard": true`. Relevance is never a list of record ids.
+2. **Grade what is there.** `npx westmarch-ship app.json --local /tmp/view`, then
+   `npx westmarch-eval /tmp/view`. Set each `min` and `max_pct` from this first run, just
+   past what it scored. Show the person any question that scores 0: either the question or
+   the recipe is wrong, and that is their call.
+3. **The repo.** With the person's go-ahead (it is public and outward-facing): `gh repo
+   create`, push, then copy from Quorum: `.github/workflows/ship.yml` (the cron that ships
+   data, with its secrets list), `.github/workflows/eval.yml` (the PR gate, no secrets),
+   `.github/CODEOWNERS` (`eval/`, `.github/`, `app.json`) and
+   `.github/ISSUE_TEMPLATE/observation.yml`. Set the secrets with `gh secret set`, never by
+   echoing them. Protect `main`: the `eval` check required, code-owner review required.
+4. **Check the loop once.** Let `ship` run (`gh workflow run ship`), then open a PR that
+   changes only the README. `eval` must pass with `unchanged`.
+
+What the parts may do: `ship` holds the wallet key and publishes data, whatever it is.
+`eval` holds nothing and decides whether a recipe change may merge. An agent that
+proposes improvements opens PRs and nothing else. It never pushes to `main`, never merges,
+and never edits `eval/` in the same PR as the recipe.
+
 ## After initial implementation is complete, deployed, and verified
 
 The base app is just a simple search. Once everything has been deployed and verified, prompt the user for extra functionality

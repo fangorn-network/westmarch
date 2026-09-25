@@ -167,6 +167,33 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
         { name: "browse", description: `List one view of ${n} without a query, with filters, sorting and paging.`,
           inputSchema: { type: "object", properties: { view: str("View name from describe"), limit: num("default 20"), offset: num("default 0"), sort: str("Field to sort by"), where: WHERE }, required: ["view"] } },
     ];
+    // Records the app sells over x402 (its card's `paid`). Paid from this server's wallet,
+    // never above FANGORN_MCP_MAX_PRICE, and checked against the sha256 the app published
+    // for that record, so what was paid for is what was committed.
+    if (app.paid) {
+        const p = app.paid, dec = p.decimals ?? 6;
+        const price = `${(Number(p.price) / 10 ** dec).toFixed(dec).replace(/0+$/, "").replace(/\.$/, "")} ${p.symbol ?? "USDC"}`;
+        const cap = BigInt(Math.round(Number(process.env.FANGORN_MCP_MAX_PRICE ?? "0.10") * 10 ** dec));
+        run.buy = async ({ id }) => {
+            if (!id) throw new Error("id is required");
+            const hit = loadedRows().find(({ r, view }) => r.id === id || r[rolesOf(view).identity] === id);
+            const key = hit ? hit.r[rolesOf(hit.view).identity] ?? id : id;
+            const { payAndFetch } = await import("./x402.js");
+            const r = await payAndFetch(p.url.replace("{id}", encodeURIComponent(key)),
+                { privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap });
+            if (r.status !== 200) return { id: key, error: `HTTP ${r.status}: ${r.body.slice(0, 200)}` };
+            const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(r.body)))]
+                .map((b) => b.toString(16).padStart(2, "0")).join("");
+            const want = hit?.r.paid_sha256;
+            return { id: key, paid: r.price ? price : "free", transaction: r.receipt?.transaction ?? null, network: r.receipt?.network ?? p.network,
+                     verified: want ? (want === digest ? "matches the published sha256" : `MISMATCH: published ${want}, got ${digest}`) : "not checked (search for the record first)",
+                     record: JSON.parse(r.body) };
+        };
+        tools.push({ name: "buy", description: `Buy one ${n} record's paid detail for ${price} (x402 on ${p.network}): ${p.description || "the structured record"}. ` +
+                "Pass an id from search. Paid from this server's wallet (FANGORN_MCP_WALLET_KEY), never above FANGORN_MCP_MAX_PRICE.",
+            inputSchema: { type: "object", properties: { id: str("A record id from search or get") }, required: ["id"] } });
+    }
+
     return { tools, call: async (name, args = {}) => {
         if (!run[name]) throw new Error(`no tool ${name}`);
         return text(await run[name](args));

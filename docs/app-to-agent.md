@@ -39,21 +39,111 @@ which anything can produce: a scraper, a database export, a converted spreadshee
   writes the same files, so moving an app to it means changing the `views` URL in its
   card.
 
-It runs on Arbitrum Sepolia. **What was run:**
+It runs on Arbitrum Sepolia.
 
-- **Step 7's `westmarch-view`, against a stand-in chain:** its self-check runs the whole
-  cycle and the real reader. That covers a schema, a first run, a run with nothing new,
-  a changed and a removed record, and a rebake. Its domain names and embedded text were
-  checked byte-for-byte against quickbeam's.
-- **quickbeam, with the same schema and data, without the chain:** the output linted
-  clean and searched by meaning with the declared links.
-- **Steps 8–9** (page, card) were run against a local view: the page's tools worked in
-  headless Chrome.
-- **Chain steps (1–3, 10)** were run for Kingsfoil, the reference app at the end.
-- **Not run yet:** `commit`/`push` for a new app, and `westmarch-view` reading it back from
-  the chain. No app has data under the current contracts yet.
+## The short way: one config, one command
 
-## What you need
+`westmarch-ship` does every step below from one `app.json`, and re-running it is how you
+update: each step checks the chain (or Cloudflare) first and acts only on a difference.
+
+```jsonc
+// app.json
+{
+  "app": "my-app", "name": "My App", "description": "What it holds, for people and agents.",
+  "tags": ["…"],
+  "site": { "project": "my-app", "account": "<cloudflare account id>" },
+  "types": { "my.thing.v1": { "description": "…",
+      "role_map": { "identity": "id", "title": "name", "temporal": "date", "media": "url",
+                    "tags": ["category"], "text": ["summary"] },
+      "presentation": { "facets": ["category"] } } },
+  "relations": [],
+  "sources": [{ "namespace": "things", "command": ["python", "-m", "my_source"] }],
+  "fangorn": "fangorn",                      // the CLI that signs
+  "paid": { "price": "0.01", "network": "arbitrum-sepolia", "description": "the full record" }
+}
+```
+
+```sh
+npx westmarch-ship app.json            # claim, join, schema, crawl + publish, view, site, card, deploy, agent
+npx westmarch-ship app.json --dry-run  # every step, printed, none done
+npx westmarch-ship app.json --no-crawl # rebuild view, site and card from what is on chain
+npx westmarch-ship app.json --replace  # each source's crawl becomes its namespace's whole state
+```
+
+What it does, in order (the long way, below, is the same steps by hand):
+
+1. **claim** the app on the first run, and record the claim block (the card's `fromBlock`);
+2. **join** it as a publisher, if the wallet has not;
+3. **commit the schema** (`types`, `relations`) to `fangorn.schema`, if the chain's differs;
+4. **run each source**: a command that publishes into `--namespace` when given `--publish`.
+   Every quickbeam scraper Source does. A source with `"each": "rows.json"` is a template,
+   one source per row (`{field}`, `{field|slug}`, `{args...}`), so adding a town, a feed or
+   an account is adding a row;
+5. **westmarch-view**: the app's commits → `.ship/site/view`, embedding only what changed.
+   A removal rewrites the domain, so a retracted record's bytes stop being served;
+6. **the site**: the stock page (search, plus a feed of what is coming up and what just
+   happened, by the `temporal` role and the first `facets` field), the agent card and
+   `_headers`. With `paid`, also `_worker.js`, which sells each record over x402; only
+   records whose sha256 a live row carries are for sale;
+7. **deploy** to Cloudflare Pages (`wrangler`; the project is created if missing);
+8. **register** the ERC-8004 agent and bind the card, if the chain points elsewhere.
+
+State lives in `.ship/` next to `app.json`. In CI, cache `.ship/cache` and `.ship/stage`
+and commit `.ship/state.json`; Quorum's `.github/workflows/ship.yml` is a working example
+(daily cron, and on every push to its config).
+
+**What was run:** all of it, for Quorum (`https://quorum-bua.pages.dev`, agent `421614:245`):
+five towns' meetings crawled, published, embedded and deployed by `westmarch-ship`, then
+searched and bought (x402, settled on Arbitrum Sepolia) from `fangorn-mcp` in a fresh
+session. Kingsfoil, the reference at the end, predates `ship` and was built by hand.
+
+## Grading a change before it ships
+
+New records are facts, and they always ship. What can make an app worse is its
+**recipe**: how sources shape records, which fields `app.json`'s role maps embed, how a
+view splits them. So a recipe change is graded against the recipe it replaces, over the
+same records, before it merges.
+
+```sh
+npx westmarch-ship app.json --local /tmp/base-view     # a view from what the sources staged; no chain, no deploy
+# …change app.json or a source…
+npx westmarch-ship app.json --local /tmp/cand-view
+npx westmarch-eval /tmp/cand-view --base /tmp/base-view # exit 1 = worse
+```
+
+`--local` builds every record every time (a changed `text` role must reach them all) and
+remembers vectors in `.ship/vectors.ndjson` by the exact text embedded, so the second
+build embeds only what the change touched.
+
+What is asked lives in `eval/golden.jsonl`, one check per line, as data rather than code:
+
+```jsonc
+{"id":"plover","q":"Plover village board","expect":{"where":{"city":"Plover"}},"min":0.8}         // share of the top 5 that fits
+{"id":"wells","kind":"count","where":{"county":"Portage"},"expect":{"match":{"heading":"well"}}}   // can a filter reach them at all
+{"id":"addresses","kind":"records","expect":{"match":{"text":"/\\b\\d{2,6} [A-Z]\\w+ St\\b/"}},"max_pct":0.5,"hard":true}
+```
+
+`expect` is a predicate over a row: `where` (the whole-value match agents filter with),
+`match` (a field, or several joined by `|`, to a regex; case-insensitive unless written
+`/re/flags`), `not`. Relevance is a predicate and not a list of record ids, because ids
+are content hashes and a recipe change that re-parses records changes every one.
+Without labels, it also searches 200 sampled rows by their own titles (`known@1`, `known@10`).
+
+Worse is: mean precision or `known@10` down more than 0.05, any question the base
+answered now answered by nothing, a `hard` record check rising, or any floor or ceiling
+missed. Quorum's `.github/workflows/eval.yml` runs this on every pull request, from the
+records and vectors its `ship.yml` leaves in the cache, with no secrets; make it a
+required check on `main`, and put `eval/`, `.github/` and `app.json` under `CODEOWNERS`,
+or a PR can change the gate along with what it gates.
+
+What is not graded yet: a change to how a source *parses*. `--local` reads what the
+sources last staged; it does not replay their parsing over the raw documents.
+
+## The long way, by hand
+
+What `ship` does, one step at a time: for understanding it, or for doing one step differently.
+
+### What you need
 
 - Node 22.
 - The Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.9.22-dev` (gives `fangorn`).

@@ -37,8 +37,10 @@ export const APP_EXTENSION = "https://fangorn.network/a2a/app/v1";
 export function toApp({ card, appId, fromBlock, namespaces }, cardUrl) {
     const ext = card.capabilities.extensions.find((e) => e.uri === APP_EXTENSION);
     const views = (Array.isArray(ext?.params?.views) ? ext.params.views : []).map(safeView).filter(Boolean);
+    const p = ext?.params?.paid;
+    const paid = p && /^https?:\/\//.test(p.url ?? "") && p.url.includes("{id}") && /^\d+$/.test(String(p.price)) ? p : null;
     return {
-        appId, card: cardUrl, fromBlock, namespaces, views,
+        appId, card: cardUrl, fromBlock, namespaces, views, paid,
         name: card.name ?? appId,
         desc: card.description ?? "",
         url: safeView(card.url),

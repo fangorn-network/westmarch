@@ -1,0 +1,276 @@
+// The stock page every `westmarch ship` app deploys: a front page of what is coming up and
+// what just happened, search, a page per record with its source document inline, and what
+// the reader saved, kept on their device. All of it from the roles the app declared.
+//
+//   #/                 the feed (and "For you", once something is saved)
+//   #/search/<query>   search
+//   #/item/<key>       one record: its document, its meeting, what is like it
+//   #/saved            saved items, exportable; the taste they make
+//   #/history          this session's searches
+import { configure, loadShard } from "../consume/shard.js";
+import { linkOf, rolesFrom, subtitleOf, textOf, titleOf, values } from "../consume/roles.js";
+import { neighbors, search } from "../consume/tools.js";
+import { recommend } from "../consume/taste.js";
+import { embedQuery } from "../consume/embed.js";
+import { registerAgent } from "./agent.js";
+import { detail, facetField, occasions } from "./feed.js";
+import { createStore, snapshot, toCSV, toMarkdown } from "./store.js";
+import { createMap } from "./map.js";
+
+const $ = (s) => document.querySelector(s);
+const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat(Infinity).filter((k) => k != null && k !== false)); return e; };
+const clip = (s, n = 220) => (s.length > n ? `${s.slice(0, s.lastIndexOf(" ", n))} …` : s);
+const day = (d) => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" }) : "");
+
+const ctx = { rows: [], roles: rolesFrom([]), queryVector: (q) => embedQuery(q).catch(() => null) };
+let rolesReady;
+const described = new Promise((ok) => { rolesReady = ok; });
+configure({ onManifests: (ms) => { ctx.roles = rolesFrom(ms); rolesReady(); }, rowText: (f) => textOf(f, ctx.roles) });
+
+const card = await fetch("./.well-known/agent-card.json").then((r) => r.json()).catch(() => ({}));
+const paid = (card.capabilities?.extensions ?? []).map((x) => x.params?.paid).find(Boolean) ?? null;
+const NAME = card.name ?? "Fangorn app";
+document.title = NAME;
+$("#name").textContent = NAME;
+
+// Links to the app's own pages (app.json site.nav), after Saved and History.
+fetch("./nav.json").then((r) => r.json()).then((links) => $("nav").append(...links.map((l) => el("a", { href: l.href }, l.label)))).catch(() => {});
+// A map, when the app ships one (map.json): regions to shade and search on. Pages answers a
+// missing file with index.html, so only JSON counts.
+const geo = await fetch("./map.json").then((r) => ((r.headers.get("content-type") ?? "").includes("json") ? r.json() : null)).catch(() => null);
+if (geo) $("nav").prepend(el("a", { href: "#/map" }, "Map"));
+
+const input = $("#q input");
+input.disabled = false;
+const store = createStore({ local: globalThis.localStorage, session: globalThis.sessionStorage, app: NAME.toLowerCase().replace(/\W+/g, "-") });
+ctx.session = () => store.bundle({ name: NAME, url: location.origin });
+// The page draws as the shards arrive (a view can be tens of MB), rather than after the last.
+const VIEW = new URL("view", location.href).href;
+const total = await fetch(`${VIEW}/cdn/catalog`).then((r) => r.json()).then((c) => c.domains.reduce((n, d) => n + (d.count ?? 0), 0)).catch(() => 0);
+let loaded = false, drawn = 0;
+const loading = loadShard(VIEW, (rows) => {   // checked against the manifests' sha256, shard by shard
+    ctx.rows = rows; reindex();
+    if (Date.now() - drawn > 1500 && /^(#\/?)?$/.test(location.hash)) { drawn = Date.now(); route(); }
+});
+await described;
+
+// ── records ──
+const R = ctx.roles;
+const keyOf = (r) => String((R.identity && r[R.identity]) ?? r.id);
+let byKey = new Map(), byId = new Map(), facet = null, places = [];
+function reindex() {
+    byKey = new Map(ctx.rows.map((r) => [keyOf(r), r]));
+    byId = new Map(ctx.rows.map((r) => [r.id, r]));
+    facet ??= facetField(ctx.rows, R);
+    places = facet ? [...ctx.rows.reduce((m, r) => { const v = placeOf(r); if (v) m.set(v, (m.get(v) ?? 0) + 1); return m; }, new Map())].sort((a, b) => a[0].localeCompare(b[0])) : [];
+    const n = ctx.rows.length.toLocaleString();
+    input.placeholder = loaded ? `Search ${n} records${places.length > 1 ? ` in ${places.length} places` : ""}…`
+        : `Loading ${n}${total ? ` of ${total.toLocaleString()}` : ""} records… (search what is here)`;
+}
+const placeOf = (r) => (facet ? values(r[facet] ?? "")[0] ?? "" : "");
+const dateOf = (r) => String(r[R.temporal?.[0]] ?? "").slice(0, 10);
+const docUrl = (r) => linkOf(r, R);
+const snap = (r) => snapshot(r, { key: keyOf(r), title: titleOf(r, R), subtitle: subtitleOf(r, R), place: placeOf(r), date: dateOf(r), link: docUrl(r), detail: detail(r, R) });
+// Minutes shout ("ORDINANCE 1-2-26: APPROVING REZONING REQUEST"): shown in sentence case,
+// keeping short all-caps words, which are acronyms (TID, EMS, CTH).
+const calm = (t) => (/[a-z]/.test(t) || !/[A-Z]{5}/.test(t) ? t
+    : t.toLowerCase().replace(/\b[a-z]{1,3}\b/g, (w, at) => (/^(and|or|of|the|to|for|in|on|at|by|a|an|as|is|be|no|from)$/.test(w) ? w : w.toUpperCase()))
+        .replace(/^\W*\w/, (c) => c.toUpperCase()).replace(/([.:;!?]\s+|\u2013\s+|-\s+)(\w)/g, (_, p, c) => p + c.toUpperCase()));
+const titleText = (r) => calm(titleOf(r, R));
+const itemHref = (r) => `#/item/${encodeURIComponent(keyOf(r))}`;
+
+// Words of the query, marked where they appear. DOM nodes, never HTML: the text is a stranger's.
+const marked = (text, terms) => {
+    if (!terms.length) return [text];
+    const re = new RegExp(`(${terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "ig");
+    return String(text).split(re).map((part, i) => (i % 2 ? el("mark", {}, part) : part));
+};
+
+const saveButton = (r) => {
+    const b = el("button", { type: "button", className: "star", title: "Save" });
+    const paint = () => { const on = store.isSaved(keyOf(r)); b.textContent = on ? "★" : "☆"; b.setAttribute("aria-label", on ? "Saved" : "Save"); b.classList.toggle("on", on); };
+    b.onclick = (e) => { e.preventDefault(); store.toggleSave(snap(r)); paint(); counts(); };
+    paint();
+    return b;
+};
+
+const row = (r, { terms = [], also = 0, meta = true } = {}) => {
+    const d = detail(r, R);
+    return el("li", { className: "row" },
+        el("div", { className: "main" },
+            el("a", { href: itemHref(r), className: "title" }, marked(titleText(r), terms)),
+            meta ? el("small", {}, [placeOf(r), subtitleOf(r, R)].filter(Boolean).join(" · ")) : null,
+            d ? el("p", { className: "detail" }, marked(clip(d), terms)) : null,
+            also ? el("small", { className: "also" }, `and ${also} more record${also > 1 ? "s" : ""} of the same item`) : null),
+        saveButton(r));
+};
+
+// ── the place chips ──
+let only = null;
+const chips = () => (places.length > 1 ? el("div", { className: "chips" }, [[null, ctx.rows.length], ...places].map(([v, n]) =>
+    el("button", { type: "button", className: v === only ? "chip on" : "chip", title: `${n.toLocaleString()} records`,
+                   onclick: () => { only = v; route(); } }, v ?? "All"))) : null);
+const inPlace = (r) => !only || placeOf(r) === only;
+
+// ── views ──
+const view = $("#view");
+const show = (...kids) => { view.replaceChildren(...kids.flat().filter(Boolean)); window.scrollTo(0, 0); };
+
+function occasionCard(g) {
+    const SHOW = 5, list = el("ul", {}, g.items.slice(0, SHOW).map((r) => row(r, { meta: false })));
+    const more = g.items.length > SHOW ? el("button", { type: "button", className: "more",
+        onclick: (e) => { list.append(...g.items.slice(SHOW).map((r) => row(r, { meta: false }))); e.target.remove(); } }, `${g.items.length - SHOW} more`) : null;
+    return el("article", {}, el("header", {}, el("time", { dateTime: g.date }, day(g.date)),
+        el("h3", {}, [g.place, g.label.replace(/\s*·\s*\d{4}-\d\d-\d\d$/, "")].filter(Boolean).join(" — "))), list, more);
+}
+
+let pastShown = 12;
+function feed() {
+    const { upcoming, past } = occasions(ctx.rows, R, { facet, only });
+    const t = store.taste();
+    const forYou = t ? recommend(ctx.rows.filter(inPlace), t, { limit: 6, exclude: new Set(ctx.rows.filter((r) => store.isSaved(keyOf(r))).map((r) => r.id)) }) : [];
+    show(card.description ? el("p", { className: "about" }, card.description) : null, chips(),
+        forYou.length ? el("section", {}, el("h2", {}, "For you"), el("p", { className: "hint" }, `From the ${t.n} item${t.n > 1 ? "s" : ""} you saved. `, el("a", { href: "#/saved" }, "Change")),
+            el("ul", { className: "list" }, forYou.map(({ row: r }) => row(r)))) : null,
+        upcoming.length ? el("section", {}, el("h2", {}, "Coming up"), upcoming.slice(0, 8).map(occasionCard)) : null,
+        past.length ? el("section", {}, el("h2", {}, "Recently"), past.slice(0, pastShown).map(occasionCard),
+            past.length > pastShown ? el("button", { type: "button", className: "more", onclick: () => { pastShown += 12; feed(); } }, "Show more") : null) : null,
+        !upcoming.length && !past.length ? el("p", { className: "empty" }, loaded ? "Nothing dated here yet. Search above." : "Loading the records…") : null);
+}
+
+let sortBy = "relevance", seq = 0, mapView = null;
+async function results(q) {
+    if (document.activeElement !== $("#q input")) $("#q input").value = q;
+    const mine = ++seq;
+    // Meaning needs the embedding model, which the first search downloads (~130MB). Nobody
+    // waits on that: words answer at once, and meaning replaces them when it is ready.
+    const vec = ctx.queryVector(q);
+    const qv = await Promise.race([vec, new Promise((ok) => setTimeout(() => ok(undefined), 400))]);
+    if (mine !== seq) return;   // a newer search won
+    if (qv === undefined) vec.then((v) => { if (v && mine === seq) render(q, v); });
+    render(q, qv ?? null, qv === undefined);
+}
+
+function render(q, qv, loading = false) {
+    const hits = search(ctx.rows, q, R, { qv, limit: 80, ...(only && facet ? { where: { [facet]: only } } : {}) });
+    // One result per item: the same agenda item turns up in its agenda, its packet and its minutes.
+    const groups = new Map();
+    for (const h of hits) {
+        const r = byId.get(h.id); if (!r) continue;
+        const k = `${placeOf(r)}|${titleOf(r, R).toLowerCase()}`;
+        const g = groups.get(k);
+        if (!g) groups.set(k, { r, also: 0 });
+        else { g.also++; if (detail(r, R).length > detail(g.r, R).length) g.r = r; }
+    }
+    let list = [...groups.values()];
+    if (sortBy === "newest") list = list.sort((a, b) => dateOf(b.r).localeCompare(dateOf(a.r)));
+    const terms = q.toLowerCase().split(/\W+/).filter((t) => t.length > 2);
+    const sorter = el("div", { className: "sort" }, "Sort: ", ["relevance", "newest"].map((s) =>
+        el("button", { type: "button", className: s === sortBy ? "chip on" : "chip", onclick: () => { sortBy = s; render(q, qv, loading); } }, s)));
+    show(chips(), el("div", { className: "resultsbar" }, el("span", {}, `${list.length} result${list.length === 1 ? "" : "s"} for “${q}”${only ? ` in ${only}` : ""}`,
+            loading ? el("small", {}, " · matching words; search by meaning is loading") : null), sorter),
+        list.length ? el("ul", { className: "list" }, list.slice(0, 40).map(({ r, also }) => row(r, { terms, also })))
+            : el("p", { className: "empty" }, "No matches. Try other words, or All places."));
+}
+
+function item(key) {
+    const r = byKey.get(key);
+    if (!r) return show(el("p", { className: "empty" }, "That record is not in this app any more. ", el("a", { href: "#/" }, "Home")));
+    const src = docUrl(r), d = detail(r, R);
+    const HIDE = new Set(["id", "owner", "text", "vector", "norm", "embed", "entityType", R.identity, ...R.title, ...R.subtitle, ...R.media, ...(R.temporal ?? [])]);
+    const facts = Object.entries(r).filter(([k, v]) => !HIDE.has(k) && !/(_id|_sha256)$/.test(k) && (typeof v === "string" || typeof v === "number") && String(v).length < 120);
+    const frame = el("div", { className: "doc" });
+    const docBtn = src ? el("button", { type: "button", className: "act", onclick: () => {
+        if (frame.firstChild) { frame.replaceChildren(); docBtn.textContent = "View document"; return; }
+        frame.append(el("iframe", { src: `./doc?u=${encodeURIComponent(src)}${Number(r.page) > 1 ? `#page=${r.page}` : ""}`, title: "Source document", loading: "lazy" }));
+        docBtn.textContent = "Hide document";
+    } }, "View document") : null;
+    const pass = el("button", { type: "button", className: "act", onclick: () => { store.pass(snap(r)); pass.textContent = "Noted: less like this"; counts(); } }, "Not interested");
+    const occ = occasions(ctx.rows.filter((x) => placeOf(x) === placeOf(r) && dateOf(x) === dateOf(r) && subtitleOf(x, R) === subtitleOf(r, R)), R, { facet });
+    const siblings = [...occ.upcoming, ...occ.past].flatMap((g) => g.items).filter((x) => titleOf(x, R) !== titleOf(r, R));
+    const near = neighbors(ctx.rows, r.id, R, { limit: 12 }).near.map((h) => byId.get(h.id)).filter((x) => x && titleOf(x, R) !== titleOf(r, R)).slice(0, 6);
+    show(el("p", {}, el("a", { href: "#/", onclick: (e) => { if (history.length > 1) { e.preventDefault(); history.back(); } } }, "← Back")),
+        el("article", { className: "record" },
+            el("small", {}, [placeOf(r), subtitleOf(r, R)].filter(Boolean).join(" · ")),
+            el("h2", {}, titleText(r)),
+            d ? el("p", {}, d) : el("p", { className: "hint" }, "No decision is recorded under this item (it may be on an agenda, before the meeting)."),
+            facts.length ? el("dl", {}, facts.map(([k, v]) => [el("dt", {}, k.replace(/_/g, " ")), el("dd", {}, String(v))])) : null,
+            el("div", { className: "acts" }, saveButton(r), docBtn, pass, src ? el("a", { href: src, target: "_blank", rel: "noopener", className: "act" }, "Source ↗") : null),
+            paid && r.paid_sha256 ? el("p", { className: "hint" }, `Agents can buy this item's structured record for ${Number(paid.price) / 10 ** (paid.decimals ?? 6)} ${paid.symbol ?? "USDC"} (x402).`) : null,
+            frame),
+        siblings.length ? el("section", {}, el("h2", {}, "Same meeting"), el("ul", { className: "list" }, siblings.slice(0, 12).map((x) => row(x, { meta: false })))) : null,
+        near.length ? el("section", {}, el("h2", {}, "Similar"), el("ul", { className: "list" }, near.map((x) => row(x)))) : null);
+}
+
+function download(name, text, type) {
+    const a = el("a", { href: URL.createObjectURL(new Blob([text], { type })), download: name });
+    document.body.append(a); a.click(); a.remove();
+}
+
+function saved() {
+    const items = store.saved(), t = store.taste(), slug = NAME.toLowerCase().replace(/\W+/g, "-");
+    const bundle = () => JSON.stringify(store.bundle({ name: NAME, url: location.origin }), null, 1);
+    const copy = el("button", { type: "button", className: "act", onclick: async () => {
+        try { await navigator.clipboard.writeText(bundle()); copy.textContent = "Copied"; } catch { download(`${slug}-session.json`, bundle(), "application/json"); }
+    } }, "Copy for an agent");
+    show(el("h2", { className: "page" }, `Saved (${items.length})`),
+        items.length ? el("div", { className: "acts" },
+            el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.json`, bundle(), "application/json") }, "Export JSON"),
+            el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.csv`, toCSV(items), "text/csv") }, "CSV"),
+            el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.md`, toMarkdown(items, `${NAME}: saved`), "text/markdown") }, "Markdown"),
+            copy) : el("p", { className: "empty" }, "Nothing saved yet. Save items with ☆; they stay on this device."),
+        t ? el("p", { className: "hint" }, `"For you" on the front page is built from these ${t.n}${t.rejected.length ? `, and away from ${t.rejected.length} you passed on` : ""}. It lives in this browser; the export carries it, so an agent can use it too. `,
+            el("button", { type: "button", className: "linkish", onclick: () => { store.clear("passed"); saved(); counts(); } }, "Forget what I passed on")) : null,
+        el("ul", { className: "list" }, items.slice().reverse().map((i) => {
+            const r = byKey.get(i.key);
+            return el("li", { className: "row" }, el("div", { className: "main" },
+                el("a", { href: r ? itemHref(r) : i.url ?? "#/", className: "title" }, i.title),
+                el("small", {}, [i.place, i.subtitle].filter(Boolean).join(" · ")),
+                i.detail ? el("p", { className: "detail" }, clip(i.detail)) : null),
+                el("button", { type: "button", className: "star on", title: "Remove", onclick: () => { store.toggleSave(i); saved(); counts(); } }, "★"));
+        })));
+}
+
+function historyView() {
+    const h = store.history();
+    show(el("h2", { className: "page" }, "Searches this session"),
+        h.length ? el("ul", { className: "list" }, h.map(({ q, at }) => el("li", { className: "row" }, el("div", { className: "main" },
+            el("a", { href: `#/search/${encodeURIComponent(q)}`, className: "title" }, q), el("small", {}, new Date(at).toLocaleTimeString()))))) : el("p", { className: "empty" }, "No searches yet."),
+        h.length ? el("button", { type: "button", className: "act", onclick: () => { store.clear("history"); historyView(); } }, "Clear") : null);
+}
+
+// ── routing ──
+function counts() { const n = store.saved().length; $("#nsaved").textContent = n ? ` (${n})` : ""; }
+function route() {
+    const [, name = "", arg = ""] = (location.hash.match(/^#\/([^/]*)\/?(.*)$/) ?? []);
+    const a = decodeURIComponent(arg);
+    for (const l of document.querySelectorAll("nav a")) l.classList.toggle("on", l.getAttribute("href") === `#/${name}`);
+    document.body.classList.toggle("wide", name === "map");
+    if (name === "search" && a) return results(a);
+    if (name === "item" && a) return item(a);
+    if (name === "saved") return saved();
+    if (name === "history") return historyView();
+    if (name === "map" && geo) return (mapView ??= createMap(geo, { el, show, row, placeOf, ctx })).render(...arg.split("/").map(decodeURIComponent));
+    $("#q input").value = "";
+    return feed();
+}
+
+let typing;
+input.oninput = () => {
+    clearTimeout(typing);
+    const q = input.value.trim();
+    typing = setTimeout(() => {
+        if (!q) { if (location.hash.startsWith("#/search")) location.hash = "#/"; return; }
+        history.replaceState(null, "", `#/search/${encodeURIComponent(q)}`);   // shareable, without one entry per keystroke
+        results(q);
+    }, 250);
+};
+$("#q").onsubmit = (e) => { e.preventDefault(); const q = input.value.trim(); if (!q) return; store.remember(q); location.hash = `#/search/${encodeURIComponent(q)}`; };
+view.addEventListener("click", (e) => { if (e.target.closest("a.title") && location.hash.startsWith("#/search/")) store.remember(input.value); });
+window.onhashchange = route;
+counts();
+route();
+ctx.rows = await loading;
+loaded = true; reindex();
+registerAgent(ctx);   // only now: a tool called before its data loads answers wrong, silently
+route();
