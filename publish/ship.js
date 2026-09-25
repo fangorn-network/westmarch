@@ -365,6 +365,10 @@ export async function buildLocal(configPath, out, { crawl = false, only = null, 
                 schemaId: n.fields?.entityType ?? m[1][0].toUpperCase() + m[1].slice(1), payload: n.fields });
         }
     }
+    // An empty stage is a crawl that did not happen (or a cache that was not restored), not
+    // an app with no records; a view of it would grade as a failure for the wrong reason.
+    const staged = Object.entries(chain).filter(([k]) => !k.endsWith(`/${view.SCHEMA_NAMESPACE}`)).reduce((n, [, c]) => n + c.vertices.length, 0);
+    if (!staged) throw new Error("no staged records under any source's --output-dir: run the sources (--crawl, or a ship) or restore .ship/stage first");
     rmSync(out, { recursive: true, force: true });
     mkdirSync(join(base, ".ship"), { recursive: true });
     const embed = view.cachedEmbed(join(base, ".ship/vectors.ndjson"));
