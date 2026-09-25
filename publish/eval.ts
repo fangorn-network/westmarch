@@ -27,7 +27,10 @@
 //       records: the % of rows that satisfy `expect`, lower is better; `hard`: any rise over the base fails.
 //       `of` (a predicate) narrows which rows count, e.g. only meeting items have a date to miss.
 //   {"id":"basin-towns","kind":"coverage","field":"city","values":["Plover","Stevens Point"],"min":0.9}
-//       coverage: the share of `values` that some row holds in `field` (the missing ones are listed).
+//       coverage: the share of `values` that some row holds in `field`, and the missing ones.
+//       `values` may instead be a path (relative to the golden file) to a JSON list, or to an
+//       object {value: weight} such as each town's population: the share is then by weight, and
+//       the missing are listed heaviest first, so the report names the next places to add.
 //       With a base, any fall fails: a recipe that loses a town has dropped its records.
 //
 // Any check may carry a `goal`: the owner's bet it serves (eval/goals.md says what each one
@@ -45,6 +48,7 @@
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { configure, loadShard, trimView } from "@fangorn-network/westmarch/shard";
 import { rolesFrom, textOf, titleOf, subtitleOf, values } from "@fangorn-network/westmarch/roles";
 import { search, matches } from "@fangorn-network/westmarch/tools";
@@ -55,7 +59,7 @@ type Check = { id: string; goal?: string } & (
     | { kind?: "search"; q: string; k?: number; expect: Pred; min?: number }
     | { kind: "count"; where?: Record<string, string>; expect?: Pred; min?: number; max?: number }
     | { kind: "records"; of?: Pred; expect: Pred; max_pct: number; hard?: boolean }
-    | { kind: "coverage"; field: string; values: string[]; of?: Pred; min?: number });
+    | { kind: "coverage"; field: string; values: string[]; weights?: Record<string, number>; of?: Pred; min?: number });
 type Result = { id: string; kind: "search" | "count" | "records" | "coverage" | "known"; score: number; pass: boolean;
                 goal?: string; hard?: boolean; top?: string[] };
 type QueryVector = (q: string) => Promise<Float32Array | null>;
@@ -96,8 +100,10 @@ async function grade(rows: Row[], roles: Roles, checks: Check[], qv: QueryVector
         } else if (c.kind === "coverage") {
             // The same whole-value, any-case reading `where` uses, so covered means an agent's filter finds it.
             const held = new Set(rows.filter(compile(c.of)).flatMap((r) => values(r[c.field] ?? "").map((v) => v.toLowerCase())));
-            const missing = c.values.filter((v) => !held.has(v.toLowerCase()));
-            const score = c.values.length ? round(1 - missing.length / c.values.length) : 1;
+            const w = (v: string) => c.weights?.[v] ?? 1;
+            const missing = c.values.filter((v) => !held.has(v.toLowerCase())).sort((a, b) => w(b) - w(a));
+            const total = c.values.reduce((a, v) => a + w(v), 0);
+            const score = total ? round(1 - missing.reduce((a, v) => a + w(v), 0) / total) : 1;
             out.push({ id: c.id, kind: "coverage", score, pass: score >= (c.min ?? 0), top: missing.slice(0, 10), ...goal });
         } else {
             const k = c.k ?? 5, ok = compile(c.expect);
@@ -181,8 +187,14 @@ async function main() {
         console.error("usage: westmarch-eval <view> [--golden eval/golden.jsonl] [--base <view>] [--known 200] [--json] [--report out.json]");
         process.exit(flags.help ? 0 : 2);
     }
-    const checks: Check[] = readFileSync(String(flags.golden ?? "eval/golden.jsonl"), "utf8")
+    const golden = String(flags.golden ?? "eval/golden.jsonl");
+    const checks: Check[] = readFileSync(golden, "utf8")
         .split("\n").filter((l) => l.trim() && !l.startsWith("//")).map((l) => JSON.parse(l));
+    // A coverage list kept in its own file: a list, or {value: weight}.
+    for (const c of checks) if (c.kind === "coverage" && typeof c.values === "string") {
+        const list: string[] | Record<string, number> = JSON.parse(readFileSync(join(dirname(golden), c.values), "utf8"));
+        Object.assign(c, Array.isArray(list) ? { values: list } : { values: Object.keys(list), weights: list });
+    }
     const known = Number(flags.known ?? 200);
 
     const { env } = await import("@huggingface/transformers");
@@ -270,6 +282,9 @@ async function selfcheck() {
     // Coverage, and goals scored apart.
     const [cov] = await grade(rows, roles, [{ id: "towns", kind: "coverage", field: "city", values: ["plover", "Stevens Point", "Wausau"], min: 0.5, goal: "towns" }], async () => null, 0);
     assert(cov.score === 0.667 && cov.pass && cov.top?.[0] === "Wausau", `coverage is the share present, the rest listed: ${JSON.stringify(cov)}`);
+    const [pop] = await grade(rows, roles, [{ id: "pop", kind: "coverage", field: "city", values: ["Plover", "Wausau", "Adell"],
+        weights: { Plover: 30, Wausau: 60, Adell: 10 } }], async () => null, 0);
+    assert(pop.score === 0.3 && pop.top?.join() === "Wausau,Adell", `weighted coverage, the heaviest gap first: ${JSON.stringify(pop)}`);
     const goals = byGoal([cov, { ...r.rezoning, goal: "towns" }, r.plover]);
     assert(goals.towns.checks === 2 && goals.towns.coverage === 0.667 && goals.towns.search === 1 && !("undefined" in goals), `goals: ${JSON.stringify(goals)}`);
 
