@@ -123,6 +123,13 @@ What is asked lives in `eval/golden.jsonl`, one check per line, as data rather t
 {"id":"addresses","kind":"records","expect":{"match":{"text":"/\\b\\d{2,6} [A-Z]\\w+ St\\b/"}},"max_pct":0.5,"hard":true}
 ```
 
+Which questions go in is the owner's bet: who would pay for this, for which answers.
+Write it down in `eval/goals.md` (the customer, their questions, the coverage they need, a
+date, and what would count as failure), tag each check with the `goal` it serves, and the
+report scores each goal on its own. A `coverage` check (`{"kind":"coverage","field":"city",
+"values":[…]}`) measures how much of the list a goal needs is present at all; with a base,
+any fall fails, because a recipe that loses a town has dropped its records.
+
 `expect` is a predicate over a row: `where` (the whole-value match agents filter with),
 `match` (a field, or several joined by `|`, to a regex; case-insensitive unless written
 `/re/flags`), `not`. Relevance is a predicate and not a list of record ids, because ids

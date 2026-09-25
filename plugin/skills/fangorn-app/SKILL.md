@@ -416,11 +416,18 @@ checking every run. It needs the app on `westmarch-ship` (`app.json`, guide *The
 way*); an app built by hand moves there first. Read the guide's *Grading a change before
 it ships* before starting.
 
-1. **Questions, with the person.** Write `eval/golden.jsonl`: 10–20 questions they would
-   actually ask, each with a predicate over the fields that makes a hit a hit (a town, a
-   county, a heading pattern), plus `count` checks for the filters agents will use. If
-   records can name private people, add `records` checks for what must never show (names,
-   addresses) with `"hard": true`. Relevance is never a list of record ids.
+1. **The bet, in the person's words.** Before any question: who would pay for this app,
+   for which answers, and how they would know it failed. Write it to `eval/goals.md`, one
+   section per goal: the customer, the questions they ask, the coverage they need (which
+   towns, which permits), a date, and what would kill it ("no paid record of this kind by
+   then"). It is their guess about what will be profitable; do not make it for them, and
+   push back on "everything, for everyone", which gives the loop nothing to aim at.
+   **Then the questions.** Write `eval/golden.jsonl` from that bet: 10–20 questions its
+   customer would ask, each with a predicate over the fields that makes a hit a hit, and a
+   `goal` naming the bet it serves; `count` checks for the filters agents will use; a
+   `coverage` check for the list the bet needs covered. If records can name private
+   people, add `records` checks for what must never show (names, addresses) with
+   `"hard": true`. Relevance is never a list of record ids.
 2. **Grade what is there.** `npx westmarch-ship app.json --local /tmp/view`, then
    `npx westmarch-eval /tmp/view`. Set each `min` and `max_pct` from this first run, just
    past what it scored. Show the person any question that scores 0: either the question or

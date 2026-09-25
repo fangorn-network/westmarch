@@ -3,8 +3,9 @@
 //
 //   westmarch-eval <view> [--golden eval/golden.jsonl] [--base <view>] [--known 200] [--json] [--report out.json]
 //
-// A view is a URL or a directory (westmarch-ship --local writes one), served here as a reader fetches it.
 //   westmarch-eval --selfcheck
+//
+// A view is a URL or a directory (westmarch-ship --local writes one), served here as a reader fetches it.
 //
 // It grades the RECIPE — how records are shaped, which fields are embedded, how rows
 // rank — never the data. New records are facts, and a view is not worse for holding
@@ -25,6 +26,13 @@
 //   {"id":"addresses","kind":"records","expect":{"match":{"text":"/\\b\\d{2,6} [A-Z]\\w+ (St|Ave)\\b/"}},"max_pct":0.5,"hard":true}
 //       records: the % of rows that satisfy `expect`, lower is better; `hard`: any rise over the base fails.
 //       `of` (a predicate) narrows which rows count, e.g. only meeting items have a date to miss.
+//   {"id":"basin-towns","kind":"coverage","field":"city","values":["Plover","Stevens Point"],"min":0.9}
+//       coverage: the share of `values` that some row holds in `field` (the missing ones are listed).
+//       With a base, any fall fails: a recipe that loses a town has dropped its records.
+//
+// Any check may carry a `goal`: the owner's bet it serves (eval/goals.md says what each one
+// is). The report scores each goal apart, so "trades 0.4, general 0.9" shows which bet the
+// app is losing, instead of one mean that hides it.
 //
 // A predicate is {where?, match?, not?}. `where` is fangorn's own whole-value,
 // case-insensitive match — the filter agents use. `match` maps a field (or several
@@ -38,16 +46,18 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { configure, loadShard, trimView } from "@fangorn-network/westmarch/shard";
-import { rolesFrom, textOf, titleOf, subtitleOf } from "@fangorn-network/westmarch/roles";
+import { rolesFrom, textOf, titleOf, subtitleOf, values } from "@fangorn-network/westmarch/roles";
 import { search, matches } from "@fangorn-network/westmarch/tools";
 import { EMBED_MODEL, embedQueryDirect } from "@fangorn-network/westmarch/embed";
 
 type Pred = { where?: Record<string, string>; match?: Record<string, string>; not?: Pred };
-type Check =
-    | { id: string; kind?: "search"; q: string; k?: number; expect: Pred; min?: number }
-    | { id: string; kind: "count"; where?: Record<string, string>; expect?: Pred; min?: number; max?: number }
-    | { id: string; kind: "records"; of?: Pred; expect: Pred; max_pct: number; hard?: boolean };
-type Result = { id: string; kind: "search" | "count" | "records" | "known"; score: number; pass: boolean; hard?: boolean; top?: string[] };
+type Check = { id: string; goal?: string } & (
+    | { kind?: "search"; q: string; k?: number; expect: Pred; min?: number }
+    | { kind: "count"; where?: Record<string, string>; expect?: Pred; min?: number; max?: number }
+    | { kind: "records"; of?: Pred; expect: Pred; max_pct: number; hard?: boolean }
+    | { kind: "coverage"; field: string; values: string[]; of?: Pred; min?: number });
+type Result = { id: string; kind: "search" | "count" | "records" | "coverage" | "known"; score: number; pass: boolean;
+                goal?: string; hard?: boolean; top?: string[] };
 type QueryVector = (q: string) => Promise<Float32Array | null>;
 
 /** A drop below this, in mean precision@k or known@10, is "worse". canton-corpus's number. */
@@ -74,19 +84,26 @@ async function grade(rows: Row[], roles: Roles, checks: Check[], qv: QueryVector
     const byId = new Map(rows.map((r) => [r.id, r]));
     const out: Result[] = [];
     for (const c of checks) {
+        const goal = c.goal ? { goal: c.goal } : {};
         if (c.kind === "count") {
             const ok = compile(c.expect);
             const n = rows.filter((r) => matches(r, c.where) && ok(r)).length;
-            out.push({ id: c.id, kind: "count", score: n, pass: n >= (c.min ?? 1) && n <= (c.max ?? Infinity) });
+            out.push({ id: c.id, kind: "count", score: n, pass: n >= (c.min ?? 1) && n <= (c.max ?? Infinity), ...goal });
         } else if (c.kind === "records") {
             const of = rows.filter(compile(c.of)), ok = compile(c.expect);
             const pct = of.length ? round((100 * of.filter(ok).length) / of.length) : 0;
-            out.push({ id: c.id, kind: "records", score: pct, pass: pct <= c.max_pct, hard: c.hard });
+            out.push({ id: c.id, kind: "records", score: pct, pass: pct <= c.max_pct, hard: c.hard, ...goal });
+        } else if (c.kind === "coverage") {
+            // The same whole-value, any-case reading `where` uses, so covered means an agent's filter finds it.
+            const held = new Set(rows.filter(compile(c.of)).flatMap((r) => values(r[c.field] ?? "").map((v) => v.toLowerCase())));
+            const missing = c.values.filter((v) => !held.has(v.toLowerCase()));
+            const score = c.values.length ? round(1 - missing.length / c.values.length) : 1;
+            out.push({ id: c.id, kind: "coverage", score, pass: score >= (c.min ?? 0), top: missing.slice(0, 10), ...goal });
         } else {
             const k = c.k ?? 5, ok = compile(c.expect);
             const hits = search(rows, c.q, roles, { qv: await qv(c.q), limit: k }).map((h) => byId.get(h.id)!);
             const score = round(hits.filter(ok).length / k);
-            out.push({ id: c.id, kind: "search", score, pass: score >= (c.min ?? 0), top: hits.slice(0, 3).map((r) => titleOf(r, roles).slice(0, 90)) });
+            out.push({ id: c.id, kind: "search", score, pass: score >= (c.min ?? 0), top: hits.slice(0, 3).map((r) => titleOf(r, roles).slice(0, 90)), ...goal });
         }
     }
     // ponytail: the pool is each view's own rows, so base and candidate sample different
@@ -110,6 +127,19 @@ async function grade(rows: Row[], roles: Roles, checks: Check[], qv: QueryVector
     return out;
 }
 
+/** Each goal's checks, scored apart: how many pass, and the mean of its searches and coverages. */
+function byGoal(results: Result[]) {
+    const out: Record<string, { checks: number; passing: number; search: number | null; coverage: number | null }> = {};
+    const mean = (xs: number[]) => (xs.length ? round(xs.reduce((a, x) => a + x, 0) / xs.length) : null);
+    for (const g of new Set(results.map((r) => r.goal).filter((g): g is string => !!g))) {
+        const rs = results.filter((r) => r.goal === g);
+        out[g] = { checks: rs.length, passing: rs.filter((r) => r.pass).length,
+                   search: mean(rs.filter((r) => r.kind === "search").map((r) => r.score)),
+                   coverage: mean(rs.filter((r) => r.kind === "coverage").map((r) => r.score)) };
+    }
+    return out;
+}
+
 /** The candidate against the base. Worse on any one rule is worse. */
 function compare(cand: Result[], base: Result[]) {
     const was = new Map(base.map((r) => [r.id, r.score]));
@@ -120,6 +150,7 @@ function compare(cand: Result[], base: Result[]) {
         // The ratchet: a question the base answered at all, the candidate must too.
         if (r.kind === "search" && b !== undefined && b > 0 && r.score === 0) failures.push(`${r.id}: answered before, nothing now`);
         if (r.hard && b !== undefined && r.score > b) failures.push(`${r.id}: ${b}% → ${r.score}%, and it may not rise`);
+        if (r.kind === "coverage" && b !== undefined && r.score < b) failures.push(`${r.id}: coverage ${b} → ${r.score}; missing ${r.top?.join(", ")}`);
     }
     // Aggregates, over the checks both sides ran: one question moving a rank is noise.
     const both = (kind: Result["kind"]) => cand.filter((r) => (kind === "known" ? r.id === "known@10" : r.kind === kind) && was.has(r.id));
@@ -172,7 +203,7 @@ async function main() {
     const failures = cmp?.failures ?? cand.results.filter((r) => !r.pass).map((r) => `${r.id}: ${r.score} is outside its bounds`);
     // What reproduces this grade: the model, the runtime, and the views (whose manifests hash every shard).
     const report = { model: EMBED_MODEL, node: process.version, platform: `${process.platform}-${process.arch}`,
-                     candidate: cand, base, verdict: cmp?.verdict ?? null, deltas: cmp?.deltas ?? [], failures, pass: !failures.length };
+                     goals: byGoal(cand.results), candidate: cand, base, verdict: cmp?.verdict ?? null, deltas: cmp?.deltas ?? [], failures, pass: !failures.length };
 
     if (flags.report) writeFileSync(String(flags.report), JSON.stringify(report, null, 1));
     if (flags.json) console.log(JSON.stringify(report, null, 1));
@@ -184,6 +215,8 @@ async function main() {
             console.log(`${r.pass ? " " : "✗"} ${r.kind.padEnd(7)} ${r.id.padEnd(32)} ${b === undefined ? "" : `${b} → `}${r.score}`);
         }
         for (const d of report.deltas) console.log(`\n${d.kind}: ${d.base} → ${d.cand}`);
+        for (const [g, s] of Object.entries(report.goals))
+            console.log(`\ngoal ${g}: ${s.passing}/${s.checks} passing${s.search === null ? "" : `, search ${s.search}`}${s.coverage === null ? "" : `, coverage ${s.coverage}`}`);
         console.log(`\n${report.verdict ?? (report.pass ? "pass" : "fail")}${failures.length ? `\n  ${failures.join("\n  ")}` : ""}`);
     }
     process.exit(report.pass ? 0 : 1);
@@ -234,6 +267,12 @@ async function selfcheck() {
     assert(scoped.score === 50, `\`of\` narrows the rows a record check counts: ${scoped.score}`);
     assert(r["known@10"].score === 1, "every title finds its own row");
 
+    // Coverage, and goals scored apart.
+    const [cov] = await grade(rows, roles, [{ id: "towns", kind: "coverage", field: "city", values: ["plover", "Stevens Point", "Wausau"], min: 0.5, goal: "towns" }], async () => null, 0);
+    assert(cov.score === 0.667 && cov.pass && cov.top?.[0] === "Wausau", `coverage is the share present, the rest listed: ${JSON.stringify(cov)}`);
+    const goals = byGoal([cov, { ...r.rezoning, goal: "towns" }, r.plover]);
+    assert(goals.towns.checks === 2 && goals.towns.coverage === 0.667 && goals.towns.search === 1 && !("undefined" in goals), `goals: ${JSON.stringify(goals)}`);
+
     // The verdict.
     const res = (id: string, score: number, kind: Result["kind"] = "search", extra = {}): Result => ({ id, kind, score, pass: true, ...extra });
     const base = [res("q1", 0.8), res("q2", 0.4), res("known@10", 0.9, "known"), res("pii", 0.1, "records", { hard: true })];
@@ -246,5 +285,6 @@ async function selfcheck() {
     assert(compare([res("q1", 0.8), res("q2", 0.4), res("known@10", 0.9, "known"), res("pii", 0.2, "records", { hard: true })], base).verdict === "worse", "a hard record may not rise");
     assert(compare([res("q1", 0.8, "search", { pass: false }), res("q2", 0.4)], base).verdict === "worse", "a floor fails whatever the base did");
     assert(compare([res("q1", 0.8), res("q2", 0.4), res("q3", 0)], base).verdict === "unchanged", "a new question has no base to fall from");
+    assert(compare([res("cov", 0.9, "coverage")], [res("cov", 1, "coverage")]).verdict === "worse", "coverage may not fall");
     console.log("eval: selfcheck ok");
 }
