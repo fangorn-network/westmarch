@@ -436,10 +436,16 @@ it ships* before starting.
    create`, push, then copy from Quorum: `.github/workflows/ship.yml` (the cron that ships
    data, with its secrets list), `.github/workflows/eval.yml` (the PR gate, no secrets),
    `.github/CODEOWNERS` (`eval/`, `.github/`, `app.json`) and
-   `.github/ISSUE_TEMPLATE/observation.yml`. Set the secrets with `gh secret set`, never by
-   echoing them. Protect `main`: the `eval` check required, code-owner review required.
+   `.github/ISSUE_TEMPLATE/observation.yml`. `ship.yml`'s `observe` step uploads its report
+   as the `observe-report` artifact, which is what `fangorn-improve` reads. Create the
+   labels `observation`, `accepted` (the owner's triage) and `improve` (the improver's PRs).
+   Set the secrets with `gh secret set`, never by echoing them. Protect `main`: the `eval`
+   check required, code-owner review required.
 4. **Check the loop once.** Let `ship` run (`gh workflow run ship`), then open a PR that
    changes only the README. `eval` must pass with `unchanged`.
+
+From here, `fangorn-improve` does the improving: one gated PR per run, by hand or on a
+schedule. Offer it once the loop has passed its check.
 
 What the parts may do: `ship` holds the wallet key and publishes data, whatever it is.
 `eval` holds nothing and decides whether a recipe change may merge. An agent that
