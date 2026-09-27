@@ -201,7 +201,7 @@ export function liveFields(out) {
  * Returns per-domain counts of what changed.
  */
 export async function publishView({ fangorn, app, namespaces, out, fromBlock = 0n, rebake = false,
-                                    embed = embedDocumentDirect, log = console.log }) {
+                                    embed = embedDocumentDirect, log = console.log, shardRows = 20000 }) {
     if (!namespaces?.length) throw new Error("publishView: name the data namespace(s) to publish");
     fangorn.setAppId(app);
     const appId = fangorn.getAppId();
@@ -222,7 +222,7 @@ export async function publishView({ fangorn, app, namespaces, out, fromBlock = 0
         for (const { owner: publisher } of timelines) {
             const domain = domainFor(appId, publisher, ns);
             report[domain] = await publishDomain({
-                fangorn, schema, publisher, ns, domain, dir: `${out}/cdn/domains/${domain}`, rebake, embed, log,
+                fangorn, schema, publisher, ns, domain, dir: `${out}/cdn/domains/${domain}`, rebake, embed, log, shardRows,
             });
         }
     }
@@ -230,7 +230,7 @@ export async function publishView({ fangorn, app, namespaces, out, fromBlock = 0
     return report;
 }
 
-async function publishDomain({ fangorn, schema, publisher, ns, domain, dir, rebake, embed, log }) {
+async function publishDomain({ fangorn, schema, publisher, ns, domain, dir, rebake, embed, log, shardRows }) {
     const { contents } = await fangorn.readNamespace(publisher, ns);
     const records = new Map((contents.vertices ?? []).filter((v) => v.payload && typeof v.payload === "object")
         .map((v) => [v.cid, { ...v.payload, entityType: v.schemaId }]));
@@ -275,12 +275,17 @@ async function publishDomain({ fangorn, schema, publisher, ns, domain, dir, reba
     mkdirSync(`${dir}/shards`, { recursive: true });
     const manifest = had.manifest ?? { name: domain, description: "", count: 0, dim: EMBED_DIM, model: EMBED_MODEL,
         distance: "Cosine", embedder: EMBEDDER, filter: { owner: [publisher], namespace: [ns] }, shards: [], tombstones: [] };
-    const writeShard = (ls) => {
-        const gz = gzipSync(`${ls.join("\n")}\n`, { level: 9 });
-        const sha256 = createHash("sha256").update(gz).digest("hex");
-        const file = `shard-${String(manifest.shards.length).padStart(4, "0")}-${sha256.slice(0, 12)}.ndjson.gz`;
-        writeFileSync(`${dir}/shards/${file}`, gz);
-        manifest.shards.push({ file, count: ls.length, bytes: gz.length, sha256 });
+    // Pages serves files up to 25 MiB; 52k Steam games gzipped to 28 MiB in one shard.
+    // ponytail: split by row count (~550 B a row gzipped); split by bytes if rows get much fatter.
+    const writeShard = (all) => {
+        for (let i = 0; i < all.length; i += shardRows) {
+            const ls = all.slice(i, i + shardRows);
+            const gz = gzipSync(`${ls.join("\n")}\n`, { level: 9 });
+            const sha256 = createHash("sha256").update(gz).digest("hex");
+            const file = `shard-${String(manifest.shards.length).padStart(4, "0")}-${sha256.slice(0, 12)}.ndjson.gz`;
+            writeFileSync(`${dir}/shards/${file}`, gz);
+            manifest.shards.push({ file, count: ls.length, bytes: gz.length, sha256 });
+        }
     };
     if (lines.length) {
         writeShard(lines);
@@ -389,6 +394,11 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     const run = () => publishView({ fangorn, app: APP, namespaces: ["shop"], out, embed, log: () => {} });
 
     const d = domainFor(APP, PUB, "shop");
+    const split = mkdtempSync(`${tmpdir()}/view-`);
+    await publishView({ fangorn, app: APP, namespaces: ["shop"], out: split, embed, log: () => {}, shardRows: 2 });
+    m0: { const m = readJson(`${split}/cdn/domains/${d}/manifest`);
+          eq([m.count, m.shards.map((s) => s.count)], [3, [2, 1]], "rows past shardRows go to the next shard (Pages caps a file at 25 MiB)"); }
+    embedded.length = 0;
     eq((await run())[d], { added: 3, removed: 0 }, "first run embeds everything");
     if (!embedded.includes("Title: Oak table. Tags: . a solid oak dining table")) throw new Error(`declared roles compose the text: ${embedded}`);
     let m = readJson(`${out}/cdn/domains/${d}/manifest`);

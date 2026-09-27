@@ -235,7 +235,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     if (!existsSync(join(site, "view/cdn/catalog")) && state.url && !dry) await mirrorView(`${state.url}/view`, join(site, "view"));
     const namespaces = [...new Set(cfg.sources.map((s) => s.namespace))];
     const report = dry ? {} : await view.publishView({ fangorn, app: cfg.app, namespaces, out: join(site, "view"),
-        fromBlock: BigInt(state.fromBlock), log });
+        fromBlock: BigInt(state.fromBlock), embed: view.cachedEmbed(join(dir, "vectors.ndjson")), log });
 
     // 6. the page, the card, the headers
     if (!existsSync(join(STOCK, "index.html"))) throw new Error(`no stock page at ${STOCK}; run \`npx vite build\` in westmarch/site`);

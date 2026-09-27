@@ -79,6 +79,7 @@ One kind per PR. The kind decides what proves it.
 |---|---|---|---|
 | **data**: a new town, a new feed | a row in `towns.json`, `legistar.json`, … | the row probes, and the source stages records for it | grades unchanged (it does not crawl); coverage rises after the next ship |
 | **recipe**: shaping, parsing, schema | `sources/*.py`, `app.json` `types` | a local grade, base against candidate: not worse, and the target question up | grades it; worse cannot merge |
+| **crawler**: a source that reads what it could not (a new platform, a fallback when an API refuses, a site layout it misreads) | `sources/*.py`, plus the rows that use it | the target place stages records; every namespace it already crawled stages the same records as before; the privacy checks hold on the new records | grades the recipe side; the new place's coverage rises after the next ship |
 | **questions** | `eval/golden.jsonl` only | the new check runs against the current view | grades it with the new check; owner reviews (CODEOWNERS) |
 
 ## 4. Do it
@@ -112,8 +113,10 @@ npx westmarch-ship app.json --local /tmp/cand --crawl --only <namespace>
 Nonzero records for the new namespace, or the row is wrong. Say how many, and show three
 headings so a reviewer can see they are that place's decisions.
 
-A place that cannot be crawled (HTTP 403 to every client, a bot challenge, meetings only
-as scanned images) is still data: add its row with `"skip": true` and a `"reason"` naming
+Before a place is recorded as uncrawlable, look for a **crawler** change that reaches it
+(below): a different client name the town's own site links to, a public web page where the
+API refuses. A place that truly cannot be crawled (HTTP 403 to every request, a bot challenge,
+meetings only as scanned images) is still data: add its row with `"skip": true` and a `"reason"` naming
 what was tried and the date, in a data PR. Runs skip it from then on instead of retrying,
 and its coverage stays honestly missing. Move to the next gap in the same run.
 
@@ -134,6 +137,35 @@ few; say which.
   failures, so the next run does not repeat it.
 - `unchanged` and the target question did not rise: the same, as a comment.
 - `better`, or `unchanged` with the target question up and nothing else down: open it.
+
+**Crawler: make a source read what it could not.** This is code, and the most valuable
+kind: one fix can reach every place on the same platform. The rules:
+
+- Follow the town's own site to its meetings. The platform account it links to is the live
+  one; a guessed client name can be an abandoned account (Racine: `racine.legistar.com` is
+  empty, `cityofracine.legistar.com` is live).
+- Respect the site: its `robots.txt`, the source's `--delay`, no bypassing a bot check or a
+  login. A site that refuses crawlers is a skip row, not a problem to defeat.
+- Reuse the source's own pieces (`split_items`, `clean`, `document`, the harness): new code
+  reads a new shape of page, and hands the text to the same splitting and withholding as
+  every other record, so privacy does not depend on the new code getting it right.
+- Change existing behaviour only where it failed: a fallback that runs when the old path
+  refuses, not a rewrite of the path that works.
+- Keep it testable offline: the parsing takes HTML or JSON and returns rows, and a
+  `--selfcheck` (or the module's existing one) runs it on a saved sample.
+
+Proof, all of it in the PR:
+
+```sh
+npx westmarch-ship app.json --local /tmp/new --crawl --only <new namespace>          # the target: records, and three headings
+npx westmarch-ship app.json --local /tmp/cand --crawl --only <2-3 namespaces it already read>
+(cd ../base && npx westmarch-ship app.json --local /tmp/base --crawl --only <the same>)
+npx westmarch-eval /tmp/cand --base /tmp/base                                      # the old path: unchanged
+npx westmarch-eval /tmp/new --golden eval/golden.jsonl --known 0                   # privacy checks on the new records
+```
+
+A change to the platform itself (westmarch, quickbeam's harness) is not this skill's to
+make: open an issue in that repo with the change proposed and the evidence, and link it.
 
 **Questions.** Add the check the Observation implies to `eval/golden.jsonl`, with the
 `goal` it serves and a predicate over fields (never record ids). Run `westmarch-eval` on
