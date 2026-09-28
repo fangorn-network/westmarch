@@ -1,6 +1,6 @@
 {
   "name": "@fangorn-network/westmarch",
-  "version": "0.0.5-dev",
+  "version": "0.0.6-dev",
   "description": "Publisher and consumer surfaces for a Fangorn app: shape a graph, publish it, read it back as a searchable, agent-drivable catalog",
   "license": "MIT",
   "type": "module",
