@@ -73,7 +73,7 @@ export function agentCard({ name, description, url, version = "0.0.0", tools = [
 
 /** The params `discoverApp` reads, validated the same way it validates them.
  *  A malformed card should fail the build, not the first reader. */
-export function fangornExtension({ app, fromBlock, namespaces = [], views = [], config = FangornConfig }) {
+export function fangornExtension({ app, fromBlock, namespaces = [], views = [], paid, config = FangornConfig }) {
     if (!app) throw new Error("fangorn.app is required");
     const id = HEX32.test(app) ? app : hashAppId(app);
     const from = String(fromBlock ?? "");
@@ -82,6 +82,14 @@ export function fangornExtension({ app, fromBlock, namespaces = [], views = [], 
     for (const v of views) {
         const u = new URL(v);   // throws on garbage
         if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error(`fangorn.views: not http(s): ${v}`);
+    }
+    // `paid`: records sold over x402. `url` has an `{id}` for the record's id; `price` is in
+    // the token's base units. Readers only offer to buy; the 402 itself is the quote.
+    if (paid) {
+        const u = new URL(paid.url.replace("{id}", "x"));
+        if (!/^https?:$/.test(u.protocol) || !paid.url.includes("{id}")) throw new Error(`fangorn.paid.url must be http(s) with {id}: ${paid.url}`);
+        if (!/^\d+$/.test(String(paid.price))) throw new Error(`fangorn.paid.price must be base units, got ${paid.price}`);
+        if (!/^0x[0-9a-fA-F]{40}$/.test(paid.asset ?? "")) throw new Error(`fangorn.paid.asset must be a token address`);
     }
     return {
         uri: FANGORN_APP_EXTENSION,
@@ -92,6 +100,8 @@ export function fangornExtension({ app, fromBlock, namespaces = [], views = [], 
             appRegistry: config.appRegistryContractAddress,
             dataRegistry: config.dataRegistryContractAddress,
             appId: id, fromBlock: from, namespaces, views,
+            ...(paid ? { paid: { url: paid.url, price: String(paid.price), asset: paid.asset, network: paid.network,
+                                 symbol: paid.symbol ?? "USDC", decimals: paid.decimals ?? 6, description: paid.description ?? "" } } : {}),
         },
     };
 }

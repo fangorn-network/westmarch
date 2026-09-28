@@ -66,7 +66,7 @@ export function rolesFrom(manifests = [], sample = []) {
     const seen = new Set();
     for (const r of sample) for (const k of Object.keys(r)) seen.add(k);
 
-    const title = [], subtitle = [], tags = [], text = [], measures = [], spatial = [], media = [];
+    const title = [], subtitle = [], tags = [], text = [], measures = [], spatial = [], media = [], temporal = [], facets = [];
     const labels = {}, types = {}, fieldLabels = {}, externalUrl = {}, actions = {};
     let launch = null, refers = null;
     const entityTypes = [];
@@ -78,7 +78,7 @@ export function rolesFrom(manifests = [], sample = []) {
     for (const m of manifests) {
         const rm = m?.role_map ?? {};
         push(title, rm.title); push(subtitle, rm.subtitle); push(tags, rm.tags);
-        push(text, rm.text); push(measures, rm.measures); push(spatial, rm.spatial); push(media, rm.media);
+        push(text, rm.text); push(measures, rm.measures); push(spatial, rm.spatial); push(media, rm.media); push(temporal, rm.temporal);
         identity ??= rm.identity ?? null;
         // Where a row in THIS corpus points, in someone else's.
         //
@@ -101,6 +101,8 @@ export function rolesFrom(manifests = [], sample = []) {
         Object.assign(fieldLabels, pr.fieldLabels ?? {});
         Object.assign(externalUrl, pr.externalUrl ?? {});
         Object.assign(actions, pr.actions ?? {});
+        // The fields a reader narrows by first (a town, a genre): the app's to name.
+        push(facets, pr.facets);
         // The app's own interface, if it ships one. A url, not markup: it is a
         // separate document with a separate origin, which is the only way a
         // stranger's UI can be run at all.
@@ -135,7 +137,7 @@ export function rolesFrom(manifests = [], sample = []) {
     guess(text, GUESS.text);
 
     return {
-        title, subtitle, tags, text, measures, spatial, media, identity,
+        title, subtitle, tags, text, measures, spatial, media, temporal, facets, identity,
         labels, types, fieldLabels, externalUrl, actions, launch, refers, entityTypes,
         // What this view sells, if anything. A list because a fused view can pull
         // domains from several publishers and they price independently.

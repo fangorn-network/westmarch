@@ -1,79 +1,199 @@
 ---
 name: fangorn-app
-description: Build, publish and register a Fangorn app with @fangorn-network/westmarch — from a JSON array of records to a live static site any person can search by meaning and any agent can discover, verify and drive. Use this whenever someone wants to put a dataset, catalog, corpus or collection "on Fangorn", make it searchable without running a server, expose it to agents (WebMCP page tools, fangorn-mcp data tools, an agent card, ERC-8004/A2A), declare a fangorn.schema role_map, run westmarch-view, bake or lint a view, or asks how their data can be found by fangorn-mcp.
+description: Build, publish and register a Fangorn app with @fangorn-network/westmarch — a self-improving database with no server. The owner's questions come first; then sources (a crawler, a one-time dataset, or live publishers) are graded against those questions locally before anything goes on chain; then a static site any person can search by meaning and any agent can discover, verify and drive. Use this whenever someone wants to put a dataset, catalog, corpus or feed "on Fangorn", make it searchable without running a server, write golden questions or an eval for one, expose it to agents (WebMCP page tools, fangorn-mcp data tools, an agent card, ERC-8004/A2A), declare a fangorn.schema role_map, run westmarch-ship, westmarch-view, westmarch-eval or lint, or asks how their data can be found by fangorn-mcp.
 ---
 
 # Building a Fangorn app with westmarch
 
-A Fangorn app is a static site plus a few on-chain facts. The data is committed to
-the app owner's namespace on Arbitrum Sepolia; `westmarch-view` embeds those commits
-into content-addressed shards the site hosts; a page reads the shards and searches
-them in the reader's tab; an agent card bound on chain tells every agent where the
-page, the tools and the views are. Nothing runs on a server the owner has to keep up.
+A Fangorn app is a database with no server. Its records are committed to the owner's
+namespace on Arbitrum Sepolia; a view of them (content-addressed shards with embeddings)
+is hosted as static files on Cloudflare Pages; a page searches them in the reader's tab;
+an agent card bound on chain lets any agent find, verify and drive it. It improves by a
+loop the owner runs: new records always ship, and a change to *how* records are made
+ships only if the owner's questions are answered no worse.
 
 ```
-records ─► data/graph.json ─► fangorn commit/push ─┐
-schema/graph.json ─► fangorn commit/push ──────────┤ (namespace fangorn.schema)
-                                                   ▼
-                                                 chain ─► westmarch-view ─► site/view/
-app/ (page) ─► vite build ─► site/ ◄── the page loads site/view
-pipeline/agent-card.mjs ─► site/.well-known/agent-card.json ─► deploy ─► fangorn app agent
+ crawl, snapshot ─► .ship/stage ─► recipe ─► local view ─► westmarch-eval ─pass─► chain ─► view ─► Pages
+                    (plaintext,    (app.json  (--local)     (eval/golden.jsonl)    ▲
+                     owner's disk)  types)                                         │
+ live: other wallets publish into the app ─────────────────────────────────────────┘
 ```
+
+The order is the point: **questions, then sources, then a local build graded against
+the questions, and only then anything permanent.** Everything before *Go live* is free,
+local and reversible. `westmarch-ship` does the whole pipeline from one `app.json`;
+building by hand (the last part of this skill) is for what it does not fit.
 
 The full walkthrough with every file's source is the guide. Read the sections named
 below when you reach them; do not read it whole up front.
 
-- in the repo: `${CLAUDE_PLUGIN_ROOT}/../docs/app-to-agent.md`
+- online: https://github.com/fangorn-network/westmarch/blob/main/docs/app-to-agent.md
 - once the package is installed in the project: `node_modules/@fangorn-network/westmarch/docs/app-to-agent.md`
 
-## Before writing anything, settle six things
+## Lead the conversation
 
-1. **Where the records are.** A path or URL to the actual data, in hand. The person should be presented
-   with an input box along with this option so they can type a location before moving on to other options. Do not scaffold,
-   invent a shape, or write placeholder rows in its place. The user may point you to data
-   that has already been embedded as well. Generating a starter set is a
-   separate choice they make explicitly, and it still burns a permanent app name.
-2. **What the person would like the app name to be.** The application name is permanent once claimed.
-   Do not assume that the name matches that of the data being supplied.
-3. **What is a record.** A vertex is `{ id, tag, payload }`. The id must be stable
-   across commits (the same thing keeps the same id, or every update looks like a
-   delete plus an insert). The payload needs prose that says what the record *is* —
-   that text is what gets embedded, so a title alone searches badly. Version the tag
-   (`my-app.thing.v1`) so a later shape can be a new type.
-4. **Which tier.** `westmarch-view` is free and local: it embeds on CPU at 14–65
-   records/s depending on the machine (26,575 records took 415 s on a desktop), only
-   what changed since the last run, and you host the files.
-   Hosted quickbeam watches the chain and embeds on a GPU. Both write the same files,
-   so an app moves between them by changing one URL in its card. Start local.
-5. **Whether the rows belong on chain at all.** For a few thousand records, commit
-   them and let `westmarch-view` do the rest — that is the path below. For a corpus
-   that is already public and large (Kingsfoil: 60,760 trials), the pattern is to bake
-   the shards yourself and commit one vertex per view carrying that shard's sha256, so
-   the chain anchors a digest instead of 235 MB of public-domain rows. If the person
-   has the `kingsfoil` repo, `pipeline/bake.mjs` and `chain/graph-commit.mjs` are that
-   pattern; otherwise the layout is in *The view on disk* below.
-6. **Where the site will live.** The card's `url` is permanent once bound (step 11), so
-   ask before building. The default is Cloudflare Pages at `<name>.pages.dev`; otherwise
-   the person enters a domain they own. `fangorn.network` is not available to app
-   builders — never offer or assume a hostname under it.
+The person arrives with an idea, not a spec. Turn it into one a step at a time, in
+conversation; do not collect it with a form.
+
+- **One or two questions a turn**, in prose. Never a numbered questionnaire, and never a
+  menu for something only they can answer.
+- **Propose, then ask.** After the first answer you know enough to guess. Say the guess
+  ("so a resident types a town and gets its board's recent meetings?") and let them
+  correct it. Correcting a draft is easier than writing from nothing.
+- **Show before asking.** Once there is data, look at it with them. A real record answers
+  half the questions and makes the rest concrete.
+- **Ask each thing when it starts to matter.** Permanent choices (the app name, where the
+  site lives, what is public) come just before the step that needs them, not up front.
+- **Write down what is settled as you go** (`eval/goals.md`, `eval/golden.jsonl`,
+  `app.json`) and say in a line what you wrote. The files are the running summary, and
+  the person can read and edit them.
+- **Push back on answers that give nothing to aim at.** "Everything, for everyone" leaves
+  the loop no target: ask for one person and one thing they would ask it.
+
+### The arc
+
+Roughly this order. Loop back freely: a failing question in step 4 often sends you back to
+step 2 or 3.
+
+**1. What it is, and who it is for.** Open with one broad question: what they want to make
+and who would use it. Reflect back a short sketch (the user, what they ask, what they get)
+and refine it until they say it is right. Over the next few turns, as follow-ups to what
+they said rather than as a list, draw out:
+
+- the questions their users ask, in their words;
+- how a user would know it failed: the wrong or missing answer that would make them stop;
+- what must be covered, and by when: towns, products, years, accounts;
+- what must never show: people's names, addresses, a client's name.
+
+**2. Where the data is.** Ask for the actual data (see *Sources*). Once you have it, read
+a sample and show them two or three records in plain words: what one record is, what
+identifies it, which text says what it is, which fields a user could filter on. Say what
+kind of source it is and anything it lacks for the questions from step 1.
+
+**3. Draft the questions together.** From their words and the data, propose five to eight
+checks, each in plain language first ("'Plover village board' should mostly return
+Plover records"), and ask which are wrong or missing. Write the agreed ones to
+`eval/golden.jsonl` (see *Writing the questions*), and `eval/goals.md` from what they said
+in step 1. Grow to 10–20 as the builds show what is missing.
+
+**4. Build, look, adjust.** Build locally and grade (*Build locally until the questions
+pass*), then walk through the result with them. End each round on one decision: fix the
+data, fix the recipe, or change the question.
+
+**5. Settle what is permanent**, just before *Go live*: the app name, what each type
+costs to read, and where the site lives (see *What is permanent*). Propose a default for
+each, say that it cannot be changed, and wait for a yes.
+
+## Writing the questions
+
+`eval/goals.md` has one section per goal: the customer, their questions, the coverage they
+need, a date, and what would kill it ("no paying user of this kind by then"). It is the
+person's bet about what is worth having: draft it from their words and have them confirm
+it, but never fill a gap with your own guess about what they want.
+
+`eval/golden.jsonl` holds the checks, one per line, each with the `goal` it serves.
+
+| testing | check |
+|---|---|
+| a question is answered | `{"id":"plover","q":"Plover village board","expect":{"where":{"city":"Plover"}},"min":0.6,"goal":"places"}` — the share of the top 5 that fits. **Set `min`**: a search check without one always passes |
+| a filter reaches the records at all | `{"id":"wells","kind":"count","where":{"county":"Portage"},"expect":{"match":{"heading":"well"}},"min":3}` |
+| the data looks right | `{"id":"undated","kind":"records","expect":{"not":{"match":{"date":"."}}},"max_pct":5}` — percent of rows with no date; the same shape catches short prose, ids in titles, placeholder values |
+| what must be covered | `{"id":"towns","kind":"coverage","field":"city","values":"targets/towns.json","min":0.5}` — a list, or `{value: weight}` so the missing are named heaviest first. Set `min` here too |
+| what must never show | a `records` check with `"hard": true` and `max_pct` 0 |
+
+A predicate is `where` (whole-value, case-insensitive, the filter agents use), `match`
+(field → regex; `a|b` joins fields) or `not`. Never record ids: ids are content hashes and
+change whenever a record is re-shaped.
+
+**The fields the questions name are the record's shape.** Every field a predicate uses must
+exist on the records, filled — so the questions are the spec the sources are written to.
+
+## Sources
+
+A source is one kind of input:
+
+- **crawl**: a site, API or feed read on a schedule, resuming from a cursor;
+- **snapshot**: a file, dump or export (CSV, a database export, a bucket), read whole
+  each run and replacing the last;
+- **live**: people, agents or devices submitting. There is no ingest server: they
+  register as publishers in the app and push into its namespace from their own wallets,
+  and the view reads every publisher's commits (one domain per publisher).
+  `westmarch-ship` does not handle this yet — its namespaces come from `sources`, and
+  `--local` sees only what is staged, so contributions are never graded. If the app is
+  mostly live input, say so and build the parts that are crawl or snapshot first.
+
+For crawl and snapshot, the person must give a path or URL to the actual data; ask for it
+plainly and wait. Do not scaffold, invent a shape, or write placeholder rows in its place.
+Generating a starter set is a separate choice they make explicitly, and it still burns a
+permanent app name.
+
+## What a record is
+
+A record is `{ entityType, <identity field>, …fields }`, one tag per kind of thing,
+versioned (`my-app.thing.v1`) so a later shape can be a new type.
+
+- The identity must be stable across runs (the same thing keeps the same id, or every
+  update is a delete plus an insert) and unique across **every type** in the app: it
+  replaces the CID as the row id that `search` returns and `get` looks up. Namespace
+  it (`audius:genre:electronic`), keep the source's own id under another name, and
+  declare it as `identity` in the role map.
+- It needs prose that says what the record *is*. That text is what gets embedded; a
+  title alone searches badly.
+- Every field the questions filter or match on, as its own key.
+
+## What is permanent
+
+Settle these with the person before *Go live*, one at a time, each with a proposed default:
+
+- **The app name.** Permanent once claimed. Do not assume it matches the data's name.
+- **What each type costs to read.** Anything committed is permanent:
+  - **public**: every field of a record is committed (to IPFS, anchored on chain) and
+    served in the view. Anyone can read it forever.
+  - **paid**: a record's detail sold per record over x402 (`paid` in `app.json`). The
+    detail is written off chain, next to the stage, and served only through the site's
+    worker; the public record carries its `paid_sha256`. Paid content must never also be
+    in a public field, or anyone can read it from the view for free.
+  - **private** (only named people can read): **not built yet.** Nothing in this
+    pipeline encrypts — a committed payload and a view shard are readable by anyone.
+    Do not publish private data; tell the person and stop for those records. If step 1
+    of the conversation already surfaced private data, say so then, not here.
+- **Where the site will live.** The card's `url` is permanent once bound. The default is
+  Cloudflare Pages at `<project>.pages.dev`; otherwise a domain they own.
+  `fangorn.network` is not available to app builders — never offer or assume a hostname
+  under it.
 
 ## What the person must have
 
+Do not open with this list. Check what you can yourself (`node -v`, `fangorn --version`,
+`python3 -c "import quickbeam"`), and raise a missing piece when the next step needs it:
+Node and quickbeam before the first local build, the wallet, Pinata and Cloudflare before
+*Go live*.
+
 - Node 22 and the Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.9.22-dev`, or whatever
   newer version westmarch's `package.json` lists as its `@fangorn-network/sdk` peer.
+- Python 3 with quickbeam, whose harness every source runs on. Quorum pins it in
+  `sources/requirements.txt` as
+  `quickbeam @ git+https://github.com/fangorn-network/embeddings@tony/dev`.
 - A wallet on Arbitrum Sepolia with a little ETH. **It owns the app forever**, so it
   must be the wallet that will publish the data. Never generate a key for a real app;
-  throwaway keys are only for read-only paths.
+  throwaway keys are only for read-only paths. Not needed until *Go live*.
 - A Pinata JWT, because registering the ERC-8004 agent pins a file to IPFS.
-- A static host that serves `/.well-known/` and custom headers, at `<name>.pages.dev`
-  or on a domain they own. Cloudflare Pages does both.
+- A Cloudflare account (`npx wrangler login`). Pages serves `/.well-known/` and custom headers.
 
-Project layout the guide assumes:
+Project layout:
 
 ```sh
-mkdir my-app && cd my-app && npm init -y && npm pkg set type=module
-npm i @fangorn-network/westmarch @huggingface/transformers vite
-mkdir -p data schema pipeline app
+mkdir my-app && cd my-app && git init && npm init -y && npm pkg set type=module
+npm i @fangorn-network/westmarch @huggingface/transformers
+mkdir -p sources eval && echo ".ship/" > .gitignore
+```
+
+```
+app.json            the app: types (role maps), sources, site, paid
+sources/*.py        one module per source
+eval/goals.md       the bet
+eval/golden.jsonl   the questions
+.ship/              stage, cache, vectors, state.json — written by westmarch-ship
 ```
 
 ## Chain writes and deploys are the person's call
@@ -81,12 +201,443 @@ mkdir -p data schema pipeline app
 Several steps cost money or cannot be undone: `fangorn app claim` (first come, first
 served, permanent), `fangorn register` (pays the registration fee), every `fangorn repo
 init` and `fangorn push` (gas), `wrangler pages project create` and `pages deploy`, and
-`fangorn app agent` (pins to IPFS, mints an agent).
-Show the exact command and what it does, then run it only when they say so. Everything
-else — building the graph, the schema, the page, the card, the local view, the lint —
-is free and reversible, so just do it.
+`fangorn app agent` (pins to IPFS, mints an agent). `westmarch-ship` without `--local`
+does all of these. Show the exact command and what it does, then run it only when they
+say so. Everything else — the questions, the sources, local builds, the eval — is free
+and reversible, so just do it.
 
-## The build, step by step
+## Build locally until the questions pass
+
+**1. `app.json`** (guide *The short way*). The `types` hold each type's `description`,
+`role_map` and `presentation` — what gets embedded (`text`, plus `title`, `subtitle`,
+`tags`), what readers see, what agents can filter and count on, where a record links
+(`presentation.externalUrl`). Declare every type: an undeclared type gets its roles
+guessed from field names, which works for display and often fails for search.
+
+**2. One source per input.** A source is a Python module on quickbeam's harness. Start
+from a working one — Quorum's `sources/dnr_wells.py` is a snapshot, `sources/legistar.py`
+a crawl with a cursor. The shape:
+
+```python
+import json, sys
+from quickbeam import SourceBase
+
+TAG = "my-app.thing.v1"
+
+class ThingsSource(SourceBase):
+    name = "things"
+    stems = {TAG: "things"}           # tag → the staged file, volume_1_things.json
+    snapshot_stems = {"things"}       # snapshot: each run replaces the last; omit for a crawl
+
+    def add_source_args(self, p):
+        p.add_argument("--file", required=True)
+
+    def read(self, cursor, args):     # raw rows since `cursor`
+        with open(args.file) as f:
+            return json.load(f)
+
+    def build_graph(self, records):   # raw rows → records (the recipe)
+        return {TAG: [{"name": f"things:{r['sku']}", "fields": {
+            "entityType": TAG, "thing_id": f"my-app:thing:{r['sku']}", "title": r["name"],
+            "text": f"{r['name']}: {r['about']}", **r}} for r in records]}, []
+
+    def next_cursor(self, records, prev):
+        return prev                   # a crawl returns where the next run resumes
+
+if __name__ == "__main__":
+    from quickbeam.ingest.scrapers.harness import run_source
+    run_source(ThingsSource(), sys.argv[1:])
+```
+
+Its entry in `app.json` must pass `--output-dir .ship/stage/<namespace>`: that directory
+is the stage, and `--local` reads nothing else. A crawl also takes `--cache-dir
+.ship/cache/<namespace>` and `--checkpoint-file .ship/stage/<namespace>/checkpoint.json`.
+A source with `"each": "rows.json"` is a template, one source per row (`{field}`,
+`{field|slug}`, `{args...}`), so adding a town or a feed is adding a row.
+
+Withholding (names, addresses) belongs in `build_graph`, before anything is staged, so
+every record passes through it. For a paid tier: the source takes `--paid-dir`, writes one
+JSON per record there, and puts that file's sha256 on the record as `paid_sha256`; its
+`app.json` entry names `paid_dir`. Quorum's `write_paid` in `sources/civicplus.py` is the
+pattern.
+
+**3. Build and grade:**
+
+```sh
+npx westmarch-ship app.json --local /tmp/view --crawl   # run the sources, stage, embed — no chain, no key
+npx westmarch-eval /tmp/view                            # the questions, answered as fangorn-mcp would
+```
+
+The first build downloads the 131 MB model into `~/.cache/fangorn-mcp/models` and embeds
+on CPU at 14–65 records/s. Vectors are cached in `.ship/vectors.ndjson` by the exact text
+embedded, so a rebuild embeds only what changed. Without `--crawl` it rebuilds from what is
+staged (a recipe change in `app.json`); `--only ns1,ns2` limits it to some namespaces.
+
+**4. Read the result with the person.** For each failing check:
+
+- a search check low or 0: its top 3 titles are printed. The right records ranked low
+  means the recipe (what `text` says, which role embeds it). The right records absent
+  means the data lacks them — a source question. Or the question's predicate is wrong,
+  which is the person's call.
+- a records check over its ceiling: the source's shaping, in `build_graph`.
+- coverage: the missing values are listed, heaviest first — the next source rows to add.
+
+Then what the questions never asked. It is not graded yet, so look at the stage directly —
+each field worth filtering on, and a few records whole:
+
+```sh
+jq -r '.[].fields.<field>' .ship/stage/<ns>/volume_1_*.json | sort | uniq -c | sort -rn | head -20
+jq -r '.[].fields.text' .ship/stage/<ns>/volume_1_*.json | shuf -n 3
+```
+
+A large group no question touches is either a question the person has not written yet,
+or data to drop in the source: less to embed, less to search past, less to expose.
+
+**5. Repeat until the questions the person cares about pass.** Then set the floors just
+past what this build scored — each search `min`, each records `max_pct` — so the gate
+catches a regression. Commit `app.json`, `sources/` and `eval/`: from now on `HEAD` is the
+recipe every change is graded against.
+
+## Go live
+
+Before the first chain write:
+
+- `fangorn init` (key, Pinata JWT, gateway), `fangorn wallet` shows the owner. The config
+  file beats `ETH_PRIVATE_KEY` in the environment. The gateway must belong to the same
+  Pinata account as the JWT, or the first commit fails:
+  `curl -s https://api.pinata.cloud/v3/ipfs/gateways -H "Authorization: Bearer $JWT"` must
+  list the configured host.
+- Create the Pages project by hand, from an empty directory, and put its account in
+  `app.json` `site.account`. `westmarch-ship` would create it from the app directory, and
+  wrangler ≥ 4.138 run there autoconfigures a Worker (see *By hand*, before step 9):
+
+  ```sh
+  cd "$(mktemp -d)" && CLOUDFLARE_ACCOUNT_ID=<id> npx wrangler pages project create <project> --production-branch main --force
+  ```
+
+  A taken name gets a suffix (`my-app-4xk.pages.dev`); `westmarch-ship` reads the real one back.
+
+Then show the person the plan, and run it on their go-ahead:
+
+```sh
+npx westmarch-ship app.json --dry-run   # every step, printed, none done
+npx westmarch-ship app.json             # claim, join, schema, crawl + publish, view, site, card, deploy, agent
+```
+
+It claims the name and records the claim block as the card's `fromBlock`, joins as a
+publisher, commits the schema to `fangorn.schema`, runs each source with `--publish`
+(one push per namespace), builds the view, writes the stock page, card and `_headers`
+(and `_worker.js` with `paid`), deploys, and registers the agent. Every step checks the
+chain or Cloudflare first, so rerunning it is how the app is updated. State lives in
+`.ship/`; `.ship/state.json` holds the claim block and URL — back it up.
+
+A fresh `pages.dev` hostname answers `522` for the first minute; retry rather than debug.
+
+## The page: fangorn shape, the app's paint
+
+Every Fangorn app's page has the same shape, so a person who has used one can use the next,
+and an agent finds the same verbs. The stock page (`westmarch/site`) is that shape. It ships
+structure and a few tokens, not a look. Do not design over it: the look belongs to the owner.
+
+- **The shape.** A bar with the name, search box and sections. A results list, one row per
+  record: its title (linking to the record), a meta line (facet · subtitle), a clipped
+  detail, and 👍 👎 on the right. A record page with the fields, its source, and "Similar".
+  **For you**: the likes and dislikes as removable pills, the four knobs (Lookahead,
+  Variety, Surprise, Reach), Reroll, and the picks as the same rows. Liked and History,
+  both kept on the device.
+- **Like / dislike is the taste.** 👍 and 👎 feed the kernel (`discover` in
+  `westmarch/taste`, knobs from its `KNOBS`); the page and the tools `rate` and `discover`
+  call the same code, so an agent's vote shows on the page. Taste stays in the browser,
+  never on chain.
+- **Paint** is `theme.css` in `site.pages`, loaded after the base. It overrides the tokens:
+  `--bg --fg --muted --line --accent --mark --font --font-display --radius --measure`,
+  with a dark block under `:root:not([data-theme="light"])`. Ask the owner for a colour
+  or a font before inventing one. With no answer, ship no `theme.css`: the plain fangorn base
+  is the default, not a gap to fill.
+- **A page of your own** (`site.pages/index.html` + `site.agent`, as Sidequest and Nimbus
+  do) keeps the shape: the same rows, 👍 👎 on every record, a For-you built on `discover`
+  with the same four knobs, the same token names, and the `rate`/`discover` verbs
+  (`rate-<noun>`, `discover-<noun>` when they carry app-specific filters).
+
+## Before saying it is done
+
+- `npx westmarch-eval https://<site>/view` passes, and scores what the local build scored.
+  The deployed view is what agents read.
+- `fangorn status` shows the local tip on chain.
+- `lint.js` against the **deployed** origin reports "nothing to fix" for every domain:
+  `node node_modules/@fangorn-network/westmarch/consume/lint.js https://<site>/view`.
+  What matters is what a stranger can fetch, not what was built.
+- The card answers `200` with CORS from another origin:
+  `curl -sD - https://<site>/.well-known/agent-card.json -o /dev/null | grep -iE "^HTTP|access-control"`.
+- `fangorn-mcp open-app <name>` returns `verified: true`, and `describe` lists the
+  namespaces with the schema's description, not a guess.
+- A search phrased by *meaning* (not a title) returns the right records with
+  `ranked_by: "meaning"`.
+
+## The local loop
+
+This is what keeps the app current and improving, run on the owner's machine (by hand,
+from cron, or with `/loop`). It needs no CI and no hosted runner.
+
+**New data** is facts, and always ships:
+
+```sh
+npx westmarch-ship app.json                                                # crawl, publish, view, deploy
+npx westmarch-eval https://<site>/view --report .ship/last-eval.json       # how the live app scores now
+```
+
+A check failing live is the next thing to work on, in this order: a `hard` records check
+(privacy) first; then a source the ship log names as failed; then the largest coverage
+gap of the goal furthest behind; then that goal's weakest question.
+
+**A recipe change** (a source's `build_graph`, `app.json` `types`) can make the app worse,
+so it is graded against `HEAD` over the same records before it ships:
+
+```sh
+git worktree add ../base HEAD && cp -r .ship ../base/
+(cd ../base && npx westmarch-ship app.json --local /tmp/base)
+npx westmarch-ship app.json --local /tmp/cand
+npx westmarch-eval /tmp/cand --base /tmp/base          # exit 1 = worse
+git worktree remove ../base
+```
+
+For a change to how a source *parses*, add `--crawl --only <the namespaces it affects>` to
+both builds, or both read the old stage and the grade proves nothing. `worse`: revert it.
+`better`, or `unchanged` with the target question up: commit it, then ship.
+
+Rules that keep the gate honest:
+
+- Never run the full ship with an uncommitted recipe change: it publishes whatever the
+  sources produce.
+- Never change `eval/` and the recipe in the same commit, so a change is held to the
+  questions that existed before it.
+- Worse is: mean precision or `known@10` down more than 0.05, a question the base
+  answered now answered by nothing, a `hard` check rising, or any floor missed.
+
+`fangorn-improve` automates picking and proposing one change per run, but it assumes
+GitHub (pull requests, Actions artifacts, branch protection). Without that, follow its
+order of work with the commands above.
+
+## After initial implementation is complete, deployed, and verified
+
+The base app is just a simple search. Once everything has been deployed and verified, prompt the user for extra functionality
+to be present in the UI. For each extra requirement, there must be a corresponding webmcp tool that allows agents to seamlessly
+interact with the application.
+
+Start only after every item in *Before saying it is done* has passed against the
+deployed site. A feature built on a broken base makes both failures harder to find.
+
+On `westmarch-ship`, the page's own files go in the directory `site.pages` names (copied
+over the stock page) and its tools in the module `site.agent` names, whose
+`registerAgent` the card lists. Paths below (`app/agent.js`, `npm run card`) are the
+by-hand layout; map them onto those.
+
+### 1. Ask, offering what the view can actually back
+
+Same rules as *Lead the conversation*. Start from what they just saw: ask what they
+wished the page did while they used it. If they have no answer, suggest two or three
+features in prose, built from **this** app's schema (its real fields and types, not
+generic features), and ask which one first. Build one feature at a time, show it, then
+ask about the next. Every suggestion must map to something `westmarch/tools` already
+does over the loaded rows:
+
+| feature a person sees | westmarch call | notes |
+|---|---|---|
+| filter by a category, e.g. genre chips or a region dropdown | `search(…, { where })`, `facet` | only fields declared in `tags`/`presentation.facets`; `facet` supplies the values |
+| browse without a query, sorted by a date or count | `browse(rows, roles, { type, where, sort, desc, limit, offset })` | `sort` takes a field name; numeric strings sort as numbers |
+| a record's detail panel | `getRow` | returns every field, so decide which to show |
+| "more like this" | `neighbors(rows, id, roles, { limit })` | vector-only, needs no query |
+| counts and charts ("how many per genre") | `facet(rows, field, { where })` | |
+| records that belong to one entity ("this artist's tracks") | `browse` with `where: { <foreign-key field>: id }` | only if the row carries the key (e.g. `artistId`) |
+| recommendations from likes and dislikes | `discover(rows, likes, dislikes, knobs)` | the stock page already has it (*The page*); keep taste in memory or `localStorage`, never on chain |
+
+Say so plainly, and do not promise these:
+- **Edges are not in the view.** `westmarch-view` ships flat records; the committed
+  edges stay on chain. A graph feature works only through a field on the row (row 6
+  of the table above). Otherwise it needs a data change (step 2c).
+- **Anything that needs a server or a secret** (accounts, writes, paid APIs, private
+  data) does not fit a static app. Offer the closest static version, or stop.
+- **Features that fetch from a third party** (artwork, audio streams, maps) add a
+  runtime dependency and privacy exposure the base app lacks. Name the host, and get a
+  yes before building one.
+
+### 2. Classify every accepted feature before writing code
+
+The class decides cost, what must be rerun, and whether the person approves first.
+
+| class | example | what changes | rerun | approval |
+|---|---|---|---|---|
+| **a. page only** | chips, sort, detail panel, more-like-this | `app/` | build, card, deploy | deploy |
+| **b. schema only** | a new facet, `externalUrl`, `presentation.types` labels, a `measures` field | `schema/graph.json` | schema commit + push, `westmarch-view` (applies the spec with no re-embed), build, card, deploy | push + deploy |
+| **c. data** | a new field on records, new records | `pipeline/graph.mjs` | data commit + push, `westmarch-view`, build, card, deploy | push + deploy, stating the re-embed cost |
+| **d. out of scope** | login, payments, writes | — | — | tell them why |
+
+For class c, spell out the cost first. A record's identity in the view is its vertex
+CID, and the CID is the hash of the payload. Adding one field to every record therefore
+makes every record new: all of them are re-embedded at full cost (14–65 records/s),
+the old ones are tombstoned, and the shard is rewritten. Class b changes to the
+`text`, `title`, `subtitle` or `tags` roles do **not** re-embed existing records, so
+search keeps the old text until the records change. Say that too, or the person will
+expect search to change.
+
+### 3. One action per feature, shared by the UI and its tool
+
+Parity breaks when the page and the tool hold two copies of the logic. Give every
+feature exactly one pure function in `app/agent.js`, `(ctx, args) → JSON-able result`.
+`registerAgent` wraps it as a tool, and the UI handler calls the same function:
+
+```js
+// app/agent.js
+export const actions = {
+    browseTracks: (ctx, { genre, sort = "playCount", limit = 20, offset = 0 }) =>
+        browse(ctx.rows, ctx.roles, { type: tagOf("track"), where: genre ? { genre } : undefined, sort, limit, offset }),
+};
+// in registerAgent:
+mc.registerTool({ name: "browse-audius-tracks", description: "…", inputSchema: { … },
+    execute: async (args) => ok(actions.browseTracks(ctx, args)) });
+// app/main.js: the UI calls actions.browseTracks(ctx, { genre: chip.value }) — never browse() directly
+```
+
+Rules for every tool. Each one has cost someone a silent bug:
+- **Name `<verb>-<app-noun>`** (`browse-audius-tracks`). `fangorn-mcp` already gives every
+  app `describe`, `search`, `get`, `similar`, `count` and `browse`, and a page tool with
+  one of those names is renamed `page-<name>`.
+- **The description says when to call it**, and which other tool's output feeds its
+  inputs ("ids come from search-audius").
+- **The input schema is strict.** Use `required`, an `enum` for every closed set (types,
+  sort fields), and `limit` with a sane default and a cap. Build enums from constants,
+  not from `ctx`: `captureTools` runs `registerAgent({})` with an empty context, so a
+  schema derived from `ctx.rows` crashes the card build or comes out empty.
+- **Only `execute` reads `ctx`**, and tools register after `loadShard` resolves. That
+  already holds if new tools go inside the existing `registerAgent`. A feature that
+  loads more data (a second view) must finish before `registerAgent` runs.
+- **Return data, not prose**, and use `{ error: "…" }` for a miss rather than throwing.
+  Every id a tool returns must be accepted by the `get` tool.
+- **`where` values match whole values, case-insensitively.** An enum or a `facet` result
+  hands agents exact values.
+- **Existing tools are a public interface.** Agents and cards in the wild use them, so
+  add optional parameters and never rename, remove or retype one.
+- **Stateful features (a player, a cart, a selection) keep their state in one object
+  on `ctx`**, created lazily inside the action (`ctx.player ??= createPlayer()`), so the
+  tool check's bare context still gets one. The UI subscribes to that object's changes
+  rather than to its own clicks, because a tool call changes the page too, and the person
+  must see what an agent did.
+- **Media a tool starts can be blocked by autoplay policy.** `play()` from a tool call is
+  not a user gesture, so the browser rejects it with `NotAllowedError` until the person
+  has interacted with the page. Return that as an `error` that tells the agent to ask
+  the person to press play, with the item loaded. Do not report it as playing, and do not
+  mark the item unavailable. Any other rejection means the item really is unavailable.
+
+The UI side, in the same change: every control has a label, works by keyboard, keeps
+the 16px phone gutter, and keeps working when `document.modelContext` is absent (most
+browsers). The UI must never depend on WebMCP. A list that repaints on a timer or on
+player ticks steals keyboard focus, so repaint it only when what it shows changes, and
+restore focus to the same control (`data-id` + `CSS.escape`) after a repaint.
+
+### 4. Verify locally, for both people and agents
+
+1. `npm run build`, then serve `site/` on a free port (`ss -ltn | grep <port>` first,
+   because a port that is already taken serves someone else's 404s and lint reports
+   "no catalog").
+2. **Every tool, by an agent's call.** `pipeline/check-tools.mjs` loads the served view,
+   captures `registerAgent`'s tools with a stub `modelContext`, and runs one sample
+   call per tool. It fails a tool with no sample, an `error` key, or an empty result.
+   Add a sample for each new tool in the same change:
+
+   ```js
+   // pipeline/check-tools.mjs — CALLS='{"<tool>":{…args}}' node pipeline/check-tools.mjs http://127.0.0.1:<port>/view
+   import { homedir } from "node:os";
+   const { env } = await import("@huggingface/transformers");
+   env.cacheDir = `${homedir()}/.cache/fangorn-mcp/models`;
+   const { configure, loadShard } = await import("@fangorn-network/westmarch/shard");
+   const { rolesFrom, textOf } = await import("@fangorn-network/westmarch/roles");
+   const { embedQueryDirect } = await import("@fangorn-network/westmarch/embed");
+   const { registerAgent } = await import("../app/agent.js");
+   const CALLS = JSON.parse(process.env.CALLS ?? "{}");
+   const ctx = { rows: [], roles: rolesFrom([]), queryVector: (q) => embedQueryDirect(q).catch(() => null) };
+   configure({ onManifests: (ms) => { ctx.roles = rolesFrom(ms); }, rowText: (f) => textOf(f, ctx.roles) });
+   ctx.rows = await loadShard(process.argv[2]);
+   const tools = {};
+   globalThis.document = { modelContext: { registerTool: (t) => { tools[t.name] = t; } } };
+   registerAgent(ctx);
+   let bad = 0;
+   for (const [name, t] of Object.entries(tools)) {
+       const args = CALLS[name];
+       if (!args) { console.log(`✗ ${name}: no sample call`); bad++; continue; }
+       const out = JSON.parse((await t.execute(args)).content[0].text);
+       const empty = out == null || out.error || (Array.isArray(out) && !out.length);
+       console.log(`${empty ? "✗" : "✓"} ${name} → ${JSON.stringify(out).slice(0, 160)}`);
+       bad += !!empty;
+   }
+   process.exit(bad ? 1 : 0);
+   ```
+
+   Also call each new tool with a value that must miss, and check it returns `{ error }`
+   or `[]`, never a crash.
+
+   An action that touches a browser API (`Audio`, `localStorage`, `navigator.clipboard`)
+   needs that API stubbed at the top of the harness, before `registerAgent` runs, e.g.
+   `globalThis.Audio ??= class { paused = true; currentTime = 0; duration = NaN;
+   addEventListener() {} async play() { this.paused = false; } pause() { this.paused = true; }
+   removeAttribute() {} load() {} }`. Stubs prove the action's logic, not the API. Test the
+   API's failure modes (e.g. `play()` rejecting with `NotAllowedError`) with a stub that
+   throws them, then test the real thing in step 3.
+3. **Each UI feature in a real browser**, driven the way a person uses it. Use a real
+   click, not `element.click()` from script: script clicks carry no user activation, so
+   media and clipboard features fail in a way no person ever sees. The UI and its tool
+   must agree: the same inputs give the same records in the same order. Check a phone
+   width too. A maximized window ignores resizes, so load the page in a 360px
+   same-origin `<iframe>` and check that `scrollWidth <= clientWidth`. **Rebuild after
+   every source edit before testing**, or you test the previous build. Also check that
+   search still reports meaning, not words, and that the console is clean.
+4. Lint the local view if the schema or data changed.
+
+### 5. Ship without disturbing what is bound on chain
+
+The binding is to the card's URL, and readers reject a card whose Fangorn block moved.
+Before deploying, diff the new card against the live one. Only `skills` (and `version`,
+if you bumped it) may differ:
+
+```sh
+curl -s https://<site>/.well-known/agent-card.json > /tmp/live-card.json && npm run card
+node -e 'const a=require("/tmp/live-card.json"),b=require("./site/.well-known/agent-card.json");
+for (const k of new Set([...Object.keys(a),...Object.keys(b)])) if (!["skills","version"].includes(k) && JSON.stringify(a[k])!==JSON.stringify(b[k])) { console.log("CHANGED", k); process.exitCode=1 }'
+```
+
+- **Never change** `url`, `fromBlock`, `name` (`fangorn-mcp` derives the app's tool prefix
+  from it; `Audius Search` → `audius-search__…`), `namespaces`, `views` or the extension.
+- **Do not rerun `fangorn app agent`.** It always mints a *new* agent (the CLI has no update
+  path), so rerunning leaves two agents for one app. The ERC-8004 registration file is a
+  snapshot of the card at mint time: name, description, card URL, `a2aSkills` (the union
+  of the skills' **tags**, not tool names), and `x402Support` (whether any skill is tagged
+  `x402`). New tools that reuse the existing tags leave it accurate. A new tool that adds a
+  tag makes `a2aSkills` stale, and a first `x402` tag makes `x402Support` wrong. Tell the
+  person before shipping either one; updating the existing agent's file means a
+  `setAgentURI` from the owner wallet (agent0-sdk), which the CLI does not do.
+- `find site -size +25M` is still empty. Then deploy, with the person's go-ahead.
+
+Then repeat *Before saying it is done* against the deployed site, and add:
+- the live card's `skills` lists every new tool, with the tag `webmcp`;
+- `open-app <name>` still returns `verified: true`. Its data tools do not include page
+  tools; those show only with `page: true` in a WebMCP browser (Chrome 150+ with
+  `--enable-features=WebMCP`). Test there if one is available, and say so if not;
+- the deployed page's new features work in a browser, not just locally.
+
+### 6. Report
+
+Give the person one table: feature → UI control → tool name → its sample call → how
+each was verified (harness, browser, deployed). Name anything left unverified (for
+example, "page tools not exercised in a WebMCP browser") rather than implying it
+
+## By hand, step by step
+
+`westmarch-ship` does all of this. Build by hand only for what it does not fit: a page
+written from scratch, or a large public corpus baked yourself with one vertex per shard
+carrying its sha256, so the chain anchors a digest instead of hundreds of MB of rows
+(Kingsfoil: 60,760 trials; its `pipeline/bake.mjs` and `chain/graph-commit.mjs`, and the
+layout in *The view on disk*). `westmarch-view` embeds locally on CPU; hosted quickbeam
+watches the chain and embeds on a GPU. Both write the same files, so an app moves between
+them by changing one URL in its card.
 
 Each step names the guide section that holds its code and the check that proves it worked.
 
@@ -340,6 +891,7 @@ what a name suggests.
 | `warmEmbedder()` | — | **`undefined`**, not a promise. It only starts the download; `.then` on it throws |
 | `taste(likes, dislikes)` | rows `{ id, title, vector }`, not bare vectors | a taste, or `null` |
 | `recommend(rows, taste, { limit, exclude })` | — | `[{ row, score }]` — the score key is `score`, not `s` |
+| `discover(rows, likes, dislikes, { lookahead, variety, surprise, reach, seed, limit })` | likes/dislikes as for `taste`, newest last; knobs 0–1 (`KNOBS` has defaults and descriptions) | `{ taste: { from, rejected, heading, n } \| null, knobs, picks: [{ row, score }] }`; never returns what was voted on |
 
 `where` matches case-insensitively on whole values, so an agent echoing a faceted value
 back with the wrong case still hits, and `comedy` never counts every `dark comedy`.
@@ -396,219 +948,3 @@ never opened.
 | Pages deploy rejects a file over 25 MiB | onnxruntime's `.wasm` in `site/assets`; delete it after `vite build` (step 8) |
 | deployed site answers `522` | a new `pages.dev` hostname still propagating; wait a minute |
 | `app agent`: "verification timed out. Content may propagate with delay" | harmless if an Agent ID and Tx follow; the registration file is pinned — fetch it through your gateway to confirm |
-
-## Before saying it is done
-
-- `fangorn status` shows the local tip on chain.
-- `lint.js` against the **deployed** origin reports "nothing to fix" for every domain.
-  What matters is what a stranger can fetch, not what was built.
-- The card answers `200` with CORS from another origin.
-- `fangorn-mcp open-app <name>` returns `verified: true`, and `describe` lists the
-  namespaces with the schema's description, not a guess.
-- A search phrased by *meaning* (not a title) returns the right records with
-  `ranked_by: "meaning"`.
-
-## After initial implementation is complete, deployed, and verified
-
-The base app is just a simple search. Once everything has been deployed and verified, prompt the user for extra functionality
-to be present in the UI. For each extra requirement, there must be a corresponding webmcp tool that allows agents to seamlessly
-interact with the application.
-
-Start only after every item in *Before saying it is done* has passed against the
-deployed site. A feature built on a broken base makes both failures harder to find.
-
-### 1. Ask, offering what the view can actually back
-
-Use `AskUserQuestion` with `multiSelect: true`, so the person can type their own idea
-under "Other". Build each option from **this** app's schema: name its real fields and
-types, not generic features. Every option must map to something `westmarch/tools` already
-does over the loaded rows:
-
-| feature a person sees | westmarch call | notes |
-|---|---|---|
-| filter by a category, e.g. genre chips or a region dropdown | `search(…, { where })`, `facet` | only fields declared in `tags`/`presentation.facets`; `facet` supplies the values |
-| browse without a query, sorted by a date or count | `browse(rows, roles, { type, where, sort, desc, limit, offset })` | `sort` takes a field name; numeric strings sort as numbers |
-| a record's detail panel | `getRow` | returns every field, so decide which to show |
-| "more like this" | `neighbors(rows, id, roles, { limit })` | vector-only, needs no query |
-| counts and charts ("how many per genre") | `facet(rows, field, { where })` | |
-| records that belong to one entity ("this artist's tracks") | `browse` with `where: { <foreign-key field>: id }` | only if the row carries the key (e.g. `artistId`) |
-| recommendations from likes and dislikes | `taste` + `recommend` | keep taste in memory or in `localStorage`, never on chain |
-
-Say so plainly, and do not promise these:
-- **Edges are not in the view.** `westmarch-view` ships flat records; the committed
-  edges stay on chain. A graph feature works only through a field on the row (row 6
-  of the table above). Otherwise it needs a data change (step 2c).
-- **Anything that needs a server or a secret** (accounts, writes, paid APIs, private
-  data) does not fit a static app. Offer the closest static version, or stop.
-- **Features that fetch from a third party** (artwork, audio streams, maps) add a
-  runtime dependency and privacy exposure the base app lacks. Name the host, and get a
-  yes before building one.
-
-### 2. Classify every accepted feature before writing code
-
-The class decides cost, what must be rerun, and whether the person approves first.
-
-| class | example | what changes | rerun | approval |
-|---|---|---|---|---|
-| **a. page only** | chips, sort, detail panel, more-like-this | `app/` | build, card, deploy | deploy |
-| **b. schema only** | a new facet, `externalUrl`, `presentation.types` labels, a `measures` field | `schema/graph.json` | schema commit + push, `westmarch-view` (applies the spec with no re-embed), build, card, deploy | push + deploy |
-| **c. data** | a new field on records, new records | `pipeline/graph.mjs` | data commit + push, `westmarch-view`, build, card, deploy | push + deploy, stating the re-embed cost |
-| **d. out of scope** | login, payments, writes | — | — | tell them why |
-
-For class c, spell out the cost first. A record's identity in the view is its vertex
-CID, and the CID is the hash of the payload. Adding one field to every record therefore
-makes every record new: all of them are re-embedded at full cost (14–65 records/s),
-the old ones are tombstoned, and the shard is rewritten. Class b changes to the
-`text`, `title`, `subtitle` or `tags` roles do **not** re-embed existing records, so
-search keeps the old text until the records change. Say that too, or the person will
-expect search to change.
-
-### 3. One action per feature, shared by the UI and its tool
-
-Parity breaks when the page and the tool hold two copies of the logic. Give every
-feature exactly one pure function in `app/agent.js`, `(ctx, args) → JSON-able result`.
-`registerAgent` wraps it as a tool, and the UI handler calls the same function:
-
-```js
-// app/agent.js
-export const actions = {
-    browseTracks: (ctx, { genre, sort = "playCount", limit = 20, offset = 0 }) =>
-        browse(ctx.rows, ctx.roles, { type: tagOf("track"), where: genre ? { genre } : undefined, sort, limit, offset }),
-};
-// in registerAgent:
-mc.registerTool({ name: "browse-audius-tracks", description: "…", inputSchema: { … },
-    execute: async (args) => ok(actions.browseTracks(ctx, args)) });
-// app/main.js: the UI calls actions.browseTracks(ctx, { genre: chip.value }) — never browse() directly
-```
-
-Rules for every tool. Each one has cost someone a silent bug:
-- **Name `<verb>-<app-noun>`** (`browse-audius-tracks`). `fangorn-mcp` already gives every
-  app `describe`, `search`, `get`, `similar`, `count` and `browse`, and a page tool with
-  one of those names is renamed `page-<name>`.
-- **The description says when to call it**, and which other tool's output feeds its
-  inputs ("ids come from search-audius").
-- **The input schema is strict.** Use `required`, an `enum` for every closed set (types,
-  sort fields), and `limit` with a sane default and a cap. Build enums from constants,
-  not from `ctx`: `captureTools` runs `registerAgent({})` with an empty context, so a
-  schema derived from `ctx.rows` crashes the card build or comes out empty.
-- **Only `execute` reads `ctx`**, and tools register after `loadShard` resolves. That
-  already holds if new tools go inside the existing `registerAgent`. A feature that
-  loads more data (a second view) must finish before `registerAgent` runs.
-- **Return data, not prose**, and use `{ error: "…" }` for a miss rather than throwing.
-  Every id a tool returns must be accepted by the `get` tool.
-- **`where` values match whole values, case-insensitively.** An enum or a `facet` result
-  hands agents exact values.
-- **Existing tools are a public interface.** Agents and cards in the wild use them, so
-  add optional parameters and never rename, remove or retype one.
-- **Stateful features (a player, a cart, a selection) keep their state in one object
-  on `ctx`**, created lazily inside the action (`ctx.player ??= createPlayer()`), so the
-  tool check's bare context still gets one. The UI subscribes to that object's changes
-  rather than to its own clicks, because a tool call changes the page too, and the person
-  must see what an agent did.
-- **Media a tool starts can be blocked by autoplay policy.** `play()` from a tool call is
-  not a user gesture, so the browser rejects it with `NotAllowedError` until the person
-  has interacted with the page. Return that as an `error` that tells the agent to ask
-  the person to press play, with the item loaded. Do not report it as playing, and do not
-  mark the item unavailable. Any other rejection means the item really is unavailable.
-
-The UI side, in the same change: every control has a label, works by keyboard, keeps
-the 16px phone gutter, and keeps working when `document.modelContext` is absent (most
-browsers). The UI must never depend on WebMCP. A list that repaints on a timer or on
-player ticks steals keyboard focus, so repaint it only when what it shows changes, and
-restore focus to the same control (`data-id` + `CSS.escape`) after a repaint.
-
-### 4. Verify locally, for both people and agents
-
-1. `npm run build`, then serve `site/` on a free port (`ss -ltn | grep <port>` first,
-   because a port that is already taken serves someone else's 404s and lint reports
-   "no catalog").
-2. **Every tool, by an agent's call.** `pipeline/check-tools.mjs` loads the served view,
-   captures `registerAgent`'s tools with a stub `modelContext`, and runs one sample
-   call per tool. It fails a tool with no sample, an `error` key, or an empty result.
-   Add a sample for each new tool in the same change:
-
-   ```js
-   // pipeline/check-tools.mjs — CALLS='{"<tool>":{…args}}' node pipeline/check-tools.mjs http://127.0.0.1:<port>/view
-   import { homedir } from "node:os";
-   const { env } = await import("@huggingface/transformers");
-   env.cacheDir = `${homedir()}/.cache/fangorn-mcp/models`;
-   const { configure, loadShard } = await import("@fangorn-network/westmarch/shard");
-   const { rolesFrom, textOf } = await import("@fangorn-network/westmarch/roles");
-   const { embedQueryDirect } = await import("@fangorn-network/westmarch/embed");
-   const { registerAgent } = await import("../app/agent.js");
-   const CALLS = JSON.parse(process.env.CALLS ?? "{}");
-   const ctx = { rows: [], roles: rolesFrom([]), queryVector: (q) => embedQueryDirect(q).catch(() => null) };
-   configure({ onManifests: (ms) => { ctx.roles = rolesFrom(ms); }, rowText: (f) => textOf(f, ctx.roles) });
-   ctx.rows = await loadShard(process.argv[2]);
-   const tools = {};
-   globalThis.document = { modelContext: { registerTool: (t) => { tools[t.name] = t; } } };
-   registerAgent(ctx);
-   let bad = 0;
-   for (const [name, t] of Object.entries(tools)) {
-       const args = CALLS[name];
-       if (!args) { console.log(`✗ ${name}: no sample call`); bad++; continue; }
-       const out = JSON.parse((await t.execute(args)).content[0].text);
-       const empty = out == null || out.error || (Array.isArray(out) && !out.length);
-       console.log(`${empty ? "✗" : "✓"} ${name} → ${JSON.stringify(out).slice(0, 160)}`);
-       bad += !!empty;
-   }
-   process.exit(bad ? 1 : 0);
-   ```
-
-   Also call each new tool with a value that must miss, and check it returns `{ error }`
-   or `[]`, never a crash.
-
-   An action that touches a browser API (`Audio`, `localStorage`, `navigator.clipboard`)
-   needs that API stubbed at the top of the harness, before `registerAgent` runs, e.g.
-   `globalThis.Audio ??= class { paused = true; currentTime = 0; duration = NaN;
-   addEventListener() {} async play() { this.paused = false; } pause() { this.paused = true; }
-   removeAttribute() {} load() {} }`. Stubs prove the action's logic, not the API. Test the
-   API's failure modes (e.g. `play()` rejecting with `NotAllowedError`) with a stub that
-   throws them, then test the real thing in step 3.
-3. **Each UI feature in a real browser**, driven the way a person uses it. Use a real
-   click, not `element.click()` from script: script clicks carry no user activation, so
-   media and clipboard features fail in a way no person ever sees. The UI and its tool
-   must agree: the same inputs give the same records in the same order. Check a phone
-   width too. A maximized window ignores resizes, so load the page in a 360px
-   same-origin `<iframe>` and check that `scrollWidth <= clientWidth`. **Rebuild after
-   every source edit before testing**, or you test the previous build. Also check that
-   search still reports meaning, not words, and that the console is clean.
-4. Lint the local view if the schema or data changed.
-
-### 5. Ship without disturbing what is bound on chain
-
-The binding is to the card's URL, and readers reject a card whose Fangorn block moved.
-Before deploying, diff the new card against the live one. Only `skills` (and `version`,
-if you bumped it) may differ:
-
-```sh
-curl -s https://<site>/.well-known/agent-card.json > /tmp/live-card.json && npm run card
-node -e 'const a=require("/tmp/live-card.json"),b=require("./site/.well-known/agent-card.json");
-for (const k of new Set([...Object.keys(a),...Object.keys(b)])) if (!["skills","version"].includes(k) && JSON.stringify(a[k])!==JSON.stringify(b[k])) { console.log("CHANGED", k); process.exitCode=1 }'
-```
-
-- **Never change** `url`, `fromBlock`, `name` (`fangorn-mcp` derives the app's tool prefix
-  from it; `Audius Search` → `audius-search__…`), `namespaces`, `views` or the extension.
-- **Do not rerun `fangorn app agent`.** It always mints a *new* agent (the CLI has no update
-  path), so rerunning leaves two agents for one app. The ERC-8004 registration file is a
-  snapshot of the card at mint time: name, description, card URL, `a2aSkills` (the union
-  of the skills' **tags**, not tool names), and `x402Support` (whether any skill is tagged
-  `x402`). New tools that reuse the existing tags leave it accurate. A new tool that adds a
-  tag makes `a2aSkills` stale, and a first `x402` tag makes `x402Support` wrong. Tell the
-  person before shipping either one; updating the existing agent's file means a
-  `setAgentURI` from the owner wallet (agent0-sdk), which the CLI does not do.
-- `find site -size +25M` is still empty. Then deploy, with the person's go-ahead.
-
-Then repeat *Before saying it is done* against the deployed site, and add:
-- the live card's `skills` lists every new tool, with the tag `webmcp`;
-- `open-app <name>` still returns `verified: true`. Its data tools do not include page
-  tools; those show only with `page: true` in a WebMCP browser (Chrome 150+ with
-  `--enable-features=WebMCP`). Test there if one is available, and say so if not;
-- the deployed page's new features work in a browser, not just locally.
-
-### 6. Report
-
-Give the person one table: feature → UI control → tool name → its sample call → how
-each was verified (harness, browser, deployed). Name anything left unverified (for
-example, "page tools not exercised in a WebMCP browser") rather than implying it
-passed. List any chain writes made and the re-embed cost paid.

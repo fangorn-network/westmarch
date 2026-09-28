@@ -5,6 +5,9 @@ Everything you need to get started building apps with Fangorn.
 **Start here:** [docs/app-to-agent.md](docs/app-to-agent.md) takes a static site from nothing
 to a Fangorn app and ERC-8004 agent that any agent can discover, verify and drive.
 
+**Just want to query apps from Claude or another MCP client?** [docs/mcp.md](docs/mcp.md)
+installs `fangorn-mcp` in one command.
+
 
 **For Publishers** — shape a tree into a commit graph, describe what's in it, seal and upload the bytes. Needs `fangorn`. Runs anywhere: a script, a server, a browser.
 

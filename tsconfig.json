@@ -1,0 +1,17 @@
+{
+  // TypeScript lives beside the JS and runs as-is in this repo (Node >= 22.18 strips
+  // types). `tsc` checks it and writes the JS that ships, since Node will not strip
+  // types under node_modules.
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "skipLibCheck": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "rootDir": "publish",
+    "outDir": "dist/ts"
+  },
+  "files": ["publish/eval.ts", "publish/westmarch.d.ts"]
+}

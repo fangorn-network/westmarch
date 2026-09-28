@@ -9,7 +9,7 @@
     {
       "name": "fangorn-index",
       "description": "Rank every Fangorn publisher against a question without downloading a corpus, search whichever wins, and hand off to the app that owns the row. The taste kernel is a file, so it survives the tab, the app and the origin.",
-      "source": "./",
+      "source": "./plugin",
       "category": "productivity"
     }
   ]

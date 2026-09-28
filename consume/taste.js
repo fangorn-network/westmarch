@@ -143,6 +143,42 @@ export function recommend(rows, t, { limit = 10, exclude = new Set(), lambda = 0
         .map(({ row, s }) => ({ row, score: Number(s.toFixed(4)) }));
 }
 
+/** The four knobs a person turns on "For you", each 0–1: [default, what it means].
+ *  Tools publish these descriptions as-is, so a person and an agent turn the same dials. */
+export const KNOBS = {
+    lookahead: [0.35, "how far past what you like, toward where your recent likes are heading (the kernel's drift)"],
+    variety: [0.3, "how different the picks are from each other"],
+    surprise: [0, "how much chance reorders the list; 0 is strict best-first"],
+    reach: [0, "how far out from the closest matches to start: 0 is nearest, 1 skips the nearest ~400"],
+};
+const dial = (x, d) => Math.min(1, Math.max(0, Number.isFinite(Number(x)) ? Number(x) : d));
+
+/**
+ * "For you" with the knobs: the kernel over likes and dislikes (`{ id, title, vector }`,
+ * newest last), then `reach` skips the nearest, `surprise` reorders with seeded Gumbel noise
+ * (same seed, same list), and `variety` sets how hard MMR spreads the picks. What Sidequest
+ * shipped, lifted so every page and its `discover` tool rank the same way.
+ */
+export function discover(rows, likes = [], dislikes = [], { limit = 20, seed = 1, exclude = new Set(), ...k } = {}) {
+    const knobs = Object.fromEntries(Object.entries(KNOBS).map(([n, [d]]) => [n, dial(k[n], d)]));
+    const t = taste(likes, dislikes, { drift: knobs.lookahead });
+    if (!t) return { taste: null, knobs: { ...knobs, seed }, picks: [] };
+    const skip = new Set([...exclude, ...likes.map((x) => x.id), ...dislikes.map((x) => x.id)]);
+    let ranked = rows.filter((r) => r.vector && !skip.has(r.id)).map((row) => ({ row, s: score(row, t) })).sort((a, b) => b.s - a.s);
+    const start = Math.round(knobs.reach * Math.min(400, ranked.length / 4));
+    ranked = ranked.slice(start, start + 300);
+    if (knobs.surprise) {
+        let a = (Number(seed) >>> 0) || 1;
+        const rand = () => { a = (a + 0x6d2b79f5) >>> 0; let x = Math.imul(a ^ (a >>> 15), 1 | a); x ^= x + Math.imul(x ^ (x >>> 7), 61 | x); return ((x ^ (x >>> 14)) >>> 0) / 4294967296; };
+        ranked = ranked.map((p) => ({ ...p, s: p.s + 0.04 * knobs.surprise * -Math.log(-Math.log(rand() * 0.999998 + 1e-6)) })).sort((x, y) => y.s - x.s);
+    }
+    return {
+        taste: { from: t.from, rejected: t.rejected, heading: !!t.v, n: t.n },
+        knobs: { ...knobs, seed },
+        picks: diversify(ranked, { limit, lambda: 1 - 0.6 * knobs.variety }).map(({ row, s }) => ({ row, score: Number(s.toFixed(4)) })),
+    };
+}
+
 /**
  * A taste, small enough to paste.
  *
@@ -346,5 +382,19 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         if (twice.n !== 3 || twice.from.join() !== kept.from.join()) throw new Error("a second reload must change nothing");
     }
 
-    console.log(`taste.js self-check ok — mu/v/q, drift leans forward, rejection steers, portable in ${size}B, ranks a pool it never saw, MMR keeps a run of near-duplicates from filling the list, provenance and heading survive the restore collapse and do not drift on reload`);
+    // discover: the knobs move the list, a seed pins it, and nothing voted on comes back.
+    {
+        const pool = Array.from({ length: 40 }, (_, i) => { const a = (i * Math.PI) / 80; return { id: `g${i}`, title: `g${i}`, vector: [Math.cos(a), Math.sin(a)], norm: 1 }; });
+        const likes = [pool[0]], dislikes = [pool[39]];
+        const ids = (o) => o.picks.map((p) => p.row.id).join();
+        const base = discover(pool, likes, dislikes, { limit: 5 });
+        if (base.picks[0].row.id !== "g1") throw new Error(`nearest first by default: ${ids(base)}`);
+        if (base.picks.some((p) => p.row.id === "g0" || p.row.id === "g39")) throw new Error("discover must not return what was voted on");
+        if (discover(pool, likes, [], { limit: 5, reach: 1 }).picks[0].row.id === "g1") throw new Error("reach must skip the nearest");
+        const s1 = discover(pool, likes, [], { limit: 5, surprise: 1, seed: 7 });
+        if (ids(s1) !== ids(discover(pool, likes, [], { limit: 5, surprise: 1, seed: 7 }))) throw new Error("the same seed must give the same list");
+        if (discover(pool, [], [], {}).picks.length) throw new Error("no likes, no picks");
+    }
+
+    console.log(`taste.js self-check ok — discover's knobs, mu/v/q, drift leans forward, rejection steers, portable in ${size}B, ranks a pool it never saw, MMR keeps a run of near-duplicates from filling the list, provenance and heading survive the restore collapse and do not drift on reload`);
 }

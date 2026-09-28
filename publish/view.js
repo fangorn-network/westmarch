@@ -31,7 +31,7 @@
 
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { EMBED_DIM, EMBED_MODEL, embedDocumentDirect, packVec, unpackVec } from "../consume/embed.js";
 import { coverage as fitCoverage } from "./reactions.js";
 
@@ -120,6 +120,55 @@ export function domainSpec(schema, tags) {
     return { description: decls.map((d) => d.description).filter(Boolean).join(" "), role_map, presentation };
 }
 
+// ── a client that only reads ──────────────────────────────────────────────────
+
+/** An SDK client for reading commits: a throwaway key (nothing signs) and no upload
+ *  credentials. Contents come through an IPFS gateway: FANGORN_IPFS_GATEWAY, else the one
+ *  in ~/.fangorn/config.json (what the fangorn CLI reads through), else the SDK default.
+ *  ponytail: the SDK's default is ipfs.io, which no longer serves raw blocks, so on a
+ *  machine with neither setting reads fail; set FANGORN_IPFS_GATEWAY. */
+export async function readOnlyFangorn() {
+    const [{ Fangorn, FangornConfig }, { generatePrivateKey }, { homedir }] = await Promise.all([
+        import("@fangorn-network/sdk"), import("viem/accounts"), import("node:os")]);
+    let gateway = process.env.FANGORN_IPFS_GATEWAY ?? process.env.IPFS_GATEWAY;
+    try { gateway ??= JSON.parse(readFileSync(`${homedir()}/.fangorn/config.json`, "utf8")).pinataGateway || undefined; } catch { /* no CLI config */ }
+    if (gateway && !/^https?:\/\//.test(gateway)) gateway = `https://${gateway}`;
+    return Fangorn.create({ privateKey: generatePrivateKey(), config: FangornConfig,
+        storage: { signedUrl: gateway ? { gateway } : {} } });
+}
+
+/** What publishView reads, served from memory instead of the chain: `chain` maps
+ *  `<owner>/<namespace>` to namespace contents ({ vertices: [{cid, schemaId, payload}],
+ *  edges }). A build that must not touch the chain — a candidate recipe graded before it
+ *  ships — runs the exact code a real one does. */
+export function localFangorn(chain, { appId, owner }) {
+    return {
+        setAppId() {}, getAppId: () => appId,
+        getAppRegistry: () => ({ getAppOwner: async () => owner }),
+        appNamespaces: async ({ namespace }) => Object.keys(chain).filter((k) => k.endsWith(`/${namespace}`)).map((k) => ({ owner: k.split("/")[0] })),
+        readNamespace: async (o, ns) => { const c = chain[`${o}/${ns}`]; if (!c) throw new Error("no such namespace"); return { contents: c }; },
+    };
+}
+
+/** `embed`, remembered on disk by the exact text embedded (and the encoder). Two builds
+ *  of the same data under different recipes then only pay for the text that differs.
+ *  One ndjson file of packed vectors; packVec's fixed 1/127 scale makes the round trip exact.
+ *  ponytail: the whole file is held in memory, ~400 bytes a record; shard it past a few million. */
+export function cachedEmbed(path, embed = embedDocumentDirect) {
+    const seen = new Map();
+    // A build killed mid-write leaves half a line; that one vector is embedded again, nothing else is lost.
+    if (existsSync(path)) for (const l of readFileSync(path, "utf8").split("\n")) { try { const [k, v] = JSON.parse(l); seen.set(k, v); } catch { /* blank or cut short */ } }
+    const salt = JSON.stringify(EMBEDDER);
+    const fn = async (text) => {
+        const k = createHash("sha256").update(`${salt}\n${text}`).digest("hex");
+        let v = seen.get(k);
+        if (!v) { v = packVec(await embed(text)); seen.set(k, v); appendFileSync(path, `${JSON.stringify([k, v])}\n`); fn.misses++; }
+        return unpackVec(v);
+    };
+    fn.misses = 0;
+    return fn;
+}
+
 // ── the view on disk ──────────────────────────────────────────────────────────
 
 const readJson = (p, dflt) => (existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : dflt);
@@ -136,12 +185,23 @@ function loadDomain(dir) {
     return { manifest, rows };
 }
 
+/** Every live row's fields, across the view at `out`. */
+export function liveFields(out) {
+    const root = `${out}/cdn/domains`;
+    if (!existsSync(root)) return [];
+    return readdirSync(root).flatMap((d) => {
+        const { manifest, rows } = loadDomain(`${root}/${d}`);
+        const dead = new Set(manifest?.tombstones ?? []);
+        return [...rows.values()].filter((r) => !dead.has(r.track_id)).map((r) => r.fields ?? {});
+    });
+}
+
 /**
  * Bring `out` up to date with the chain. `fangorn` is an SDK client (reads only).
  * Returns per-domain counts of what changed.
  */
 export async function publishView({ fangorn, app, namespaces, out, fromBlock = 0n, rebake = false,
-                                    embed = embedDocumentDirect, log = console.log }) {
+                                    embed = embedDocumentDirect, log = console.log, shardRows = 20000 }) {
     if (!namespaces?.length) throw new Error("publishView: name the data namespace(s) to publish");
     fangorn.setAppId(app);
     const appId = fangorn.getAppId();
@@ -162,7 +222,7 @@ export async function publishView({ fangorn, app, namespaces, out, fromBlock = 0
         for (const { owner: publisher } of timelines) {
             const domain = domainFor(appId, publisher, ns);
             report[domain] = await publishDomain({
-                fangorn, schema, publisher, ns, domain, dir: `${out}/cdn/domains/${domain}`, rebake, embed, log,
+                fangorn, schema, publisher, ns, domain, dir: `${out}/cdn/domains/${domain}`, rebake, embed, log, shardRows,
             });
         }
     }
@@ -170,7 +230,7 @@ export async function publishView({ fangorn, app, namespaces, out, fromBlock = 0
     return report;
 }
 
-async function publishDomain({ fangorn, schema, publisher, ns, domain, dir, rebake, embed, log }) {
+async function publishDomain({ fangorn, schema, publisher, ns, domain, dir, rebake, embed, log, shardRows }) {
     const { contents } = await fangorn.readNamespace(publisher, ns);
     const records = new Map((contents.vertices ?? []).filter((v) => v.payload && typeof v.payload === "object")
         .map((v) => [v.cid, { ...v.payload, entityType: v.schemaId }]));
@@ -215,15 +275,35 @@ async function publishDomain({ fangorn, schema, publisher, ns, domain, dir, reba
     mkdirSync(`${dir}/shards`, { recursive: true });
     const manifest = had.manifest ?? { name: domain, description: "", count: 0, dim: EMBED_DIM, model: EMBED_MODEL,
         distance: "Cosine", embedder: EMBEDDER, filter: { owner: [publisher], namespace: [ns] }, shards: [], tombstones: [] };
+    // Pages serves files up to 25 MiB; 52k Steam games gzipped to 28 MiB in one shard.
+    // ponytail: split by row count (~550 B a row gzipped); split by bytes if rows get much fatter.
+    const writeShard = (all) => {
+        for (let i = 0; i < all.length; i += shardRows) {
+            const ls = all.slice(i, i + shardRows);
+            const gz = gzipSync(`${ls.join("\n")}\n`, { level: 9 });
+            const sha256 = createHash("sha256").update(gz).digest("hex");
+            const file = `shard-${String(manifest.shards.length).padStart(4, "0")}-${sha256.slice(0, 12)}.ndjson.gz`;
+            writeFileSync(`${dir}/shards/${file}`, gz);
+            manifest.shards.push({ file, count: ls.length, bytes: gz.length, sha256 });
+        }
+    };
     if (lines.length) {
-        const gz = gzipSync(`${lines.join("\n")}\n`, { level: 9 });
-        const sha256 = createHash("sha256").update(gz).digest("hex");
-        const file = `shard-${String(manifest.shards.length).padStart(4, "0")}-${sha256.slice(0, 12)}.ndjson.gz`;
-        writeFileSync(`${dir}/shards/${file}`, gz);
-        manifest.shards.push({ file, count: lines.length, bytes: gz.length, sha256 });
+        writeShard(lines);
         for (const l of lines) { const r = JSON.parse(l); had.rows.set(r.track_id, r); dead.delete(r.track_id); }
     }
     for (const id of gone) dead.add(id);
+    // A tombstone hides a row from readers, but its shard still serves the bytes. A record
+    // retracted for what it said (a name, an address) has to be gone, so any removal
+    // rewrites the live rows into one shard and the old files are deleted. No re-embedding:
+    // the vectors are already in the rows.
+    // ponytail: rewrites the whole domain on every removal; compact past a threshold if domains get big.
+    if (dead.size) {
+        for (const s of manifest.shards) rmSync(`${dir}/shards/${s.file}`, { force: true });
+        manifest.shards = [];
+        for (const id of dead) had.rows.delete(id);
+        dead.clear();
+        writeShard([...had.rows.values()].map((r) => JSON.stringify(r)));
+    }
     manifest.tombstones = [...dead].sort();
     manifest.created_at = Math.floor(Date.now() / 1000);
     applySpec(dir, manifest, schema, had.rows, dead, rolesOf);
@@ -299,18 +379,26 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
             { cid: "c3", schemaId: "shop.note.v1", payload: { title: "Note", body: "an undeclared type, with a body long enough to count as its text field" } },
         ], edges: [] },
     };
-    const fangorn = {
-        setAppId() {}, getAppId: () => APP,
-        getAppRegistry: () => ({ getAppOwner: async () => OWNER }),
-        appNamespaces: async ({ namespace }) => Object.keys(chain).filter((k) => k.endsWith(`/${namespace}`)).map((k) => ({ owner: k.split("/")[0] })),
-        readNamespace: async (o, ns) => { const c = chain[`${o}/${ns}`]; if (!c) throw new Error("no such namespace"); return { contents: c }; },
-    };
+    const fangorn = localFangorn(chain, { appId: APP, owner: OWNER });
     const embedded = [];
     const embed = async (t) => { embedded.push(t); const v = new Array(EMBED_DIM).fill(0); for (const w of t.split(/\W+/)) if (w) v[w.length % EMBED_DIM] += 1; const n = Math.hypot(...v) || 1; return v.map((x) => x / n); };
     const out = mkdtempSync(`${tmpdir()}/view-`);
+
+    // The vector cache: a second ask for the same text never reaches the encoder, and reads back exactly.
+    const cache = cachedEmbed(`${out}/vectors.ndjson`, embed);
+    const v1 = await cache("Title: Oak"), again = cachedEmbed(`${out}/vectors.ndjson`, embed);
+    eq([packVec(await again("Title: Oak")), again.misses, embedded.length], [packVec(v1), 0, 1], "a cached vector comes back from disk, unchanged");
+    appendFileSync(`${out}/vectors.ndjson`, '["cut sho');
+    eq(packVec(await cachedEmbed(`${out}/vectors.ndjson`, embed)("Title: Oak")), packVec(v1), "a line cut short by a kill is skipped, not fatal");
+    embedded.length = 0; rmSync(`${out}/vectors.ndjson`);
     const run = () => publishView({ fangorn, app: APP, namespaces: ["shop"], out, embed, log: () => {} });
 
     const d = domainFor(APP, PUB, "shop");
+    const split = mkdtempSync(`${tmpdir()}/view-`);
+    await publishView({ fangorn, app: APP, namespaces: ["shop"], out: split, embed, log: () => {}, shardRows: 2 });
+    m0: { const m = readJson(`${split}/cdn/domains/${d}/manifest`);
+          eq([m.count, m.shards.map((s) => s.count)], [3, [2, 1]], "rows past shardRows go to the next shard (Pages caps a file at 25 MiB)"); }
+    embedded.length = 0;
     eq((await run())[d], { added: 3, removed: 0 }, "first run embeds everything");
     if (!embedded.includes("Title: Oak table. Tags: . a solid oak dining table")) throw new Error(`declared roles compose the text: ${embedded}`);
     let m = readJson(`${out}/cdn/domains/${d}/manifest`);
@@ -322,9 +410,18 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
 
     chain[`${PUB}/shop`].vertices = [chain[`${PUB}/shop`].vertices[0],
         { cid: "c2b", schemaId: TAG, payload: { sku: "b2", name: "Lamp", about: "brass reading lamp", price: 2 } }];
-    eq((await run())[d], { added: 1, removed: 2 }, "a changed record is a new CID; removed ones become tombstones");
+    eq((await run())[d], { added: 1, removed: 2 }, "a changed record is a new CID; removed ones are dropped");
     m = readJson(`${out}/cdn/domains/${d}/manifest`);
-    eq([m.count, m.shards.length, m.tombstones], [2, 2, ["c2", "c3"]], "delta shard + tombstones");
+    eq([m.count, m.shards.length, m.tombstones, readdirSync(`${out}/cdn/domains/${d}/shards`).length], [2, 1, [], 1],
+       "a removal compacts: the retracted rows' bytes are no longer served anywhere");
+    if (embedded.length !== 4) throw new Error("compaction must not re-embed");
+    chain[`${PUB}/shop`].vertices.push({ cid: "c4", schemaId: TAG, payload: { sku: "d4", name: "Rug", about: "wool rug" } });
+    await run();
+    chain[`${PUB}/shop`].vertices.pop();
+    m = readJson(`${out}/cdn/domains/${d}/manifest`);
+    eq([m.count, m.shards.length], [3, 2], "an addition alone is a delta shard");
+    await run();
+    m = readJson(`${out}/cdn/domains/${d}/manifest`);
 
     // The real reader over HTTP: digests checked, tombstones honoured, the publisher's id resolves.
     const srv = createServer((q, s) => { try { s.end(readFileSync(`${out}${decodeURIComponent(q.url)}`)); } catch { s.statusCode = 404; s.end(); } });
@@ -343,5 +440,5 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
        { added: 2, removed: 0 }, "--rebake starts the domain over");
     eq(readdirSync(`${out}/cdn/domains/${d}/shards`).length, 1, "and leaves no orphaned shards");
     rmSync(out, { recursive: true, force: true });
-    console.log("view.js self-check ok — domain names and embedded text match quickbeam's, the schema is applied, a second run embeds nothing, changes ship as delta shards and tombstones, the real reader sees exactly the live records by the publisher's id, and another encoder's view is refused");
+    console.log("view.js self-check ok — domain names and embedded text match quickbeam's, the schema is applied, a second run embeds nothing, additions ship as delta shards, removals compact the domain, the real reader sees exactly the live records by the publisher's id, and another encoder's view is refused");
 }

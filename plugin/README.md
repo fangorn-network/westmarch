@@ -9,6 +9,12 @@ cannot change stated up front. It is the agent-facing form of
 repeating it. It triggers on anything like "put this dataset on Fangorn" or "make
 this searchable by agents".
 
+**`fangorn-improve`** keeps a live app getting better: each run picks one thing (a failing
+guardrail, a broken source, an accepted Observation, the largest coverage gap, the weakest
+question), proves it locally with `westmarch-eval`, and opens one pull request that the
+app's `eval` gate then grades. It never publishes, deploys or merges. Run it by hand or on
+a schedule (`/loop`).
+
 **`fangorn-index`** makes the Fangorn app index usable by an agent: find
 which publisher has what, read enough of it to decide, and hand off to the app
 that owns it — carrying a taste kernel that works in every corpus on the network.
@@ -28,12 +34,12 @@ publisher should have to host a server to be findable. Every verb is a function
 ## Install
 
 ```sh
-/plugin marketplace add <this repo>/plugin
-/plugin install fangorn-index
+/plugin marketplace add fangorn-network/westmarch
+/plugin install fangorn-index@fangorn-index
 ```
 
-Then point it at some publishers — a registry view is the real answer, since it
-resolves to whatever has been registered since this was written:
+It finds every app bound on chain by itself. To search only some publishers, pin
+them:
 
 ```sh
 echo '["https://…/q/qb_1","https://…/q/qb_2"]' > ~/.fangorn/sources.json

@@ -64,10 +64,10 @@ async function resolveCard(cardUrl) {
     const card = await (await fetch(cardUrl)).json();
     const fangornApp = card.capabilities?.extensions?.some((e) => e.uri === APP_EXTENSION);
     // Views only from a verified card, and only http(s) ones (toApp filters).
-    const views = fangornApp ? toApp(await (await fangorn()).discoverApp(cardUrl), cardUrl).views : [];
+    const app = fangornApp ? toApp(await (await fangorn()).discoverApp(cardUrl), cardUrl) : null;
     const page = new URL(card.url);
     if (page.protocol !== "https:" && page.protocol !== "http:") throw new Error(`card.url is not http(s): ${card.url}`);
-    return { card, page: page.toString(), verified: fangornApp, views };
+    return { card, page: page.toString(), verified: fangornApp, views: app?.views ?? [], paid: app?.paid ?? null };
 }
 
 // ── the network ─────────────────────────────────────────────────────────────
@@ -284,6 +284,11 @@ const META = [
     { name: "list-apps",
       description: "List the Fangorn apps registered on chain whose agent cards verify: name, description, card URL, and the WebMCP tools each page offers. Filter with `query`. Call open-app on one to use its tools.",
       inputSchema: { type: "object", properties: { query: { type: "string", description: "Case-insensitive match on name or description" } } } },
+    { name: "find-apps",
+      description: "Find Fangorn apps for a question, ranked by what their data is about (e.g. \"where can I learn about weather?\", \"music\"). Each app carries its site, agent card, ERC-8004 agent with an 8004scan link, ERC-8004 reputation (feedback count and average), record count and bound block. Only apps whose cards verify on chain. `relevant: true` marks the ones worth opening; the rest are sorted, not relevant. With no query, lists every app. Then open-app.",
+      inputSchema: { type: "object", properties: {
+          query: { type: "string", description: "What the person is looking for, in their words" },
+          limit: { type: "integer", minimum: 1, maximum: 50, default: 10 } } } },
     { name: "open-app",
       description: "Verify an app's card against the chain and add its tools to this server as `<app>__<tool>`. An app that publishes views gets fast data tools (describe, search, get, similar, count, browse) with no browser. `page: true` also opens the app's page in a browser for its own WebMCP tools (slower). `app` is a name from list-apps, an appId, or a card URL.",
       inputSchema: { type: "object", properties: { app: { type: "string" }, page: { type: "boolean", description: "Also load the page's own WebMCP tools in a browser" } }, required: ["app"] } },
@@ -295,6 +300,7 @@ const META = [
 /**
  * The server. `deps` is the outside world, so the self-check can fake it:
  *   findApps()          → { apps: [{ name, desc, card, appId }], rejected }
+ *   exploreApps(query)  → { apps: ranked explore.js entries, ranked_by }
  *   findByName(name)    → { card, appId } | null     (optional: a direct registry read)
  *   resolveCard(url)    → { card, page, verified, views }
  *   viewTools(app)      → { tools, call(name, args) } | null   (no browser)
@@ -332,12 +338,12 @@ export function handlers(deps) {
                 ({ card: cardUrl, appId } = a);
             }
             trace(`open ${app}: resolve ${cardUrl}`);
-            const { card, page: url, verified, views } = await deps.resolveCard(cardUrl);
+            const { card, page: url, verified, views, paid } = await deps.resolveCard(cardUrl);
             trace(`open ${app}: verified`);
             let s = slug(card.name ?? app);
             while (open.has(s)) s += "-";
             o = { slug: s, name: card.name, card: cardUrl, appId, verified, page: url,
-                  views: deps.viewTools?.({ name: card.name, desc: card.description, views }) ?? null };
+                  views: deps.viewTools?.({ name: card.name, desc: card.description, views, paid }) ?? null };
         }
         // The browser only when asked, or when there is no other way in.
         if (page || !o.views) await openPage(o);
@@ -376,6 +382,11 @@ export function handlers(deps) {
                 })),
                 unverified: rejected.length,
             });
+        },
+        "find-apps": async ({ query, limit = 10 }) => {
+            const { apps, ranked_by } = await deps.exploreApps(query);
+            return text({ query: query ?? null, ranked_by, apps: apps.slice(0, Math.min(50, Math.max(1, limit)))
+                .map((a) => ({ ...a, open: open.has(a.app) })) });
         },
         "open-app": async ({ app, page }) => {
             const o = await openApp(app, { page });
@@ -419,6 +430,7 @@ if (process.argv[2] === "--selfcheck") {
     let opened = 0;
     const deps = {
         findApps: async () => ({ apps: [{ name: "Kings Foil", desc: "trials", card: "https://k.test/card", appId: "0xk", tools: ["greet"] }], rejected: [{}] }),
+        exploreApps: async (q) => ({ ranked_by: q ? "meaning" : null, apps: [{ app: "kings-foil", name: "Kings Foil", relevant: true }, { app: "b", name: "B", relevant: false }] }),
         resolveCard: async () => ({ card: { name: "Kings Foil" }, page: "https://k.test/p", verified: true }),
         openTab: async () => (opened++ ? "ev" : "dead"),   // the first tab dies
         tabTools: async () => [{ name: "greet", description: "Hi.", inputSchema: { type: "object" } }],
@@ -435,9 +447,12 @@ if (process.argv[2] === "--selfcheck") {
 
     rpc(1, "initialize", {}); rpc(2, "tools/list"); call(3, "list-apps", { query: "TRIAL" }); call(4, "kings-foil__greet"); await wait();
     assert(res(1).result.capabilities.tools.listChanged, "advertises list_changed");
-    assert(res(2).result.tools.length === 3, "only the meta tools before anything is open");
+    assert(res(2).result.tools.length === 4, "only the meta tools before anything is open");
     assert(body(3).apps[0].app === "kings-foil" && body(3).unverified === 1, "list-apps filters and slugs");
     assert(res(4).result.isError && /not open/.test(res(4).result.content[0].text), "an unopened app's tool is an error");
+
+    call(30, "find-apps", { query: "trials", limit: 1 }); await wait();
+    assert(body(30).ranked_by === "meaning" && body(30).apps.length === 1 && body(30).apps[0].open === false, "find-apps ranks, caps, and says what is open");
 
     call(5, "open-app", { app: "Kings Foil" }); await wait();
     call(6, "open-app", { app: "https://k.test/card" }); await wait();
@@ -490,7 +505,7 @@ const fromBlock = fb >= 0 ? BigInt(argv[fb + 1]) : DEFAULT_FROM_BLOCK;
 const headed = argv.includes("--headed");
 const ci = argv.indexOf("--cdp");
 const cdp = ci >= 0 ? argv[ci + 1] : process.env.FANGORN_MCP_CDP || undefined;
-let found, foundAt = 0;
+let found, foundAt = 0, explored, exploredAt = 0;
 const deps = {
     // ponytail: cached for a minute. The scan is a few RPC calls plus a fetch per card.
     findApps: async () => {
@@ -503,6 +518,19 @@ const deps = {
             foundAt = Date.now();
         }
         return found;
+    },
+    // ponytail: cached for a minute, like findApps. Two getLogs, a card and catalog per app.
+    exploreApps: async (query) => {
+        if (!explored || Date.now() - exploredAt > 60_000) {
+            const [ex, { createPublicClient, http }, { arbitrumSepolia }] = await Promise.all([import("./explore.js"), import("viem"), import("viem/chains")]);
+            explored = { ex, dir: await ex.readDirectory(createPublicClient({ chain: arbitrumSepolia, transport: http() })) };
+            exploredAt = Date.now();
+        }
+        const { ex, dir } = explored;
+        const { EMBED_MODEL } = await import("./embed.js");
+        const qv = query?.trim() ? await vt.queryVector(query) : null;
+        const apps = ex.rankApps(dir.apps, query, { qv, model: EMBED_MODEL }).map(ex.brief);
+        return { apps, ranked_by: apps[0]?.ranked_by ?? null };
     },
     findByName: async (name) => {
         const [f, { appId }] = await Promise.all([fangorn(), import("@fangorn-network/sdk")]);

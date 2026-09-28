@@ -1,0 +1,7 @@
+/* This app's paint. The stock page loads this after the fangorn base, so an app replaces the
+   whole look by shipping its own theme.css in site.pages. Start from the tokens:
+
+:root { --bg: …; --fg: …; --muted: …; --line: …; --accent: …; --mark: …;
+        --font: …; --font-display: …; --radius: …; --measure: …; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { … } }
+*/

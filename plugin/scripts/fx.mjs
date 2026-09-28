@@ -27,7 +27,7 @@ import { homedir } from "node:os";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { configure, domainManifests, loadShard, trimView } from "../../consume/shard.js";
-import { findCorpora, sourcesFromRegistry } from "../../consume/directory.js";
+import { findCorpora, sourcesFromChain } from "../../consume/directory.js";
 import { linkOf, rolesFrom, textOf, titleOf } from "../../consume/roles.js";
 import { exportTaste, recommend, taste } from "../../consume/taste.js";
 import { EMBED_MODEL, embedQuery, packVec, unpackVec } from "../../consume/embed.js";
@@ -87,10 +87,23 @@ const mismatch = (model, s) => model && s.model && model !== s.model
 
 const sources = async () => {
     const f = flag("sources"); if (f) return list(f);
-    const r = flag("registry"); if (r) return sourcesFromRegistry(r);
     if (process.env.FANGORN_SOURCES) return list(process.env.FANGORN_SOURCES);
-    try { return JSON.parse(readFileSync(join(HOME, "sources.json"), "utf8")); } catch { return []; }
+    try { return JSON.parse(readFileSync(join(HOME, "sources.json"), "utf8")); } catch { /* none pinned */ }
+    return chainSources();
 };
+
+// Every app bound on chain, the scan fangorn-mcp's list-apps runs. From the
+// current AppRegistry's first event on Arbitrum Sepolia; --from-block overrides.
+async function chainSources() {
+    // The SDK scans 1,000 blocks per log request by default, which on the public
+    // RPC takes minutes; fangorn-mcp's install line sets the same window.
+    process.env.FANGORN_LOG_WINDOW ??= "100000";
+    const [{ Fangorn, FangornConfig }, { generatePrivateKey }] = await Promise.all([
+        import("@fangorn-network/sdk"), import("viem/accounts")]);
+    const fangorn = Fangorn.create({ privateKey: generatePrivateKey(), config: FangornConfig });   // reads only
+    const { sources } = await sourcesFromChain(fangorn, { fromBlock: BigInt(flag("from-block", "311637349")) });
+    return sources;
+}
 
 // ── verbs ────────────────────────────────────────────────────────────────────
 switch (cmd) {
@@ -98,7 +111,7 @@ switch (cmd) {
 // WHICH app has this. Downloads no corpus — coverage centroids only, ~4KB each.
 case "find": {
     const src = await sources();
-    if (!src.length) die("no sources: pass --sources=a,b or --registry=<view>, or write ~/.fangorn/sources.json");
+    if (!src.length) die("no apps found on chain; pass --sources=a,b or write ~/.fangorn/sources.json");
     out(await findCorpora(pos.join(" "), { sources: src, embed: embedQuery, model: EMBED_MODEL, limit: num("limit", 10) }));
     break;
 }
@@ -238,7 +251,7 @@ case "launch": {
 default:
     console.log(`fx <verb>
 
-  find <query> [--sources=a,b|--registry=<view>]   which app has this. No corpus downloaded.
+  find <query> [--sources=a,b|--from-block=N]       which app has this. No corpus downloaded.
   describe <view>                                  rows, field coverage, roles, where it hands off
   browse <view> [--type= --where=k=v --sort= --asc --limit= --offset=]
   search <view> <query> [--where=k=v --limit=]     semantic where rows have vectors, else lexical
