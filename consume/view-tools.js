@@ -51,7 +51,7 @@ export const warm = ({ cacheDir } = {}) => (embedder ??= (async () => {
 export let warmError = null;
 // A model on disk loads in ~0.5s and is worth the wait. A download is 131MB, so
 // until it lands, search ranks by words and says so, rather than stall ~10s.
-const queryVector = async (q) => {
+export const queryVector = async (q) => {
     if (!ready && downloading) return null;
     return (await warm()) ? embedQueryDirect(q).catch(() => null) : null;
 };

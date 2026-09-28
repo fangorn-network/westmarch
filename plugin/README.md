@@ -34,12 +34,12 @@ publisher should have to host a server to be findable. Every verb is a function
 ## Install
 
 ```sh
-/plugin marketplace add <this repo>/plugin
-/plugin install fangorn-index
+/plugin marketplace add fangorn-network/westmarch
+/plugin install fangorn-index@fangorn-index
 ```
 
-Then point it at some publishers — a registry view is the real answer, since it
-resolves to whatever has been registered since this was written:
+It finds every app bound on chain by itself. To search only some publishers, pin
+them:
 
 ```sh
 echo '["https://…/q/qb_1","https://…/q/qb_2"]' > ~/.fangorn/sources.json

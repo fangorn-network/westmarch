@@ -27,7 +27,7 @@ building by hand (the last part of this skill) is for what it does not fit.
 The full walkthrough with every file's source is the guide. Read the sections named
 below when you reach them; do not read it whole up front.
 
-- in the repo: `${CLAUDE_PLUGIN_ROOT}/../docs/app-to-agent.md`
+- online: https://github.com/fangorn-network/westmarch/blob/main/docs/app-to-agent.md
 - once the package is installed in the project: `node_modules/@fangorn-network/westmarch/docs/app-to-agent.md`
 
 ## Lead the conversation

@@ -12,6 +12,7 @@
     "./embed": "./consume/embed.js",
     "./rank": "./consume/rank.js",
     "./apps": "./consume/apps.js",
+    "./explore": "./consume/explore.js",
     "./agent-card": "./publish/agent-card.js",
     "./view": "./publish/view.js",
     "./roles": "./consume/roles.js",
@@ -36,7 +37,7 @@
   "scripts": {
     "build": "tsc -p .",
     "prepare": "tsc -p .",
-    "test": "node publish/terms.js && node publish/reactions.js && node publish/cohort.js && node publish/vault.js && node publish/graph.js && node publish/envelope.js && node publish/demand.js && node publish/settle.js && node publish/manifest.js && node publish/agent-card.js && node publish/view.js && node publish/ship.js --selfcheck && node publish/eval.ts --selfcheck && node publish/cli.js --selfcheck && node publish/enrich.js && node consume/embed.js && node consume/rank.js && node consume/apps.js && node consume/mcp.js --selfcheck && node consume/roles.js && node consume/shard.js && node consume/directory.js && node consume/taste.js && node consume/steam.js && node consume/taste-doc.js && node consume/corpora.js && node consume/ui.js && node consume/lint.js && node consume/tools.js && node consume/x402.js && node site/feed.js && node site/store.js",
+    "test": "node publish/terms.js && node publish/reactions.js && node publish/cohort.js && node publish/vault.js && node publish/graph.js && node publish/envelope.js && node publish/demand.js && node publish/settle.js && node publish/manifest.js && node publish/agent-card.js && node publish/view.js && node publish/ship.js --selfcheck && node publish/eval.ts --selfcheck && node publish/cli.js --selfcheck && node publish/enrich.js && node consume/embed.js && node consume/rank.js && node consume/apps.js && node consume/explore.js && node consume/mcp.js --selfcheck && node consume/roles.js && node consume/shard.js && node consume/directory.js && node consume/taste.js && node consume/steam.js && node consume/taste-doc.js && node consume/corpora.js && node consume/ui.js && node consume/lint.js && node consume/tools.js && node consume/x402.js && node site/feed.js && node site/store.js",
     "lint": "node consume/lint.js"
   },
   "peerDependencies": {
@@ -62,7 +63,8 @@
     "fangorn-mcp": "./consume/mcp.js",
     "westmarch-view": "./publish/view-cli.js",
     "westmarch-ship": "./publish/ship.js",
-    "westmarch-eval": "./dist/ts/eval.js"
+    "westmarch-eval": "./dist/ts/eval.js",
+    "fangorn-fx": "./plugin/scripts/fx.mjs"
   },
   "files": [
     "consume",
@@ -73,7 +75,8 @@
     "site/feed.js",
     "site/worker.js",
     "site/store.js",
-    "dist/ts"
+    "dist/ts",
+    "plugin/scripts/fx.mjs"
   ],
   "engines": {
     "node": ">=20"

@@ -13,7 +13,7 @@ Everything runs through one script. No browser, no MCP server, no publisher has
 to host anything but a baked view:
 
 ```sh
-node ${CLAUDE_PLUGIN_ROOT}/scripts/fx.mjs <verb> …     # JSON on stdout
+npx -y -p @fangorn-network/westmarch -p @huggingface/transformers fangorn-fx <verb> …   # JSON on stdout; `fx` below
 ```
 
 Run it bare for the verb list.
@@ -27,16 +27,16 @@ precedence:
 
 ```sh
 --sources=https://a/q/qb_1,https://b/q/qb_2      # explicit
---registry=<view>                                # a quickbeam view holding the
-                                                 # `apps:` namespace — the
-                                                 # on-chain registry. Preferred.
 FANGORN_SOURCES=…                                # env
 ~/.fangorn/sources.json                          # a JSON array
+(none of the above)                              # every app bound on chain.
+                                                 # Preferred. --from-block=N
+                                                 # for another deployment.
 ```
 
-A registry is the real answer: it is a baked domain like any other, so
-discovering publishers is a shard read rather than an API, and apps registered
-after this plugin was written are found without a code change.
+The chain is the real answer: it is the same scan `fangorn-mcp`'s `list-apps`
+runs, so apps registered after this plugin was written are found without a code
+change. Pin sources only to narrow the search.
 
 ---
 
@@ -52,7 +52,7 @@ them**. On a network of forty publishers this is the difference between one
 question and forty downloads.
 
 ```sh
-fx find "1950s atomic paranoia" --registry=<view>
+fx find "1950s atomic paranoia"
 ```
 
 Read three fields off the result and nothing else matters:
