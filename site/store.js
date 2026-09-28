@@ -30,17 +30,24 @@ export function createStore({ local, session, app = "app" } = {}) {
             write(local, K.passed, [...this.passed().filter((p) => p.key !== item.key), item].slice(-50));
             write(local, K.saved, this.saved().filter((s) => s.key !== item.key));
         },
+        /** Neither liked nor passed on: the vote cleared. */
+        unvote(key) {
+            write(local, K.saved, this.saved().filter((s) => s.key !== key));
+            write(local, K.passed, this.passed().filter((p) => p.key !== key));
+        },
         remember(query) {
             const q = query.trim();
             if (!q) return;
             write(session, K.history, [{ q, at: new Date().toISOString() }, ...this.history().filter((h) => h.q !== q)].slice(0, 50));
         },
         clear(which) { write(which === "history" ? session : local, K[which], []); },
-        /** The taste these choices make, or null before the first save. */
-        taste() {
+        /** Likes (saved) and dislikes (passed), newest last, as the kernel takes them. */
+        votes() {
             const vec = (x) => ({ id: x.key, title: x.title, vector: x.v ? unpackVec(x.v) : null });
-            return taste(this.saved().map(vec), this.passed().map(vec));
+            return { likes: this.saved().map(vec), dislikes: this.passed().map(vec) };
         },
+        /** The taste these choices make, or null before the first like. */
+        taste() { const { likes, dislikes } = this.votes(); return taste(likes, dislikes); },
         /** Everything, for the person to keep or hand to an agent. */
         bundle({ name = app, url = "" } = {}) {
             const strip = ({ v, ...x }) => x;

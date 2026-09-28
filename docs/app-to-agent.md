@@ -587,29 +587,20 @@ can keep an app current: a cron job, a CI workflow, or an agent that just publis
 ## Using Fangorn apps from an agent
 
 `fangorn-mcp` is one MCP server for every Fangorn app: a new app needs no new
-registration. You can install it as a single file (Linux x64/arm64): no node, no install,
-and search by meaning included.
+registration. Install it through npm (node ≥ 20):
 
 ```sh
-curl -fLo fangorn-mcp https://github.com/fangorn-network/westmarch/releases/latest/download/fangorn-mcp-linux-x64
-chmod +x fangorn-mcp
-claude mcp add fangorn -- "$PWD/fangorn-mcp"
-```
-
-Or through npm, wherever node is:
-
-```sh
-claude mcp add fangorn -- npx -y -p @fangorn-network/westmarch -p @huggingface/transformers fangorn-mcp
+claude mcp add fangorn -e FANGORN_LOG_WINDOW=100000 -- \
+  npx -y -p @fangorn-network/westmarch -p @huggingface/transformers fangorn-mcp
 ```
 
 Without `-p @huggingface/transformers`, the install is ~500 MB lighter and `search` ranks by
-words, not meaning. For any MCP client:
+words, not meaning. Without `FANGORN_LOG_WINDOW`, `list-apps` scans the chain 1,000 blocks
+per call and takes minutes.
 
-```json
-{ "mcpServers": { "fangorn": { "command": "/path/to/fangorn-mcp" } } }
-```
-
-`bun build-bin.js` in westmarch builds the file (bun ≥ 1.2).
+[docs/mcp.md](mcp.md) has the full setup: other MCP clients, every setting, running from
+source, and troubleshooting. A single-file binary (`bun build-bin.js`) exists but is not
+published yet.
 
 It starts with three tools:
 - **`list-apps`** reads the apps off the chain and keeps the ones whose cards verify.

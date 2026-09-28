@@ -5,12 +5,13 @@
 //   #/                 the feed (and "For you", once something is saved)
 //   #/search/<query>   search
 //   #/item/<key>       one record: its document, its meeting, what is like it
-//   #/saved            saved items, exportable; the taste they make
+//   #/for-you          the taste kernel over 👍 and 👎, with its four knobs
+//   #/saved            liked items, exportable; the taste they make
 //   #/history          this session's searches
 import { configure, loadShard } from "../consume/shard.js";
 import { linkOf, rolesFrom, subtitleOf, textOf, titleOf, values } from "../consume/roles.js";
-import { neighbors, search } from "../consume/tools.js";
-import { recommend } from "../consume/taste.js";
+import { getRow, neighbors, search } from "../consume/tools.js";
+import { KNOBS, discover } from "../consume/taste.js";
 import { embedQuery } from "../consume/embed.js";
 import { registerAgent } from "./agent.js";
 import { detail, facetField, occasions } from "./feed.js";
@@ -42,7 +43,8 @@ if (geo) $("nav").prepend(el("a", { href: "#/map" }, "Map"));
 
 const input = $("#q input");
 input.disabled = false;
-const store = createStore({ local: globalThis.localStorage, session: globalThis.sessionStorage, app: NAME.toLowerCase().replace(/\W+/g, "-") });
+const SLUG = NAME.toLowerCase().replace(/\W+/g, "-");
+const store = createStore({ local: globalThis.localStorage, session: globalThis.sessionStorage, app: SLUG });
 ctx.session = () => store.bundle({ name: NAME, url: location.origin });
 // The page draws as the shards arrive (a view can be tens of MB), rather than after the last.
 const VIEW = new URL("view", location.href).href;
@@ -86,13 +88,34 @@ const marked = (text, terms) => {
     return String(text).split(re).map((part, i) => (i % 2 ? el("mark", {}, part) : part));
 };
 
-const saveButton = (r) => {
-    const b = el("button", { type: "button", className: "star", title: "Save" });
-    const paint = () => { const on = store.isSaved(keyOf(r)); b.textContent = on ? "★" : "☆"; b.setAttribute("aria-label", on ? "Saved" : "Save"); b.classList.toggle("on", on); };
-    b.onclick = (e) => { e.preventDefault(); store.toggleSave(snap(r)); paint(); counts(); };
-    paint();
-    return b;
+// ── taste: 👍 and 👎 on every record, kept on this device ──
+// One entry point for the page and the `rate` tool, so a vote an agent casts shows here too.
+const verdictOf = (k) => (store.isSaved(k) ? "like" : store.passed().some((p) => p.key === k) ? "dislike" : null);
+ctx.rate = (id, verdict) => {
+    if (!["like", "dislike", "clear"].includes(verdict)) return { error: "verdict is like, dislike or clear" };
+    const r = byId.get(id) ?? byKey.get(String(id)) ?? byId.get(getRow(ctx.rows, id, R)?.id);
+    if (!r) return { error: `no record ${id}` };
+    const k = keyOf(r);
+    store.unvote(k);
+    if (verdict === "like") store.toggleSave(snap(r));
+    if (verdict === "dislike") store.pass(snap(r));
+    paintVotes(); counts();
+    if (/^#\/for-you/.test(location.hash)) forYou();
+    return { likes: store.saved().map((x) => x.title), dislikes: store.passed().map((x) => x.title) };
 };
+// Likes and dislikes as the kernel takes them: the loaded row when there is one, else the saved snapshot.
+ctx.votes = () => {
+    const live = (x) => { const r = byKey.get(x.id); return r ? { id: r.id, title: x.title, vector: r.vector } : x; };
+    const { likes, dislikes } = store.votes();
+    return { likes: likes.map(live).filter((x) => x.vector), dislikes: dislikes.map(live).filter((x) => x.vector) };
+};
+const votes = (r) => el("span", { className: "votes" }, [["like", "👍", "I like this"], ["dislike", "👎", "Not for me"]].map(([v, glyph, label]) => {
+    const b = el("button", { type: "button", className: "vote", title: label, ariaLabel: `${label}: ${titleOf(r, R)}`,
+        onclick: (e) => { e.preventDefault(); ctx.rate(r.id, verdictOf(keyOf(r)) === v ? "clear" : v); } }, glyph);
+    Object.assign(b.dataset, { key: keyOf(r), vote: v });
+    return b;
+}));
+function paintVotes() { for (const b of document.querySelectorAll("button.vote")) b.setAttribute("aria-pressed", String(verdictOf(b.dataset.key) === b.dataset.vote)); }
 
 const row = (r, { terms = [], also = 0, meta = true } = {}) => {
     const d = detail(r, R);
@@ -102,7 +125,7 @@ const row = (r, { terms = [], also = 0, meta = true } = {}) => {
             meta ? el("small", {}, [placeOf(r), subtitleOf(r, R)].filter(Boolean).join(" · ")) : null,
             d ? el("p", { className: "detail" }, marked(clip(d), terms)) : null,
             also ? el("small", { className: "also" }, `and ${also} more record${also > 1 ? "s" : ""} of the same item`) : null),
-        saveButton(r));
+        votes(r));
 };
 
 // ── the place chips ──
@@ -114,7 +137,7 @@ const inPlace = (r) => !only || placeOf(r) === only;
 
 // ── views ──
 const view = $("#view");
-const show = (...kids) => { view.replaceChildren(...kids.flat().filter(Boolean)); window.scrollTo(0, 0); };
+const show = (...kids) => { view.replaceChildren(...kids.flat().filter(Boolean)); paintVotes(); window.scrollTo(0, 0); };
 
 function occasionCard(g) {
     const SHOW = 5, list = el("ul", {}, g.items.slice(0, SHOW).map((r) => row(r, { meta: false })));
@@ -127,11 +150,11 @@ function occasionCard(g) {
 let pastShown = 12;
 function feed() {
     const { upcoming, past } = occasions(ctx.rows, R, { facet, only });
-    const t = store.taste();
-    const forYou = t ? recommend(ctx.rows.filter(inPlace), t, { limit: 6, exclude: new Set(ctx.rows.filter((r) => store.isSaved(keyOf(r))).map((r) => r.id)) }) : [];
+    const { likes, dislikes } = ctx.votes();
+    const mine = discover(ctx.rows.filter(inPlace), likes, dislikes, { ...knobs, limit: 6 });
     show(card.description ? el("p", { className: "about" }, card.description) : null, chips(),
-        forYou.length ? el("section", {}, el("h2", {}, "For you"), el("p", { className: "hint" }, `From the ${t.n} item${t.n > 1 ? "s" : ""} you saved. `, el("a", { href: "#/saved" }, "Change")),
-            el("ul", { className: "list" }, forYou.map(({ row: r }) => row(r)))) : null,
+        mine.picks.length ? el("section", {}, el("h2", {}, "For you"), el("p", { className: "hint" }, `From the ${mine.taste.n} item${mine.taste.n > 1 ? "s" : ""} you liked. `, el("a", { href: "#/for-you" }, "Tune")),
+            el("ul", { className: "list" }, mine.picks.map(({ row: r }) => row(r)))) : null,
         upcoming.length ? el("section", {}, el("h2", {}, "Coming up"), upcoming.slice(0, 8).map(occasionCard)) : null,
         past.length ? el("section", {}, el("h2", {}, "Recently"), past.slice(0, pastShown).map(occasionCard),
             past.length > pastShown ? el("button", { type: "button", className: "more", onclick: () => { pastShown += 12; feed(); } }, "Show more") : null) : null,
@@ -185,7 +208,6 @@ function item(key) {
         frame.append(el("iframe", { src: `./doc?u=${encodeURIComponent(src)}${Number(r.page) > 1 ? `#page=${r.page}` : ""}`, title: "Source document", loading: "lazy" }));
         docBtn.textContent = "Hide document";
     } }, "View document") : null;
-    const pass = el("button", { type: "button", className: "act", onclick: () => { store.pass(snap(r)); pass.textContent = "Noted: less like this"; counts(); } }, "Not interested");
     const occ = occasions(ctx.rows.filter((x) => placeOf(x) === placeOf(r) && dateOf(x) === dateOf(r) && subtitleOf(x, R) === subtitleOf(r, R)), R, { facet });
     const siblings = [...occ.upcoming, ...occ.past].flatMap((g) => g.items).filter((x) => titleOf(x, R) !== titleOf(r, R));
     const near = neighbors(ctx.rows, r.id, R, { limit: 12 }).near.map((h) => byId.get(h.id)).filter((x) => x && titleOf(x, R) !== titleOf(r, R)).slice(0, 6);
@@ -195,7 +217,7 @@ function item(key) {
             el("h2", {}, titleText(r)),
             d ? el("p", {}, d) : el("p", { className: "hint" }, "No decision is recorded under this item (it may be on an agenda, before the meeting)."),
             facts.length ? el("dl", {}, facts.map(([k, v]) => [el("dt", {}, k.replace(/_/g, " ")), el("dd", {}, String(v))])) : null,
-            el("div", { className: "acts" }, saveButton(r), docBtn, pass, src ? el("a", { href: src, target: "_blank", rel: "noopener", className: "act" }, "Source ↗") : null),
+            el("div", { className: "acts" }, votes(r), docBtn, src ? el("a", { href: src, target: "_blank", rel: "noopener", className: "act" }, "Source ↗") : null),
             paid && r.paid_sha256 ? el("p", { className: "hint" }, `Agents can buy this item's structured record for ${Number(paid.price) / 10 ** (paid.decimals ?? 6)} ${paid.symbol ?? "USDC"} (x402).`) : null,
             frame),
         siblings.length ? el("section", {}, el("h2", {}, "Same meeting"), el("ul", { className: "list" }, siblings.slice(0, 12).map((x) => row(x, { meta: false })))) : null,
@@ -207,19 +229,48 @@ function download(name, text, type) {
     document.body.append(a); a.click(); a.remove();
 }
 
+// "For you": the kernel with its knobs. Knob settings are a per-viewer convenience, kept locally.
+const knobStore = { get() { try { return JSON.parse(localStorage.getItem(`${SLUG}:knobs`)) ?? {}; } catch { return {}; } },
+                    set(v) { try { localStorage.setItem(`${SLUG}:knobs`, JSON.stringify(v)); } catch { /* not kept */ } } };
+const knobs = { ...Object.fromEntries(Object.entries(KNOBS).map(([k, [d]]) => [k, d])), ...knobStore.get(), seed: 1 };
+const KNOB_LABELS = { lookahead: ["Lookahead", "what you like now", "where you're heading"], variety: ["Variety", "close to each other", "all different"],
+                      surprise: ["Surprise", "best first", "shuffled"], reach: ["Reach", "nearest", "further out"] };
+function forYou() {
+    const { likes, dislikes } = ctx.votes();
+    const res = discover(ctx.rows.filter(inPlace), likes, dislikes, { ...knobs, limit: 30 });
+    const knob = (name) => {
+        const [label, lo, hi] = KNOB_LABELS[name], out = el("output", {}, `${Math.round(knobs[name] * 100)}%`);
+        const input = el("input", { type: "range", min: 0, max: 1, step: 0.05, value: knobs[name], id: `k-${name}`, title: KNOBS[name][1] });
+        input.oninput = () => { out.textContent = `${Math.round(input.value * 100)}%`; };
+        input.onchange = () => { knobs[name] = Number(input.value); knobStore.set({ ...knobs, seed: undefined }); forYou(); document.getElementById(`k-${name}`)?.focus(); };
+        return el("label", { className: "knob", htmlFor: `k-${name}` }, el("span", {}, label, out), input, el("small", {}, `${lo} ↔ ${hi}`));
+    };
+    const pill = (x, no) => el("li", { className: no ? "no" : "" }, x.title,
+        el("button", { type: "button", ariaLabel: `Forget ${x.title}`, onclick: () => ctx.rate(x.id, "clear") }, "×"));
+    show(el("h2", { className: "page" }, "For you"), chips(),
+        el("section", { className: "taste" },
+            likes.length || dislikes.length ? el("ul", { className: "pills" }, likes.slice(-30).map((x) => pill(x)), dislikes.slice(-10).map((x) => pill(x, true)))
+                : el("p", { className: "hint" }, "Tap 👍 on records you like and 👎 on ones you don't. Newer likes count more; it all stays in this browser."),
+            res.taste ? el("p", { className: "hint" }, res.taste.heading ? "Your recent likes point somewhere new; Lookahead follows them." : "Like 4 or more and Lookahead can follow where your taste is heading.") : null,
+            el("div", { className: "knobs" }, Object.keys(KNOBS).map(knob)),
+            el("button", { type: "button", className: "act", disabled: !knobs.surprise, title: knobs.surprise ? "" : "Turn up Surprise to reroll",
+                onclick: () => { knobs.seed++; forYou(); } }, "Reroll")),
+        res.picks.length ? el("ul", { className: "list" }, res.picks.map(({ row: r }) => row(r))) : null);
+}
+
 function saved() {
     const items = store.saved(), t = store.taste(), slug = NAME.toLowerCase().replace(/\W+/g, "-");
     const bundle = () => JSON.stringify(store.bundle({ name: NAME, url: location.origin }), null, 1);
     const copy = el("button", { type: "button", className: "act", onclick: async () => {
         try { await navigator.clipboard.writeText(bundle()); copy.textContent = "Copied"; } catch { download(`${slug}-session.json`, bundle(), "application/json"); }
     } }, "Copy for an agent");
-    show(el("h2", { className: "page" }, `Saved (${items.length})`),
+    show(el("h2", { className: "page" }, `Liked (${items.length})`),
         items.length ? el("div", { className: "acts" },
             el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.json`, bundle(), "application/json") }, "Export JSON"),
             el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.csv`, toCSV(items), "text/csv") }, "CSV"),
             el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.md`, toMarkdown(items, `${NAME}: saved`), "text/markdown") }, "Markdown"),
-            copy) : el("p", { className: "empty" }, "Nothing saved yet. Save items with ☆; they stay on this device."),
-        t ? el("p", { className: "hint" }, `"For you" on the front page is built from these ${t.n}${t.rejected.length ? `, and away from ${t.rejected.length} you passed on` : ""}. It lives in this browser; the export carries it, so an agent can use it too. `,
+            copy) : el("p", { className: "empty" }, "Nothing liked yet. Tap 👍 on a record; likes stay on this device."),
+        t ? el("p", { className: "hint" }, `"For you" is built from these ${t.n}${t.rejected.length ? `, and away from ${t.rejected.length} you passed on` : ""}. It lives in this browser; the export carries it, so an agent can use it too. `,
             el("button", { type: "button", className: "linkish", onclick: () => { store.clear("passed"); saved(); counts(); } }, "Forget what I passed on")) : null,
         el("ul", { className: "list" }, items.slice().reverse().map((i) => {
             const r = byKey.get(i.key);
@@ -227,7 +278,7 @@ function saved() {
                 el("a", { href: r ? itemHref(r) : i.url ?? "#/", className: "title" }, i.title),
                 el("small", {}, [i.place, i.subtitle].filter(Boolean).join(" · ")),
                 i.detail ? el("p", { className: "detail" }, clip(i.detail)) : null),
-                el("button", { type: "button", className: "star on", title: "Remove", onclick: () => { store.toggleSave(i); saved(); counts(); } }, "★"));
+                el("button", { type: "button", className: "vote", ariaLabel: `Forget ${i.title}`, title: "Forget", onclick: () => { store.unvote(i.key); saved(); counts(); } }, "×"));
         })));
 }
 
@@ -249,6 +300,7 @@ function route() {
     if (name === "search" && a) return results(a);
     if (name === "item" && a) return item(a);
     if (name === "saved") return saved();
+    if (name === "for-you") return forYou();
     if (name === "history") return historyView();
     if (name === "map" && geo) return (mapView ??= createMap(geo, { el, show, row, placeOf, ctx })).render(...arg.split("/").map(decodeURIComponent));
     $("#q input").value = "";

@@ -30,23 +30,68 @@ below when you reach them; do not read it whole up front.
 - in the repo: `${CLAUDE_PLUGIN_ROOT}/../docs/app-to-agent.md`
 - once the package is installed in the project: `node_modules/@fangorn-network/westmarch/docs/app-to-agent.md`
 
-## Questions first
+## Lead the conversation
 
-Before asking where the data is, ask what it is for. The questions decide which data is
-worth ingesting, and they are the only way to judge a first build before it is permanent.
-Ask in plain conversation — these are open answers, not a menu:
+The person arrives with an idea, not a spec. Turn it into one a step at a time, in
+conversation; do not collect it with a form.
 
-1. **Who uses this, and what do they ask it?** Their questions, in their words.
-2. **How would they know it failed?** The wrong or missing answer that would make them stop.
-3. **What must be covered, and by when?** The list: towns, products, years, accounts.
-4. **What must never show?** People's names, addresses, a client's name.
+- **One or two questions a turn**, in prose. Never a numbered questionnaire, and never a
+  menu for something only they can answer.
+- **Propose, then ask.** After the first answer you know enough to guess. Say the guess
+  ("so a resident types a town and gets its board's recent meetings?") and let them
+  correct it. Correcting a draft is easier than writing from nothing.
+- **Show before asking.** Once there is data, look at it with them. A real record answers
+  half the questions and makes the rest concrete.
+- **Ask each thing when it starts to matter.** Permanent choices (the app name, where the
+  site lives, what is public) come just before the step that needs them, not up front.
+- **Write down what is settled as you go** (`eval/goals.md`, `eval/golden.jsonl`,
+  `app.json`) and say in a line what you wrote. The files are the running summary, and
+  the person can read and edit them.
+- **Push back on answers that give nothing to aim at.** "Everything, for everyone" leaves
+  the loop no target: ask for one person and one thing they would ask it.
 
-Write `eval/goals.md`, one section per goal: the customer, their questions, the coverage
-they need, a date, and what would kill it ("no paying user of this kind by then"). It is
-the person's bet about what is worth having; do not make it for them, and push back on
-"everything, for everyone", which gives the loop nothing to aim at.
+### The arc
 
-Then `eval/golden.jsonl`: 10–20 checks, one per line, each with the `goal` it serves.
+Roughly this order. Loop back freely: a failing question in step 4 often sends you back to
+step 2 or 3.
+
+**1. What it is, and who it is for.** Open with one broad question: what they want to make
+and who would use it. Reflect back a short sketch (the user, what they ask, what they get)
+and refine it until they say it is right. Over the next few turns, as follow-ups to what
+they said rather than as a list, draw out:
+
+- the questions their users ask, in their words;
+- how a user would know it failed: the wrong or missing answer that would make them stop;
+- what must be covered, and by when: towns, products, years, accounts;
+- what must never show: people's names, addresses, a client's name.
+
+**2. Where the data is.** Ask for the actual data (see *Sources*). Once you have it, read
+a sample and show them two or three records in plain words: what one record is, what
+identifies it, which text says what it is, which fields a user could filter on. Say what
+kind of source it is and anything it lacks for the questions from step 1.
+
+**3. Draft the questions together.** From their words and the data, propose five to eight
+checks, each in plain language first ("'Plover village board' should mostly return
+Plover records"), and ask which are wrong or missing. Write the agreed ones to
+`eval/golden.jsonl` (see *Writing the questions*), and `eval/goals.md` from what they said
+in step 1. Grow to 10–20 as the builds show what is missing.
+
+**4. Build, look, adjust.** Build locally and grade (*Build locally until the questions
+pass*), then walk through the result with them. End each round on one decision: fix the
+data, fix the recipe, or change the question.
+
+**5. Settle what is permanent**, just before *Go live*: the app name, what each type
+costs to read, and where the site lives (see *What is permanent*). Propose a default for
+each, say that it cannot be changed, and wait for a yes.
+
+## Writing the questions
+
+`eval/goals.md` has one section per goal: the customer, their questions, the coverage they
+need, a date, and what would kill it ("no paying user of this kind by then"). It is the
+person's bet about what is worth having: draft it from their words and have them confirm
+it, but never fill a gap with your own guess about what they want.
+
+`eval/golden.jsonl` holds the checks, one per line, each with the `goal` it serves.
 
 | testing | check |
 |---|---|
@@ -63,51 +108,66 @@ change whenever a record is re-shaped.
 **The fields the questions name are the record's shape.** Every field a predicate uses must
 exist on the records, filled — so the questions are the spec the sources are written to.
 
-## Then settle the rest
+## Sources
 
-1. **Where the records come from.** One or more kinds of input; each is a source (below).
-   - **crawl**: a site, API or feed read on a schedule, resuming from a cursor;
-   - **snapshot**: a file, dump or export (CSV, a database export, a bucket), read whole
-     each run and replacing the last;
-   - **live**: people, agents or devices submitting. There is no ingest server: they
-     register as publishers in the app and push into its namespace from their own wallets,
-     and the view reads every publisher's commits (one domain per publisher).
-     `westmarch-ship` does not handle this yet — its namespaces come from `sources`, and
-     `--local` sees only what is staged, so contributions are never graded. If the app is
-     mostly live input, say so and build the parts that are crawl or snapshot first.
+A source is one kind of input:
 
-   For crawl and snapshot, the person must give a path or URL to the actual data. Present
-   an input box so they can type a location before other options. Do not scaffold, invent
-   a shape, or write placeholder rows in its place. Generating a starter set is a separate
-   choice they make explicitly, and it still burns a permanent app name.
-2. **The app name.** Permanent once claimed. Do not assume it matches the data's name.
-3. **What is a record.** A record is `{ entityType, <identity field>, …fields }`, one tag
-   per kind of thing, versioned (`my-app.thing.v1`) so a later shape can be a new type.
-   - The identity must be stable across runs (the same thing keeps the same id, or every
-     update is a delete plus an insert) and unique across **every type** in the app: it
-     replaces the CID as the row id that `search` returns and `get` looks up. Namespace
-     it (`audius:genre:electronic`), keep the source's own id under another name, and
-     declare it as `identity` in the role map.
-   - It needs prose that says what the record *is*. That text is what gets embedded; a
-     title alone searches badly.
-   - Every field the questions filter or match on, as its own key.
-4. **What each field costs to read.** Decide per type, before the first push, because
-   anything committed is permanent:
-   - **public**: every field of a record is committed (to IPFS, anchored on chain) and
-     served in the view. Anyone can read it forever.
-   - **paid**: a record's detail sold per record over x402 (`paid` in `app.json`). The
-     detail is written off chain, next to the stage, and served only through the site's
-     worker; the public record carries its `paid_sha256`. Paid content must never also be
-     in a public field, or anyone can read it from the view for free.
-   - **private** (only named people can read): **not built yet.** Nothing in this
-     pipeline encrypts — a committed payload and a view shard are readable by anyone.
-     Do not publish private data; tell the person and stop for those records.
-5. **Where the site will live.** The card's `url` is permanent once bound, so ask before
-   building. The default is Cloudflare Pages at `<project>.pages.dev`; otherwise a domain
-   they own. `fangorn.network` is not available to app builders — never offer or assume a
-   hostname under it.
+- **crawl**: a site, API or feed read on a schedule, resuming from a cursor;
+- **snapshot**: a file, dump or export (CSV, a database export, a bucket), read whole
+  each run and replacing the last;
+- **live**: people, agents or devices submitting. There is no ingest server: they
+  register as publishers in the app and push into its namespace from their own wallets,
+  and the view reads every publisher's commits (one domain per publisher).
+  `westmarch-ship` does not handle this yet — its namespaces come from `sources`, and
+  `--local` sees only what is staged, so contributions are never graded. If the app is
+  mostly live input, say so and build the parts that are crawl or snapshot first.
+
+For crawl and snapshot, the person must give a path or URL to the actual data; ask for it
+plainly and wait. Do not scaffold, invent a shape, or write placeholder rows in its place.
+Generating a starter set is a separate choice they make explicitly, and it still burns a
+permanent app name.
+
+## What a record is
+
+A record is `{ entityType, <identity field>, …fields }`, one tag per kind of thing,
+versioned (`my-app.thing.v1`) so a later shape can be a new type.
+
+- The identity must be stable across runs (the same thing keeps the same id, or every
+  update is a delete plus an insert) and unique across **every type** in the app: it
+  replaces the CID as the row id that `search` returns and `get` looks up. Namespace
+  it (`audius:genre:electronic`), keep the source's own id under another name, and
+  declare it as `identity` in the role map.
+- It needs prose that says what the record *is*. That text is what gets embedded; a
+  title alone searches badly.
+- Every field the questions filter or match on, as its own key.
+
+## What is permanent
+
+Settle these with the person before *Go live*, one at a time, each with a proposed default:
+
+- **The app name.** Permanent once claimed. Do not assume it matches the data's name.
+- **What each type costs to read.** Anything committed is permanent:
+  - **public**: every field of a record is committed (to IPFS, anchored on chain) and
+    served in the view. Anyone can read it forever.
+  - **paid**: a record's detail sold per record over x402 (`paid` in `app.json`). The
+    detail is written off chain, next to the stage, and served only through the site's
+    worker; the public record carries its `paid_sha256`. Paid content must never also be
+    in a public field, or anyone can read it from the view for free.
+  - **private** (only named people can read): **not built yet.** Nothing in this
+    pipeline encrypts — a committed payload and a view shard are readable by anyone.
+    Do not publish private data; tell the person and stop for those records. If step 1
+    of the conversation already surfaced private data, say so then, not here.
+- **Where the site will live.** The card's `url` is permanent once bound. The default is
+  Cloudflare Pages at `<project>.pages.dev`; otherwise a domain they own.
+  `fangorn.network` is not available to app builders — never offer or assume a hostname
+  under it.
 
 ## What the person must have
+
+Do not open with this list. Check what you can yourself (`node -v`, `fangorn --version`,
+`python3 -c "import quickbeam"`), and raise a missing piece when the next step needs it:
+Node and quickbeam before the first local build, the wallet, Pinata and Cloudflare before
+*Go live*.
 
 - Node 22 and the Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.9.22-dev`, or whatever
   newer version westmarch's `package.json` lists as its `@fangorn-network/sdk` peer.
@@ -273,6 +333,32 @@ chain or Cloudflare first, so rerunning it is how the app is updated. State live
 
 A fresh `pages.dev` hostname answers `522` for the first minute; retry rather than debug.
 
+## The page: fangorn shape, the app's paint
+
+Every Fangorn app's page has the same shape, so a person who has used one can use the next,
+and an agent finds the same verbs. The stock page (`westmarch/site`) is that shape. It ships
+structure and a few tokens, not a look. Do not design over it: the look belongs to the owner.
+
+- **The shape.** A bar with the name, search box and sections. A results list, one row per
+  record: its title (linking to the record), a meta line (facet · subtitle), a clipped
+  detail, and 👍 👎 on the right. A record page with the fields, its source, and "Similar".
+  **For you**: the likes and dislikes as removable pills, the four knobs (Lookahead,
+  Variety, Surprise, Reach), Reroll, and the picks as the same rows. Liked and History,
+  both kept on the device.
+- **Like / dislike is the taste.** 👍 and 👎 feed the kernel (`discover` in
+  `westmarch/taste`, knobs from its `KNOBS`); the page and the tools `rate` and `discover`
+  call the same code, so an agent's vote shows on the page. Taste stays in the browser,
+  never on chain.
+- **Paint** is `theme.css` in `site.pages`, loaded after the base. It overrides the tokens:
+  `--bg --fg --muted --line --accent --mark --font --font-display --radius --measure`,
+  with a dark block under `:root:not([data-theme="light"])`. Ask the owner for a colour
+  or a font before inventing one. With no answer, ship no `theme.css`: the plain fangorn base
+  is the default, not a gap to fill.
+- **A page of your own** (`site.pages/index.html` + `site.agent`, as Sidequest and Nimbus
+  do) keeps the shape: the same rows, 👍 👎 on every record, a For-you built on `discover`
+  with the same four knobs, the same token names, and the `rate`/`discover` verbs
+  (`rate-<noun>`, `discover-<noun>` when they carry app-specific filters).
+
 ## Before saying it is done
 
 - `npx westmarch-eval https://<site>/view` passes, and scores what the local build scored.
@@ -348,9 +434,11 @@ by-hand layout; map them onto those.
 
 ### 1. Ask, offering what the view can actually back
 
-Use `AskUserQuestion` with `multiSelect: true`, so the person can type their own idea
-under "Other". Build each option from **this** app's schema: name its real fields and
-types, not generic features. Every option must map to something `westmarch/tools` already
+Same rules as *Lead the conversation*. Start from what they just saw: ask what they
+wished the page did while they used it. If they have no answer, suggest two or three
+features in prose, built from **this** app's schema (its real fields and types, not
+generic features), and ask which one first. Build one feature at a time, show it, then
+ask about the next. Every suggestion must map to something `westmarch/tools` already
 does over the loaded rows:
 
 | feature a person sees | westmarch call | notes |
@@ -361,7 +449,7 @@ does over the loaded rows:
 | "more like this" | `neighbors(rows, id, roles, { limit })` | vector-only, needs no query |
 | counts and charts ("how many per genre") | `facet(rows, field, { where })` | |
 | records that belong to one entity ("this artist's tracks") | `browse` with `where: { <foreign-key field>: id }` | only if the row carries the key (e.g. `artistId`) |
-| recommendations from likes and dislikes | `taste` + `recommend` | keep taste in memory or in `localStorage`, never on chain |
+| recommendations from likes and dislikes | `discover(rows, likes, dislikes, knobs)` | the stock page already has it (*The page*); keep taste in memory or `localStorage`, never on chain |
 
 Say so plainly, and do not promise these:
 - **Edges are not in the view.** `westmarch-view` ships flat records; the committed
@@ -803,6 +891,7 @@ what a name suggests.
 | `warmEmbedder()` | — | **`undefined`**, not a promise. It only starts the download; `.then` on it throws |
 | `taste(likes, dislikes)` | rows `{ id, title, vector }`, not bare vectors | a taste, or `null` |
 | `recommend(rows, taste, { limit, exclude })` | — | `[{ row, score }]` — the score key is `score`, not `s` |
+| `discover(rows, likes, dislikes, { lookahead, variety, surprise, reach, seed, limit })` | likes/dislikes as for `taste`, newest last; knobs 0–1 (`KNOBS` has defaults and descriptions) | `{ taste: { from, rejected, heading, n } \| null, knobs, picks: [{ row, score }] }`; never returns what was voted on |
 
 `where` matches case-insensitively on whole values, so an agent echoing a faceted value
 back with the wrong case still hits, and `comedy` never counts every `dark comedy`.
