@@ -495,13 +495,16 @@ writeFileSync("site/.well-known/agent-card.json", JSON.stringify(card, null, 1))
 
 // The card is read from other origins, so it needs CORS, and so does the view, for
 // agents and pages elsewhere. Bundles and shards are named by their digest, so they
-// never change: tell caches so. (Pages allows one * per rule, hence a rule per domain.)
+// never change: tell caches so. Shards only in the reader's own browser (`private`): a
+// retracted record's bytes must stop being served by shared caches once the deploy drops
+// its shard. (Pages allows one * per rule, hence a rule per domain.)
 const immutable = "  Cache-Control: public, max-age=31536000, immutable\n";
+const mine = "  Cache-Control: private, max-age=31536000, immutable\n";
 writeFileSync("site/_headers",
     "/.well-known/agent-card.json\n  Access-Control-Allow-Origin: *\n"
     + "/view/*\n  Access-Control-Allow-Origin: *\n"
     + `/assets/*\n${immutable}`
-    + readdirSync("site/view/cdn/domains").map((d) => `/view/cdn/domains/${d}/shards/*\n${immutable}`).join(""));
+    + readdirSync("site/view/cdn/domains").map((d) => `/view/cdn/domains/${d}/shards/*\n${mine}`).join(""));
 ```
 
 ```sh

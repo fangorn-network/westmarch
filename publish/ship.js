@@ -297,8 +297,12 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
         "/.well-known/agent-card.json\n  Access-Control-Allow-Origin: *\n"
         + "/view/*\n  Access-Control-Allow-Origin: *\n"
         + `/assets/*\n${immutable}`
-        // An hour, not immutable: a shard is deleted when a record is retracted (see view.js).
-        + domains.map((d) => `/view/cdn/domains/${d}/shards/*\n  Cache-Control: public, max-age=3600\n`).join(""));
+        // A shard's name is its content hash, so a browser may keep it for good: a change or a
+        // retraction writes new names and the manifest stops pointing at the old ones. `private`
+        // keeps it out of shared caches, so a retracted record's bytes stop being served the
+        // moment the deploy drops the file (see view.js). An hour made readers on a phone fetch
+        // the whole catalog again after every hour away.
+        + domains.map((d) => `/view/cdn/domains/${d}/shards/*\n  Cache-Control: private, max-age=31536000, immutable\n`).join(""));
 
     // 7. deploy
     if (deploy) {
