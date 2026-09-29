@@ -24,7 +24,11 @@ export const EMBED_DIM = DIM;
 let _extractor = null;
 const extractor = () => (_extractor ??= (async () => {
     const { pipeline } = await import("@huggingface/transformers");
-    return pipeline("feature-extraction", MODEL, { dtype: "q8" });
+    // WESTMARCH_EMBED_DEVICE=cuda puts the publisher's document side on a GPU (Node only; needs
+    // onnxruntime-node's CUDA binaries). Still q8 at batch 1, so still the same encoder: its
+    // vectors agree with CPU q8 to ~0.99, closer than the browser's WASM q8 queries (~0.98).
+    const device = globalThis.process?.env?.WESTMARCH_EMBED_DEVICE;
+    return pipeline("feature-extraction", MODEL, { dtype: "q8", ...(device && { device }) });
 })());
 
 /** Standardize over the full vector, slice to `dim`, L2-normalize the slice. */

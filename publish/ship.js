@@ -463,4 +463,5 @@ if (process.argv[1]?.endsWith("ship.js") || process.argv[1]?.endsWith("westmarch
                        replace: flags.includes("--replace"),
                        only })
         .catch((e) => { console.error(`[ship] ✗ ${e.message}`); process.exit(1); });
+    process.exit(0);   // a CUDA embedder keeps the process alive (and can abort in its teardown)
 }

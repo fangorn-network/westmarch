@@ -273,6 +273,13 @@ on CPU at 14–65 records/s. Vectors are cached in `.ship/vectors.ndjson` by the
 embedded, so a rebuild embeds only what changed. Without `--crawl` it rebuilds from what is
 staged (a recipe change in `app.json`); `--only ns1,ns2` limits it to some namespaces.
 
+A big corpus on an NVIDIA GPU: `WESTMARCH_EMBED_DEVICE=cuda` runs the same q8 encoder on
+the GPU (same stamp; ~0.99 cosine to CPU vectors, closer than the browser's queries get).
+One-time setup: `ONNXRUNTIME_NODE_INSTALL=cuda12 node script/install.js` inside
+`node_modules/onnxruntime-node`, and the CUDA 12 runtime, cuBLAS and cuDNN on
+`LD_LIBRARY_PATH` (on WSL, add `/usr/lib/wsl/lib`). Not quickbeam: its fastembed fp32
+vectors are a different encoder and a q8 view refuses them.
+
 **4. Read the result with the person.** For each failing check:
 
 - a search check low or 0: its top 3 titles are printed. The right records ranked low

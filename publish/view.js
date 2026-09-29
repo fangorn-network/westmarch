@@ -238,7 +238,9 @@ async function publishDomain({ fangorn, schema, publisher, ns, domain, dir, reba
     if (rebake) rmSync(dir, { recursive: true, force: true });   // old shards would stay reachable
     const had = loadDomain(dir);
     const made = had.manifest?.embedder ?? (had.manifest ? { runtime: "fastembed", dtype: "fp32" } : null);
-    if (made && JSON.stringify(made) !== JSON.stringify(EMBEDDER))
+    // Same model and dtype is the same encoder, whatever ran it: q8 on CPU, CUDA and WASM agree to
+    // ~0.98-0.99 cosine, fp32 against q8 only to ~0.95.
+    if (made && (made.model ?? EMBED_MODEL) + made.dtype !== EMBEDDER.model + EMBEDDER.dtype)
         throw new Error(`${domain} was embedded by ${made.runtime} ${made.dtype}, not ${EMBEDDER.runtime} ${EMBEDDER.dtype}; ` +
             "vectors from two encoders are not comparable. Rebake it with --rebake, or keep publishing it with the tool that made it.");
 
@@ -434,6 +436,8 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     const { rolesFrom } = await import("../consume/roles.js");
     eq(getRow(got, "b2", rolesFrom([m]))?.id, "c2b", "get by the publisher's own id, not the CID");
 
+    m.embedder = { ...EMBEDDER, runtime: "transformers.js cuda" }; writeJson(`${out}/cdn/domains/${d}/manifest`, m);
+    await run();   // throws if another runtime of the same q8 model is refused
     m.embedder = { runtime: "fastembed", dtype: "fp32" }; writeJson(`${out}/cdn/domains/${d}/manifest`, m);
     await throws(run, /not comparable/, "appending to another encoder's view");
     eq((await publishView({ fangorn, app: APP, namespaces: ["shop"], out, embed, rebake: true, log: () => {} }))[d],
