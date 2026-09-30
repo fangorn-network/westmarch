@@ -120,11 +120,22 @@ export const GAMMA = 0.6;
  */
 export const score = (row, t) => {
     if (!row?.vector || !t) return null;
-    const r = { vector: row.vector, norm: row.norm ?? norm(row.vector) };
-    const pos = cosine(r, t.q, norm(t.q));
+    // Called once per row of the catalog: the taste's own norms are the same for every one of them, so they are
+    // worked out once per taste (not per row, which doubled discover's time at 124k rows), and a row that already
+    // carries its norm (every shard row does) is used as it is rather than copied.
+    const n = normsOf(t);
+    const r = row.norm ? row : { vector: row.vector, norm: norm(row.vector) };
+    const pos = cosine(r, t.q, n.q);
     if (!t.no) return pos;
-    return pos - GAMMA * Math.max(0, cosine(r, t.no, norm(t.no)));
+    return pos - GAMMA * Math.max(0, cosine(r, t.no, n.no));
 };
+// Keyed on the vectors, not the taste object: a caller that swaps `t.q` (importTaste, a drifted copy) gets fresh norms.
+const _norms = new WeakMap();
+function normsOf(t) {
+    let n = _norms.get(t);
+    if (!n || n.qv !== t.q || n.nov !== t.no) _norms.set(t, (n = { qv: t.q, nov: t.no, q: norm(t.q), no: t.no ? norm(t.no) : 1 }));
+    return n;
+}
 
 /** The best `limit` rows for a taste. `exclude` drops rows the taste was built
  *  from — recommending someone the thing they just told you they liked is the
@@ -164,9 +175,18 @@ export function discover(rows, likes = [], dislikes = [], { limit = 20, seed = 1
     const t = taste(likes, dislikes, { drift: knobs.lookahead });
     if (!t) return { taste: null, knobs: { ...knobs, seed }, picks: [] };
     const skip = new Set([...exclude, ...likes.map((x) => x.id), ...dislikes.map((x) => x.id)]);
-    let ranked = rows.filter((r) => r.vector && !skip.has(r.id)).map((row) => ({ row, s: score(row, t) })).sort((a, b) => b.s - a.s);
-    const start = Math.round(knobs.reach * Math.min(400, ranked.length / 4));
-    ranked = ranked.slice(start, start + 300);
+    // Only the top `start + 300` are ever looked at, so keep just those as the rows go by instead of sorting the
+    // whole catalog (the same order a stable sort gives: a tie stays behind the row it tied with).
+    const pool = rows.filter((r) => r.vector && !skip.has(r.id));
+    const start = Math.round(knobs.reach * Math.min(400, pool.length / 4)), keep = start + 300;
+    const top = [];
+    for (const row of pool) {
+        const s = score(row, t);
+        if (top.length === keep && !(s > top[keep - 1].s)) continue;
+        let i = top.length; while (i > 0 && top[i - 1].s < s) i--;
+        top.splice(i, 0, { row, s }); if (top.length > keep) top.pop();
+    }
+    let ranked = top.slice(start);
     if (knobs.surprise) {
         let a = (Number(seed) >>> 0) || 1;
         const rand = () => { a = (a + 0x6d2b79f5) >>> 0; let x = Math.imul(a ^ (a >>> 15), 1 | a); x ^= x + Math.imul(x ^ (x >>> 7), 61 | x); return ((x ^ (x >>> 14)) >>> 0) / 4294967296; };
