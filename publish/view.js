@@ -319,7 +319,10 @@ function applySpec(dir, manifest, schema, rows, dead, guessed = new Map()) {
     const types = {};
     for (const r of liveRows) types[r.fields?.entityType] = (types[r.fields?.entityType] ?? 0) + 1;
     const tags = Object.entries(types).sort((a, b) => b[1] - a[1]).map(([t]) => t);
-    const before = JSON.stringify(manifest);
+    // Compare with what is on disk, not with the manifest as it arrived: publishDomain has already
+    // swapped shards and tombstones, and a one-for-one replacement changes nothing here, which left
+    // the old manifest naming deleted shards.
+    const before = JSON.stringify(readJson(`${dir}/manifest`, null));
 
     manifest.count = liveRows.length;
     manifest.entity_types = tags.map((t) => ({ type: t, count: types[t] }));
@@ -333,7 +336,7 @@ function applySpec(dir, manifest, schema, rows, dead, guessed = new Map()) {
     if (liveRows.length && (!cov || liveRows.length >= COVERAGE_REFIT * (cov.fit_at ?? 0))) {
         manifest.coverage = { ...fitCoverage(liveRows.map((r) => unpackVec(r.v))), fit_at: liveRows.length };
     }
-    if (JSON.stringify(manifest) !== before || !existsSync(`${dir}/manifest`)) {
+    if (JSON.stringify(manifest) !== before) {
         mkdirSync(dir, { recursive: true });
         writeJson(`${dir}/manifest`, manifest);
     }
@@ -417,6 +420,14 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     eq([m.count, m.shards.length, m.tombstones, readdirSync(`${out}/cdn/domains/${d}/shards`).length], [2, 1, [], 1],
        "a removal compacts: the retracted rows' bytes are no longer served anywhere");
     if (embedded.length !== 4) throw new Error("compaction must not re-embed");
+    chain[`${PUB}/shop`].vertices[1] = { cid: "c2c", schemaId: TAG, payload: { sku: "b3", name: "Lamp", about: "steel reading lamp", price: 2 } };
+    eq((await run())[d], { added: 1, removed: 1 }, "a one-for-one replacement: same count, same types");
+    m = readJson(`${out}/cdn/domains/${d}/manifest`);
+    eq(m.shards.map((x) => x.file).sort(), readdirSync(`${out}/cdn/domains/${d}/shards`).sort(),
+       "and the manifest names the shards on disk, not the ones compaction deleted");
+    chain[`${PUB}/shop`].vertices[1] = { cid: "c2b", schemaId: TAG, payload: { sku: "b2", name: "Lamp", about: "brass reading lamp", price: 2 } };
+    await run();   // back to the state the checks below expect
+    embedded.length = 4;   // the replacement's embedding is not what the checks below count
     chain[`${PUB}/shop`].vertices.push({ cid: "c4", schemaId: TAG, payload: { sku: "d4", name: "Rug", about: "wool rug" } });
     await run();
     chain[`${PUB}/shop`].vertices.pop();
