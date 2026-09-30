@@ -134,6 +134,10 @@ any fall fails, because a recipe that loses a town has dropped its records.
 `match` (a field, or several joined by `|`, to a regex; case-insensitive unless written
 `/re/flags`), `not`. Relevance is a predicate and not a list of record ids, because ids
 are content hashes and a recipe change that re-parses records changes every one.
+The same predicate as `of` scopes a check to some rows: on a `records` or `coverage` check
+it narrows what is counted, and on a search check it narrows what is searched, to match a
+surface that filters (a page tab for people, a type an agent tool reads), so one type of
+record growing cannot crowd the questions another surface answers.
 Without labels, it also searches 200 sampled rows by their own titles (`known@1`, `known@10`).
 
 Worse is: mean precision or `known@10` down more than 0.05, any question the base

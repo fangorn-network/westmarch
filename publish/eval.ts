@@ -56,7 +56,7 @@ import { EMBED_MODEL, embedQueryDirect } from "@fangorn-network/westmarch/embed"
 
 type Pred = { where?: Record<string, string>; match?: Record<string, string>; not?: Pred };
 type Check = { id: string; goal?: string } & (
-    | { kind?: "search"; q: string; k?: number; expect: Pred; min?: number }
+    | { kind?: "search"; q: string; k?: number; of?: Pred; expect: Pred; min?: number }
     | { kind: "count"; where?: Record<string, string>; expect?: Pred; min?: number; max?: number }
     | { kind: "records"; of?: Pred; expect: Pred; max_pct: number; hard?: boolean }
     | { kind: "coverage"; field: string; values: string[]; weights?: Record<string, number>; of?: Pred; min?: number });
@@ -107,7 +107,8 @@ async function grade(rows: Row[], roles: Roles, checks: Check[], qv: QueryVector
             out.push({ id: c.id, kind: "coverage", score, pass: score >= (c.min ?? 0), top: missing.slice(0, 10), ...goal });
         } else {
             const k = c.k ?? 5, ok = compile(c.expect);
-            const hits = search(rows, c.q, roles, { qv: await qv(c.q), limit: k }).map((h) => byId.get(h.id)!);
+            // `of` scopes the search to the rows a surface searches (a page tab, a tool's filter).
+            const hits = search(c.of ? rows.filter(compile(c.of)) : rows, c.q, roles, { qv: await qv(c.q), limit: k }).map((h) => byId.get(h.id)!);
             const score = round(hits.filter(ok).length / k);
             out.push({ id: c.id, kind: "search", score, pass: score >= (c.min ?? 0), top: hits.slice(0, 3).map((r) => titleOf(r, roles).slice(0, 90)), ...goal });
         }
@@ -276,6 +277,8 @@ async function selfcheck() {
     assert(r.wells.score === 0 && !r.wells.pass, "a count with nothing to reach fails (min defaults to 1)");
     assert(r.addresses.score === 25 && r.addresses.pass, `records is a percentage: ${r.addresses.score}`);
     const [scoped] = await grade(rows, roles, [{ id: "s", kind: "records", of: { where: { city: "Stevens Point" } }, expect: { match: { text: "Rd" } }, max_pct: 100 }], async () => null, 0);
+    const [sq] = await grade(rows, roles, [{ id: "sq", q: "rezoning", of: { where: { city: "Stevens Point" } }, expect: { match: { heading: "rezon" } }, k: 1 }], async () => null, 0);
+    assert(sq.score === 0 && !/Rezoning/.test(sq.top?.join() ?? ""), `\`of\` scopes a search check to its rows: ${JSON.stringify(sq)}`);
     assert(scoped.score === 50, `\`of\` narrows the rows a record check counts: ${scoped.score}`);
     assert(r["known@10"].score === 1, "every title finds its own row");
 
