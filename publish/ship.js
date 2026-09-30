@@ -3,6 +3,7 @@
 //
 //   westmarch-ship app.json [--no-crawl] [--no-deploy] [--dry-run]
 //   westmarch-ship app.json --local <out> [--crawl]     a view from staged records, no chain (see buildLocal)
+//   westmarch-ship app.json --register                  the app alone: claim, join, empty site, card bound
 //
 // Every step checks the chain (or Cloudflare) first and only acts on a difference, so
 // re-running is how you update: new data, a changed schema, a new source, a moved site.
@@ -15,6 +16,11 @@
 //   6. the stock page, the card and _headers → site/
 //   7. deploy to Cloudflare Pages
 //   8. register the ERC-8004 agent and bind the card, if the chain points elsewhere
+//
+// --register is the fast path, run before there is any data: 1, 2, 6 with an empty view, 7,
+// and 8 binding the card without minting. The mint copies the card's skills into its IPFS
+// registration file and is never redone, so it waits for the first full ship, when the card
+// lists what the app really does.
 //
 // Chain writes go through the `fangorn` CLI (its configured wallet signs, and
 // `fangorn wallet` shows which). Reads go through the SDK. State lives in `.ship/` next
@@ -84,12 +90,12 @@ export function expandSources(sources, base) {
 export function loadConfig(path) {
     const c = JSON.parse(readFileSync(path, "utf8"));
     c.sources = expandSources(c.sources ?? [], dirname(resolve(path)));
-    for (const k of ["app", "name", "description", "types", "sources", "site"])
+    for (const k of ["app", "name", "description", "site"])   // types and sources can come after --register
         if (!c[k]) throw new Error(`${path}: missing "${k}"`);
     if (!c.site.project) throw new Error(`${path}: site.project names the Cloudflare Pages project`);
     for (const s of c.sources) if (!s.namespace || !Array.isArray(s.command))
         throw new Error(`${path}: each source needs a namespace and a command (an argv array)`);
-    return { relations: [], tags: [], ...c };
+    return { relations: [], tags: [], types: {}, ...c };
 }
 
 /** The schema commit for `types` + `relations`: one fangorn.type.v1 vertex per type,
@@ -155,8 +161,10 @@ function assertSameDeployment(cli) {
 
 // ── the steps ─────────────────────────────────────────────────────────────────
 
-export async function ship(configPath, { crawl = true, deploy = true, dry = false, replace = false, only = null } = {}) {
+export async function ship(configPath, { crawl = true, deploy = true, dry = false, replace = false, only = null, register = false } = {}) {
     const cfg = loadConfig(configPath);
+    if (!register && (!Object.keys(cfg.types).length || !cfg.sources.length))
+        throw new Error(`${configPath}: no types or sources yet, so nothing to build; --register sets up the app alone`);
     CLI = cliArgv(cfg);
     assertSameDeployment(CLI);
     const base = dirname(resolve(configPath));
@@ -201,22 +209,24 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
 
     // 3. schema
     let onChain = null;
-    try { onChain = view.parseSchema((await fangorn.readNamespace(owner, view.SCHEMA_NAMESPACE)).contents); } catch { /* none yet */ }
-    if (!onChain || canonical(onChain.types, onChain.relations) !== canonical(cfg.types, cfg.relations)) {
-        const sdir = join(dir, "schema");
-        mkdirSync(sdir, { recursive: true });
-        writeFileSync(join(sdir, "graph.json"), JSON.stringify(schemaGraph(cfg.types, cfg.relations), null, 1));
-        log(`schema ${onChain ? "changed" : "is new"}: committing ${Object.keys(cfg.types).join(", ")}`);
-        fangornCli(cfg.app, ["repo", "init", view.SCHEMA_NAMESPACE], { cwd: sdir, dry });
-        fangornCli(cfg.app, ["commit", "graph.json", "-m", "schema", "--replace"], { cwd: sdir, dry });
-        fangornCli(cfg.app, ["push"], { cwd: sdir, dry });
-    } else log("schema unchanged");
+    if (!register) {
+        try { onChain = view.parseSchema((await fangorn.readNamespace(owner, view.SCHEMA_NAMESPACE)).contents); } catch { /* none yet */ }
+        if (!onChain || canonical(onChain.types, onChain.relations) !== canonical(cfg.types, cfg.relations)) {
+            const sdir = join(dir, "schema");
+            mkdirSync(sdir, { recursive: true });
+            writeFileSync(join(sdir, "graph.json"), JSON.stringify(schemaGraph(cfg.types, cfg.relations), null, 1));
+            log(`schema ${onChain ? "changed" : "is new"}: committing ${Object.keys(cfg.types).join(", ")}`);
+            fangornCli(cfg.app, ["repo", "init", view.SCHEMA_NAMESPACE], { cwd: sdir, dry });
+            fangornCli(cfg.app, ["commit", "graph.json", "-m", "schema", "--replace"], { cwd: sdir, dry });
+            fangornCli(cfg.app, ["push"], { cwd: sdir, dry });
+        } else log("schema unchanged");
+    }
 
     // 4. sources: crawl + publish straight into the app. One source failing (a site that
     // blocks us, a feed that is down) keeps its last published data and does not stop the
     // others; the ship still exits non-zero at the end, naming it.
     const failed = [];
-    if (crawl) for (const s of cfg.sources.filter((s) => !only || only.includes(s.namespace))) {
+    if (crawl && !register) for (const s of cfg.sources.filter((s) => !only || only.includes(s.namespace))) {
         const cwd = s.cwd ? resolve(base, s.cwd.replace(/^~/, homedir())) : base;
         const paidArgs = cfg.paid && s.paid_dir ? ["--paid-dir", resolve(cwd, s.paid_dir)] : [];
         try {
@@ -234,7 +244,8 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     const site = join(dir, "site");
     if (!existsSync(join(site, "view/cdn/catalog")) && state.url && !dry) await mirrorView(`${state.url}/view`, join(site, "view"));
     const namespaces = [...new Set(cfg.sources.map((s) => s.namespace))];
-    const report = dry ? {} : await view.publishView({ fangorn, app: cfg.app, namespaces, out: join(site, "view"),
+    if (register && !dry) view.writeCatalog(join(site, "view"));   // empty, or what an earlier build left
+    const report = dry || register ? {} : await view.publishView({ fangorn, app: cfg.app, namespaces, out: join(site, "view"),
         fromBlock: BigInt(state.fromBlock), embed: view.cachedEmbed(join(dir, "vectors.ndjson")), log });
 
     // 6. the page, the card, the headers
@@ -315,13 +326,29 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     // 8. ERC-8004 + the binding
     const cardUrl = `${url}/.well-known/agent-card.json`;
     const bound = await registry.appAgentUri(appId).catch(() => "");
-    if (deploy && bound !== cardUrl) {
-        log(`binding ${cardUrl} (on chain: ${bound || "nothing"})`);
+    const mint = () => {
         const out = dry ? "" : fangornCli(cfg.app, ["app", "agent", cardUrl]);
         state.agentId = (out.match(/Agent ID:\s+(\S+)/) ?? [])[1] ?? state.agentId;
+        delete state.agentPending;
         save();
+    };
+    if (deploy && bound !== cardUrl && register) {
+        log(`binding ${cardUrl} (on chain: ${bound || "nothing"}); the agent is minted on the first full ship`);
+        fangornCli(cfg.app, ["app", "agent", cardUrl, "--skip-register"], { dry });
+        state.agentPending = true;
+        save();
+    } else if (deploy && bound !== cardUrl) {
+        log(`binding ${cardUrl} (on chain: ${bound || "nothing"})`);
+        mint();
+    } else if (deploy && state.agentPending && !register) {
+        log(`minting the ERC-8004 agent from the card as built`);
+        mint();
     } else if (deploy) log("card already bound");
 
+    if (register) {
+        log(`registered: ${url}  ·  card ${cardUrl}  ·  ${cfg.app} is yours; build it with westmarch-ship ${configPath} --local <out>`);
+        return { url, cardUrl, report };
+    }
     const added = Object.values(report).reduce((n, r) => n + r.added, 0);
     log(`done: ${url}  ·  card ${cardUrl}  ·  agent ${state.agentId ?? "(unchanged)"}  ·  +${added} records embedded`);
     if (failed.length) throw new Error(`deployed, but these sources failed and kept their old records: ${failed.join(", ")}`);
@@ -454,6 +481,7 @@ if (process.argv[1]?.endsWith("ship.js") || process.argv[1]?.endsWith("westmarch
     const [path, ...flags] = process.argv.slice(2);
     if (!path || flags.includes("--help")) {
         console.error("usage: westmarch-ship app.json [--no-crawl] [--no-deploy] [--dry-run] [--replace] [--only ns1,ns2]\n" +
+                      "       westmarch-ship app.json --register [--dry-run]   (claim, join, empty site, card bound: no data)\n" +
                       "       westmarch-ship app.json --local <out> [--crawl] [--only ns1,ns2]   (no chain, no deploy)");
         process.exit(path ? 0 : 2);
     }
@@ -464,7 +492,7 @@ if (process.argv[1]?.endsWith("ship.js") || process.argv[1]?.endsWith("westmarch
         process.exit(0);
     }
     await ship(path, { crawl: !flags.includes("--no-crawl"), deploy: !flags.includes("--no-deploy"), dry: flags.includes("--dry-run"),
-                       replace: flags.includes("--replace"),
+                       replace: flags.includes("--replace"), register: flags.includes("--register"),
                        only })
         .catch((e) => { console.error(`[ship] ✗ ${e.message}`); process.exit(1); });
     process.exit(0);   // a CUDA embedder keeps the process alive (and can abort in its teardown)

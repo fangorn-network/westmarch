@@ -339,7 +339,7 @@ function applySpec(dir, manifest, schema, rows, dead, guessed = new Map()) {
     }
 }
 
-function writeCatalog(out) {
+export function writeCatalog(out) {
     const root = `${out}/cdn/domains`;
     mkdirSync(`${out}/cdn`, { recursive: true });
     const domains = existsSync(root) ? readdirSync(root).sort().map((d) => readJson(`${root}/${d}/manifest`, null)).filter(Boolean) : [];

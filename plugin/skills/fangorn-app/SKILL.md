@@ -13,16 +13,22 @@ loop the owner runs: new records always ship, and a change to *how* records are 
 ships only if the owner's questions are answered no worse.
 
 ```
- crawl, snapshot ─► .ship/stage ─► recipe ─► local view ─► westmarch-eval ─pass─► chain ─► view ─► Pages
-                    (plaintext,    (app.json  (--local)     (eval/golden.jsonl)    ▲
-                     owner's disk)  types)                                         │
- live: other wallets publish into the app ─────────────────────────────────────────┘
+ register (minutes):  claim ─► join ─► empty site on Pages ─► card bound on chain
+                                                                 │ the app exists, at its URL
+ build (hours):       crawl, snapshot ─► .ship/stage ─► recipe ─► local view ─► westmarch-eval
+                                         (plaintext)    (app.json  (--local)    (eval/golden.jsonl)
+                                                         types)                       │ pass
+ go live:             schema, records ─► chain ─► view ─► Pages ─► agent minted ◄──────┘
+ live: other wallets publish into the app ──► chain
 ```
 
-The order is the point: **questions, then sources, then a local build graded against
-the questions, and only then anything permanent.** Everything before *Go live* is free,
-local and reversible. `westmarch-ship` does the whole pipeline from one `app.json`;
-building by hand (the last part of this skill) is for what it does not fit.
+Two paths, in this order. **Register is fast**: as soon as the person knows what the app
+is and what to call it, claim the name, put an empty page at its address and bind its
+card, so something real exists within minutes. **Build is slow**: questions, then sources,
+then a local build graded against the questions, and only then does any record go on
+chain. Nothing in the build is permanent until *Go live*. `westmarch-ship` does both from
+one `app.json` (`--register` for the first); building by hand (the last part of this
+skill) is for what it does not fit.
 
 The full walkthrough with every file's source is the guide. Read the sections named
 below when you reach them; do not read it whole up front.
@@ -52,8 +58,8 @@ conversation; do not collect it with a form.
 
 ### The arc
 
-Roughly this order. Loop back freely: a failing question in step 4 often sends you back to
-step 2 or 3.
+Roughly this order. Loop back freely: a failing question in step 5 often sends you back to
+step 3 or 4.
 
 **1. What it is, and who it is for.** Open with one broad question: what they want to make
 and who would use it. Reflect back a short sketch (the user, what they ask, what they get)
@@ -65,24 +71,29 @@ they said rather than as a list, draw out:
 - what must be covered, and by when: towns, products, years, accounts;
 - what must never show: people's names, addresses, a client's name.
 
-**2. Where the data is.** Ask for the actual data (see *Sources*). Once you have it, read
+**2. Register it.** As soon as the sketch is agreed, settle the app name and where the
+site lives (see *What is permanent*): propose a default for each, say it cannot be
+changed, and wait for a yes. Then *Register the app*, and tell them what now exists: the
+page at its URL and the card bound on chain. Everything after this fills it in.
+
+**3. Where the data is.** Ask for the actual data (see *Sources*). Once you have it, read
 a sample and show them two or three records in plain words: what one record is, what
 identifies it, which text says what it is, which fields a user could filter on. Say what
 kind of source it is and anything it lacks for the questions from step 1.
 
-**3. Draft the questions together.** From their words and the data, propose five to eight
+**4. Draft the questions together.** From their words and the data, propose five to eight
 checks, each in plain language first ("'Plover village board' should mostly return
 Plover records"), and ask which are wrong or missing. Write the agreed ones to
 `eval/golden.jsonl` (see *Writing the questions*), and `eval/goals.md` from what they said
 in step 1. Grow to 10–20 as the builds show what is missing.
 
-**4. Build, look, adjust.** Build locally and grade (*Build locally until the questions
+**5. Build, look, adjust.** Build locally and grade (*Build locally until the questions
 pass*), then walk through the result with them. End each round on one decision: fix the
 data, fix the recipe, or change the question.
 
-**5. Settle what is permanent**, just before *Go live*: the app name, what each type
-costs to read, and where the site lives (see *What is permanent*). Propose a default for
-each, say that it cannot be changed, and wait for a yes.
+**6. Settle what each type costs to read**, just before *Go live* (see *What is
+permanent*). Propose a default, say it cannot be changed once published, and wait for a
+yes.
 
 ## Writing the questions
 
@@ -124,8 +135,8 @@ A source is one kind of input:
 
 For crawl and snapshot, the person must give a path or URL to the actual data; ask for it
 plainly and wait. Do not scaffold, invent a shape, or write placeholder rows in its place.
-Generating a starter set is a separate choice they make explicitly, and it still burns a
-permanent app name.
+Generating a starter set is a separate choice they make explicitly, and it publishes into
+their real, permanent app.
 
 ## What a record is
 
@@ -143,7 +154,8 @@ versioned (`my-app.thing.v1`) so a later shape can be a new type.
 
 ## What is permanent
 
-Settle these with the person before *Go live*, one at a time, each with a proposed default:
+Settle these with the person one at a time, each with a proposed default: the name and
+the site just before *Register the app*, what each type costs just before *Go live*.
 
 - **The app name.** Permanent once claimed. Do not assume it matches the data's name.
 - **What each type costs to read.** Anything committed is permanent:
@@ -166,8 +178,8 @@ Settle these with the person before *Go live*, one at a time, each with a propos
 
 Do not open with this list. Check what you can yourself (`node -v`, `fangorn --version`,
 `python3 -c "import quickbeam"`), and raise a missing piece when the next step needs it:
-Node and quickbeam before the first local build, the wallet, Pinata and Cloudflare before
-*Go live*.
+Node, the Fangorn CLI, the wallet and Cloudflare to register; quickbeam before the first
+local build; Pinata before *Go live*.
 
 - Node 22 and the Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.9.22-dev`, or whatever
   newer version westmarch's `package.json` lists as its `@fangorn-network/sdk` peer.
@@ -176,8 +188,9 @@ Node and quickbeam before the first local build, the wallet, Pinata and Cloudfla
   `quickbeam @ git+https://github.com/fangorn-network/embeddings@tony/dev`.
 - A wallet on Arbitrum Sepolia with a little ETH. **It owns the app forever**, so it
   must be the wallet that will publish the data. Never generate a key for a real app;
-  throwaway keys are only for read-only paths. Not needed until *Go live*.
-- A Pinata JWT, because registering the ERC-8004 agent pins a file to IPFS.
+  throwaway keys are only for read-only paths. Needed to register.
+- A Pinata JWT, because commits and the ERC-8004 agent pin files to IPFS. Not needed
+  until *Go live*.
 - A Cloudflare account (`npx wrangler login`). Pages serves `/.well-known/` and custom headers.
 
 Project layout:
@@ -201,10 +214,49 @@ eval/golden.jsonl   the questions
 Several steps cost money or cannot be undone: `fangorn app claim` (first come, first
 served, permanent), `fangorn register` (pays the registration fee), every `fangorn repo
 init` and `fangorn push` (gas), `wrangler pages project create` and `pages deploy`, and
-`fangorn app agent` (pins to IPFS, mints an agent). `westmarch-ship` without `--local`
-does all of these. Show the exact command and what it does, then run it only when they
+`fangorn app agent` (pins to IPFS, mints an agent; with `--skip-register` it only binds
+the card). `westmarch-ship --register` does the claim, register, Pages deploy and bind;
+without `--local` it does all of these. Show the exact command and what it does, then run it only when they
 say so. Everything else — the questions, the sources, local builds, the eval — is free
 and reversible, so just do it.
+
+## Register the app
+
+The fast path, run once the name and site are agreed. It needs no data, types or sources
+yet: an `app.json` with the app, its name, a one-line description and the site.
+
+```json
+{ "app": "my-app", "name": "My App", "description": "What it is, in a sentence.",
+  "site": { "project": "my-app", "account": "<cloudflare account id>" } }
+```
+
+- `fangorn init` (key, Pinata JWT, gateway); `fangorn wallet` shows the owner. The config
+  file beats `ETH_PRIVATE_KEY` in the environment.
+- Create the Pages project by hand, from an empty directory, and put its account in
+  `app.json` `site.account`. `westmarch-ship` would create it from the app directory, and
+  wrangler ≥ 4.138 run there autoconfigures a Worker (see *By hand*, before step 9):
+
+  ```sh
+  cd "$(mktemp -d)" && CLOUDFLARE_ACCOUNT_ID=<id> npx wrangler pages project create <project> --production-branch main --force
+  ```
+
+  A taken name gets a suffix (`my-app-4xk.pages.dev`); `westmarch-ship` reads the real one back.
+
+Then show the plan, and run it on their go-ahead:
+
+```sh
+npx westmarch-ship app.json --register --dry-run   # every step, printed, none done
+npx westmarch-ship app.json --register             # claim, join, empty site, deploy, bind the card
+```
+
+It claims the name (the claim block becomes the card's `fromBlock`), joins as a publisher,
+deploys the stock page over an empty view ("registered and being built"), and binds the
+card URL on chain. It does **not** mint the ERC-8004 agent. The mint copies the card's
+skills into a registration file once, for good, so it waits for the first full ship, when
+the card describes the app as built. Back up `.ship/state.json`.
+
+Open the URL with the person. A fresh `pages.dev` hostname answers `522` for the first
+minute; retry rather than debug.
 
 ## Build locally until the questions pass
 
@@ -307,38 +359,25 @@ recipe every change is graded against.
 
 ## Go live
 
-Before the first chain write:
-
-- `fangorn init` (key, Pinata JWT, gateway), `fangorn wallet` shows the owner. The config
-  file beats `ETH_PRIVATE_KEY` in the environment. The gateway must belong to the same
-  Pinata account as the JWT, or the first commit fails:
-  `curl -s https://api.pinata.cloud/v3/ipfs/gateways -H "Authorization: Bearer $JWT"` must
-  list the configured host.
-- Create the Pages project by hand, from an empty directory, and put its account in
-  `app.json` `site.account`. `westmarch-ship` would create it from the app directory, and
-  wrangler ≥ 4.138 run there autoconfigures a Worker (see *By hand*, before step 9):
-
-  ```sh
-  cd "$(mktemp -d)" && CLOUDFLARE_ACCOUNT_ID=<id> npx wrangler pages project create <project> --production-branch main --force
-  ```
-
-  A taken name gets a suffix (`my-app-4xk.pages.dev`); `westmarch-ship` reads the real one back.
+The app is registered and the local build passes. Before the first commit, the Pinata
+gateway must belong to the same account as the JWT, or the commit fails:
+`curl -s https://api.pinata.cloud/v3/ipfs/gateways -H "Authorization: Bearer $JWT"` must
+list the configured host.
 
 Then show the person the plan, and run it on their go-ahead:
 
 ```sh
 npx westmarch-ship app.json --dry-run   # every step, printed, none done
-npx westmarch-ship app.json             # claim, join, schema, crawl + publish, view, site, card, deploy, agent
+npx westmarch-ship app.json             # schema, crawl + publish, view, site, card, deploy, mint the agent
 ```
 
-It claims the name and records the claim block as the card's `fromBlock`, joins as a
-publisher, commits the schema to `fangorn.schema`, runs each source with `--publish`
+The claim and join are already done (skipped *Register*? the same command does them
+first). It commits the schema to `fangorn.schema`, runs each source with `--publish`
 (one push per namespace), builds the view, writes the stock page, card and `_headers`
-(and `_worker.js` with `paid`), deploys, and registers the agent. Every step checks the
-chain or Cloudflare first, so rerunning it is how the app is updated. State lives in
-`.ship/`; `.ship/state.json` holds the claim block and URL — back it up.
-
-A fresh `pages.dev` hostname answers `522` for the first minute; retry rather than debug.
+(and `_worker.js` with `paid`), deploys, and mints the ERC-8004 agent from the finished
+card. Every step checks the chain or Cloudflare first, so rerunning it is how the app is
+updated. State lives in `.ship/`; `.ship/state.json` holds the claim block, the URL and
+whether the agent is still to be minted — back it up.
 
 ## The page: fangorn shape, the app's paint
 

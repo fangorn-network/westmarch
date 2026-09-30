@@ -66,7 +66,7 @@ function reindex() {
     facet ??= facetField(ctx.rows, R);
     places = facet ? [...ctx.rows.reduce((m, r) => { const v = placeOf(r); if (v) m.set(v, (m.get(v) ?? 0) + 1); return m; }, new Map())].sort((a, b) => a[0].localeCompare(b[0])) : [];
     const n = ctx.rows.length.toLocaleString();
-    input.placeholder = loaded ? `Search ${n} records${places.length > 1 ? ` in ${places.length} places` : ""}…`
+    input.placeholder = loaded && !ctx.rows.length ? "No records yet" : loaded ? `Search ${n} records${places.length > 1 ? ` in ${places.length} places` : ""}…`
         : `Loading ${n}${total ? ` of ${total.toLocaleString()}` : ""} records… (search what is here)`;
 }
 const placeOf = (r) => (facet ? values(r[facet] ?? "")[0] ?? "" : "");
@@ -158,7 +158,9 @@ function feed() {
         upcoming.length ? el("section", {}, el("h2", {}, "Coming up"), upcoming.slice(0, 8).map(occasionCard)) : null,
         past.length ? el("section", {}, el("h2", {}, "Recently"), past.slice(0, pastShown).map(occasionCard),
             past.length > pastShown ? el("button", { type: "button", className: "more", onclick: () => { pastShown += 12; feed(); } }, "Show more") : null) : null,
-        !upcoming.length && !past.length ? el("p", { className: "empty" }, loaded ? "Nothing dated here yet. Search above." : "Loading the records…") : null);
+        !upcoming.length && !past.length ? el("p", { className: "empty" }, !loaded ? "Loading the records…"
+            : ctx.rows.length ? "Nothing dated here yet. Search above."
+            : "This app is registered and being built. Its records will appear here once they are published.") : null);
 }
 
 let sortBy = "relevance", seq = 0, mapView = null;
