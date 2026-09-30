@@ -152,12 +152,14 @@ export function packVec(vec) {
     return btoa(s);
 }
 
-/** base64 int8 → Float32Array. Returns null on anything malformed — a bad vector
+/** base64 int8 → Float16Array (Float32Array where there is none). Returns null on anything malformed — a bad vector
  *  must degrade that row to lexical, never throw mid-search. */
 export function unpackVec(b64) {
     try {
         const s = atob(b64);
-        const out = new Float32Array(s.length);
+        // Half the memory of Float32 where the browser has it: every row holds one of these, and
+        // an int8 source loses nothing at 16 bits. Consumers read plain numbers either way.
+        const out = new (globalThis.Float16Array ?? Float32Array)(s.length);
         for (let i = 0; i < s.length; i++) {
             const b = s.charCodeAt(i);
             out[i] = (b > 127 ? b - 256 : b) / 127;
