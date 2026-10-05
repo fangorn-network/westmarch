@@ -8,15 +8,15 @@
 //   ERC-8004 identity `Registered`  the agent minted for the app
 //   ERC-8004 reputation             feedback count and average per agent
 //
-// Both registries answer the whole range in one `eth_getLogs` on Arbitrum
-// Sepolia (39 and ~1.5k logs today), so the page and the MCP tool read the same
-// chain the same way, and a new app shows up on the next read.
+// Both registries are scanned from their first event in 10M-block windows, in
+// parallel, so the page and the MCP tool read the same chain the same way, and
+// a new app shows up on the next read.
 //
 // `client` is a viem PublicClient (getLogs, readContract): passed in, so this
 // runs in a tab and in node, and the self-check needs no chain.
 //
-// ponytail: one getLogs per registry from block 0. An RPC that caps log ranges
-// will refuse it; window the scan then (the SDK's getLogsInWindows).
+// ponytail: windows grow with the chain (1 + 8 at block 316M, ~0.2s). Index
+// the logs somewhere if that ever gets slow.
 
 import { parseAbi, parseAbiItem } from "viem";
 import { APP_EXTENSION } from "./apps.js";
@@ -28,6 +28,10 @@ export const CHAIN = {
     appRegistry: "0x11d228c4774af3d9cae3b4b6874a12576a1a83ec",
     identity: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
     reputation: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
+    // Each registry's first event (2026-10-05): nothing to read before it.
+    // Scanning from 0 instead was 32 windows per registry, ~5s of a 7.7s load.
+    appRegistryFrom: 311_639_205n,
+    identityFrom: 241_557_787n,
     scan: (agentId) => `https://8004scan.io/agents/arbitrum-sepolia/${agentId}`,
 };
 
@@ -101,14 +105,28 @@ async function reputation(client, agentId, chain) {
     }
 }
 
+// The public Arbitrum Sepolia RPC refuses an address+event getLogs spanning more
+// than 10M blocks (from 2026-10; one call from 0 worked before).
+const LOG_WINDOW = 10_000_000n;
+
+async function getLogsSince(client, start, filter) {
+    const head = await client.getBlockNumber();
+    const windows = [];
+    for (let from = start; from <= head; from += LOG_WINDOW) {
+        const to = from + LOG_WINDOW - 1n < head ? from + LOG_WINDOW - 1n : head;
+        windows.push(client.getLogs({ ...filter, fromBlock: from, toBlock: to }));
+    }
+    return (await Promise.all(windows)).flat();   // in window order: oldest first still holds
+}
+
 /**
  * Every verified app, with its 8004 agent, reputation, and catalog.
  * Unverified apps are dropped, not listed; `dropped` says why, for debugging.
  */
 export async function readDirectory(client, { chain = CHAIN } = {}) {
     const [bindLogs, regLogs] = await Promise.all([
-        client.getLogs({ address: chain.appRegistry, event: APP_AGENT_CHANGED, fromBlock: 0n, toBlock: "latest" }),
-        client.getLogs({ address: chain.identity, event: REGISTERED, fromBlock: 0n, toBlock: "latest" }),
+        getLogsSince(client, chain.appRegistryFrom ?? 0n, { address: chain.appRegistry, event: APP_AGENT_CHANGED }),
+        getLogsSince(client, chain.identityFrom ?? 0n, { address: chain.identity, event: REGISTERED }),
     ]);
     const registered = regLogs.map((l) => ({ agentId: l.args.agentId, owner: l.args.owner, block: l.blockNumber }));
     const latest = new Map();   // logs come oldest first: the last write wins
@@ -131,9 +149,14 @@ export async function readDirectory(client, { chain = CHAIN } = {}) {
 
     const apps = await Promise.all(verified.map(async ({ appId, uri, block, card }) => {
         const p = card.capabilities.extensions.find((e) => e.uri === APP_EXTENSION).params;
-        const owner = await client.readContract({ address: chain.appRegistry, abi: APPS, functionName: "getAppOwner", args: [appId] }).catch(() => null);
-        const agentId = owner && pairAgent(registered, owner, block);
-        const { corpora, unreachable } = await survey((p.views ?? []).filter((v) => /^https:\/\//.test(v)));
+        const [[owner, agentId, rep], { corpora, unreachable }] = await Promise.all([
+            client.readContract({ address: chain.appRegistry, abi: APPS, functionName: "getAppOwner", args: [appId] }).catch(() => null)
+                .then(async (owner) => {
+                    const agentId = owner && pairAgent(registered, owner, block);
+                    return [owner, agentId, agentId == null ? null : await reputation(client, agentId, chain)];
+                }),
+            survey((p.views ?? []).filter((v) => /^https:\/\//.test(v))),
+        ]);
         const name = typeof card.name === "string" && card.name.trim() ? card.name.trim() : `App ${appId.slice(0, 10)}`;
         return {
             app: slug(name), name, description: typeof card.description === "string" ? card.description : "",
@@ -141,7 +164,7 @@ export async function readDirectory(client, { chain = CHAIN } = {}) {
             boundAt: Number(block), fromBlock: Number(p.fromBlock),
             tools: (card.skills ?? []).map((s) => s.id),
             agent: agentId == null ? null : { id: Number(agentId), scan: chain.scan(agentId) },
-            reputation: agentId == null ? null : await reputation(client, agentId, chain),
+            reputation: rep,
             // null, not 0, when no catalog answered: "0 records" would claim it was counted.
             rows: corpora.length ? corpora.reduce((n, c) => n + (c.rows || 0), 0) : null,
             unreachable: unreachable.length,
