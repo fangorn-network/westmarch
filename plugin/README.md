@@ -90,7 +90,7 @@ Two corpora with no field in common and no shared ids.
 ## Try it against the fixtures
 
 ```sh
-cd example/public && python3 -m http.server 8099 &
+cd examples/demo/public && python3 -m http.server 8099 &
 B=http://localhost:8099
 node plugin/scripts/fx.mjs find "1950s atomic paranoia" \
   --sources=$B/archive-films,$B/archive-transcripts,$B/games,$B/places

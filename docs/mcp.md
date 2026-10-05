@@ -94,10 +94,10 @@ Use this to test local changes:
 git clone git@github.com:fangorn-network/westmarch.git
 cd westmarch
 npm install
-claude mcp add fangorn -e FANGORN_LOG_WINDOW=100000 -- node "$PWD/consume/mcp.js"
+claude mcp add fangorn -e FANGORN_LOG_WINDOW=100000 -- node "$PWD/src/agent/mcp.js"
 ```
 
-No build step is needed. The server runs `consume/mcp.js` directly. After you pull
+No build step is needed. The server runs `src/agent/mcp.js` directly. After you pull
 changes or upgrade `@fangorn-network/sdk`, reconnect the server (`/mcp` → reconnect).
 A server that was already running keeps the old code.
 

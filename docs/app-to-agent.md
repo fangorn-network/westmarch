@@ -356,7 +356,7 @@ Check it the way a reader will:
 
 ```sh
 (cd site && python3 -m http.server 8765 &)
-node node_modules/@fangorn-network/westmarch/consume/lint.js http://127.0.0.1:8765/view
+npx westmarch-lint http://127.0.0.1:8765/view
 # …-my-app — 20 rows — nothing to fix
 ```
 
@@ -661,12 +661,12 @@ Every route ends in `discoverApp(cardUrl)`, which accepts a card only if:
 - `appAgentUri(card.appId)` on chain is **exactly** the card URL.
 
 The registry and the index are where you look. The on-chain binding is what you trust.
-`example/discover.mjs` runs all three routes:
+`examples/demo/discover.mjs` runs all three routes:
 
 ```sh
-node example/discover.mjs card   https://kingsfoil.pages.dev/.well-known/agent-card.json
-node example/discover.mjs chain  311637349          # every app bound since this block
-node example/discover.mjs search Kingsfoil          # the public ERC-8004 index
+node examples/demo/discover.mjs card   https://kingsfoil.pages.dev/.well-known/agent-card.json
+node examples/demo/discover.mjs chain  311637349          # every app bound since this block
+node examples/demo/discover.mjs search Kingsfoil          # the public ERC-8004 index
 ```
 
 **From a card URL:**

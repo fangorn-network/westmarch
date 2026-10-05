@@ -8,11 +8,11 @@
 //   #/for-you          the taste kernel over 👍 and 👎, with its four knobs
 //   #/saved            liked items, exportable; the taste they make
 //   #/history          this session's searches
-import { configure, loadShard } from "../consume/shard.js";
-import { linkOf, rolesFrom, subtitleOf, textOf, titleOf, values } from "../consume/roles.js";
-import { getRow, neighbors, search } from "../consume/tools.js";
-import { KNOBS, discover } from "../consume/taste.js";
-import { embedQuery } from "../consume/embed.js";
+import { configure, loadShard } from "../src/core/shard.js";
+import { linkOf, rolesFrom, subtitleOf, textOf, titleOf, values } from "../src/core/roles.js";
+import { getRow, neighbors, search } from "../src/agent/tools.js";
+import { KNOBS, discover } from "../src/taste/taste.js";
+import { embedQuery } from "../src/core/embed.js";
 import { registerAgent } from "./agent.js";
 import { detail, facetField, occasions } from "./feed.js";
 import { createStore, snapshot, toCSV, toMarkdown } from "./store.js";

@@ -411,7 +411,7 @@ structure and a few tokens, not a look. Do not design over it: the look belongs 
   The deployed view is what agents read.
 - `fangorn status` shows the local tip on chain.
 - `lint.js` against the **deployed** origin reports "nothing to fix" for every domain:
-  `node node_modules/@fangorn-network/westmarch/consume/lint.js https://<site>/view`.
+  `npx westmarch-lint https://<site>/view`.
   What matters is what a stranger can fetch, not what was built.
 - The card answers `200` with CORS from another origin:
   `curl -sD - https://<site>/.well-known/agent-card.json -o /dev/null | grep -iE "^HTTP|access-control"`.
@@ -796,7 +796,7 @@ Check it the way a reader will:
 
 ```sh
 (cd site && python3 -m http.server 8765 &)
-node node_modules/@fangorn-network/westmarch/consume/lint.js http://127.0.0.1:8765/view
+npx westmarch-lint http://127.0.0.1:8765/view
 ```
 
 Lint has three levels: readers cannot find you (no coverage, foreign model), they find
@@ -950,7 +950,7 @@ back with the wrong case still hits, and `comedy` never counts every `dark comed
 | namespace names | `fangorn.schema` is reserved; each data namespace is a timeline readers follow by name |
 | the card's `url` and `fromBlock` | a rebuild that changes either publishes a card every reader rejects |
 | a record's `id` | the same thing under a new id is a delete and an insert, re-embedded at full cost |
-| for an app selling files through `publish/graph.js` and `envelope.js`: `ns`, `file`, `passages`, `pointerFields` | folded into every resourceId and vertex ever minted; the headers of those two files say why |
+| for an app selling files through `src/publish/graph.js` and `envelope.js`: `ns`, `file`, `passages`, `pointerFields` | folded into every resourceId and vertex ever minted; the headers of those two files say why |
 
 ## The view on disk
 
@@ -963,11 +963,11 @@ Whether `westmarch-view` or a bake script writes it, a reader fetches exactly th
 ```
 
 A shard row is `{ track_id, owner, fields, v }` with `v` as base64 int8 (`packVec`
-from `consume/embed.js`). The manifest hashes each shard *as served*, gzipped, and
+from `src/core/embed.js`). The manifest hashes each shard *as served*, gzipped, and
 `shard.js` refuses a mismatch — that is what lets the files sit behind any CDN. Serve
 `.ndjson.gz` as `application/gzip` with no `Content-Encoding`, or readers cannot verify.
 `coverage` is spherical k-means over the domain's own vectors (`coverage()` in
-`publish/reactions.js`); without it a corpus scores `null` in every directory and is
+`src/market/reactions.js`); without it a corpus scores `null` in every directory and is
 never opened.
 
 ## Symptoms and causes

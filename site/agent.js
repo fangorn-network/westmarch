@@ -1,7 +1,7 @@
 // The stock page's tools for agents in a browser: the same verbs as fangorn-mcp's data
 // tools, over the rows this page loaded. `ctx` holds them; ship's card captures these.
-import { describe, facet, getRow, search } from "../consume/tools.js";
-import { KNOBS, discover } from "../consume/taste.js";
+import { describe, facet, getRow, search } from "../src/agent/tools.js";
+import { KNOBS, discover } from "../src/taste/taste.js";
 
 const ok = (o) => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
 const obj = (properties, required = []) => ({ type: "object", properties, required });

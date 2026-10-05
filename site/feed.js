@@ -2,7 +2,7 @@
 // occasion (a meeting, an issue, an episode), from the roles the app declared. Nothing here
 // knows what a row is: an occasion is the rows sharing a subtitle and a facet value, and
 // its date is their temporal field.
-import { pick, subtitleOf, titleOf, values } from "../consume/roles.js";
+import { pick, subtitleOf, titleOf, values } from "../src/core/roles.js";
 
 /** The field a reader narrows by first: the app's declared facet, else the first tag with
  *  a handful of values (a town, not every body in every town). */
@@ -45,7 +45,7 @@ export function detail(r, roles) {
 
 // ── self-check: `node site/feed.js` ──
 if (typeof process !== "undefined" && process.argv[1]?.endsWith("/feed.js")) {
-    const { rolesFrom } = await import("../consume/roles.js");
+    const { rolesFrom } = await import("../src/core/roles.js");
     const roles = rolesFrom([{ role_map: { title: "heading", subtitle: "meeting", temporal: "date", tags: ["city", "body"], text: ["text"] },
                                presentation: { facets: ["city"] } }]);
     const row = (city, date, heading, text = heading) => ({ city, date, heading, meeting: `Board · ${date}`, body: "Board", text });
