@@ -19,40 +19,35 @@
 // model. Here the model is public and the vectors are in files you already
 // downloaded, so the taste is a ~350-byte object you own and can carry.
 //
-// The state is the session kernel from sond3r's src/geometry/kernel.js, cut to
-// what is portable:
+// The state is a Markov kernel (@fangorn-network/markov, the one sond3r walks
+// with): likes are plays, rejections are skips, newest last. What leaves this
+// file is what is portable about it:
 //
-//   mu — recency-weighted mean of what you liked   (where you are)
-//   v  — recent mean minus older mean              (where you're heading)
-//   q  — mu nudged along v                         (the lookahead you rank with)
-//   no — mean of what you rejected                 (where you are NOT going)
+//   mu — the kernel's position: an EMA of what you liked   (where you are)
+//   v  — the kernel's velocity, tangent to mu               (where you're heading)
+//   q  — queryVector: mu pushed along v                     (the lookahead you rank with)
+//   no — the kernel's skip centroid                         (where you are NOT going)
 
+import { emptyKernel, onPlay, onSkip, queryVector } from "@fangorn-network/markov";
 import { packVec, unpackVec } from "../core/embed.js";
 import { cosine, diversify, norm } from "../core/rank.js";
-
-const dim = (vs) => vs.reduce((n, v) => Math.max(n, v.length), 0);
-
-function weightedMean(vs, weights) {
-    const d = dim(vs);
-    if (!d) return null;
-    const out = new Float32Array(d);
-    let wsum = 0;
-    vs.forEach((v, i) => {
-        const w = weights[i];
-        wsum += w;
-        for (let j = 0; j < v.length; j++) out[j] += v[j] * w;
-    });
-    if (!wsum) return null;
-    for (let j = 0; j < d; j++) out[j] /= wsum;
-    return out;
-}
 
 const unit = (v) => { if (!v) return null; const n = norm(v); const o = new Float32Array(v.length); for (let i = 0; i < v.length; i++) o[i] = v[i] / n; return o; };
 
 /** How fast older picks stop counting. 8 means the 8th-most-recent like carries
  *  half the weight of the newest — taste that never forgets is a taste you
- *  cannot steer, and the whole point of `v` is that it can move. */
+ *  cannot steer, and the whole point of `v` is that it can move. It sets the
+ *  kernel's position rate: alpha = 1 - 2^(-1/8). */
 export const HALF_LIFE = 8;
+
+/** Under this many likes there is no heading. The kernel always has a velocity,
+ *  but from two or three picks it is the order they happened to be clicked in,
+ *  and a direction read off that is invented. */
+export const MIN_HEADING = 4;
+
+// The kernel knows tracks: an artist, four tag channels, a duration. A row here is
+// a vector and an id, so the id stands in for the artist and the rest is empty.
+const track = (x) => ({ embedding: Float32Array.from(x.vector), artistId: String(x.id ?? ""), genres: [], moods: [], themes: [], contexts: [], durationMs: 0 });
 
 /**
  * Build a taste from what someone liked and rejected, newest LAST.
@@ -60,40 +55,42 @@ export const HALF_LIFE = 8;
  * `likes` and `dislikes` are `{ id, title, vector }`. Vectors come straight off
  * the rows — no re-embedding, so this costs nothing and works offline.
  *
- * `drift` is how far `q` leans past where you are toward where you are heading.
- * 0 ranks what you already like (a mirror); high overshoots into things you
- * have shown no sign of wanting. The default leans, and it is the knob the
- * product means when it says you own the algorithm.
+ * `drift` is how far `q` leans past where you are toward where you are heading
+ * (the kernel's lookahead bound, lambda_max). 0 ranks what you already like (a
+ * mirror); high overshoots into things you have shown no sign of wanting. The
+ * default leans, and it is the knob the product means when it says you own the
+ * algorithm.
  */
 export function taste(likes = [], dislikes = [], { drift = 0.35 } = {}) {
     const seen = likes.filter((l) => l?.vector?.length);
     if (!seen.length) return null;
-    const w = seen.map((_, i) => Math.pow(0.5, (seen.length - 1 - i) / HALF_LIFE));
-    const mu = unit(weightedMean(seen.map((l) => l.vector), w));
+    const params = { d: seen[0].vector.length, alpha: 1 - 2 ** (-1 / HALF_LIFE) };
+    let k = emptyKernel(params);
+    for (const l of seen) k = onPlay(k, track(l), null, params);
 
-    // Where it is heading: the recent half minus the older half. With too few
-    // picks there is no "older half" and a direction would be invented from
-    // nothing, so it stays null and `q` is just `mu`.
+    // Ranking is by cosine, so only the sphere matters. The kernel starts at the
+    // origin, so after a few plays its mu is short, and its velocity carries the
+    // walk out from the origin along with the walk between picks. Put mu on the
+    // sphere and keep only the part of v that moves ALONG it; the radial part is
+    // the start-up, not a direction anyone chose.
+    const mu = unit(k.mu);
     let v = null;
-    if (seen.length >= 4) {
-        const cut = Math.floor(seen.length / 2);
-        const recent = weightedMean(seen.slice(cut).map((l) => l.vector), w.slice(cut));
-        const older = weightedMean(seen.slice(0, cut).map((l) => l.vector), w.slice(0, cut));
-        if (recent && older) {
-            const d = new Float32Array(recent.length);
-            for (let i = 0; i < d.length; i++) d[i] = recent[i] - older[i];
-            if (norm(d) > 1e-6) v = unit(d);
-        }
+    if (seen.length >= MIN_HEADING) {
+        const along = Float32Array.from(k.v);
+        let r = 0; for (let i = 0; i < mu.length; i++) r += along[i] * mu[i];
+        for (let i = 0; i < mu.length; i++) along[i] -= r * mu[i];
+        if (norm(along) > 1e-6) v = along;
     }
+    k = { ...k, mu, v: v ?? new Float32Array(mu.length) };
 
-    const q = new Float32Array(mu.length);
-    for (let i = 0; i < q.length; i++) q[i] = mu[i] + (v ? drift * v[i] : 0);
-
+    // Rejections are skips: they push the position away and turn the heading
+    // from them. Their centroid is what `score` repels from.
     const neg = dislikes.filter((d) => d?.vector?.length);
-    const no = neg.length ? unit(weightedMean(neg.map((d) => d.vector), neg.map(() => 1))) : null;
+    for (const d of neg) k = onSkip(k, track(d), params);
 
     return {
-        mu, v, q: unit(q), no, drift,
+        mu: unit(k.mu), v: v && norm(k.v) > 1e-6 ? unit(k.v) : null,
+        q: unit(queryVector(k, { lambda_max: drift })), no: unit(k.skipCentroid), drift,
         from: seen.map((l) => l.title ?? l.id).slice(-12),
         rejected: neg.map((d) => d.title ?? d.id).slice(-12),
         n: seen.length,
