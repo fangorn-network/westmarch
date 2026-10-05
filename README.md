@@ -1,6 +1,6 @@
 # @fangorn-network/westmarch
 
-Everything you need to get started building apps with Fangorn.
+Everything you need to get started building Fangorn apps.
 
 **Start here:** [docs/app-to-agent.md](docs/app-to-agent.md) takes a static site from nothing
 to a Fangorn app and ERC-8004 agent that any agent can discover, verify and drive.
@@ -18,26 +18,35 @@ watcher bakes it into a view; a consumer reads the view. Either half is useful
 without the other.
 
 ```
-publish/                                       consume/
-  graph.js     fs tree ⇄ vertices + edges        directory.js  WHICH corpus
-  enrich.js    what a file says → search text    shard.js      view → rows, streamed
-  envelope.js  chunk keys, AEAD, upload/delete   roles.js      which field is the title
-  lint.js      …and whether any of that WORKED   taste.js      what YOU like, portably
-                                                 rank.js       rows + query → hits
-                                                 embed.js      text → 256-d vector
-                                                 apps.js       every app bound on chain
-                                                 corpora.js    SEVERAL corpora, open at once
-                                                 ui.js         previews, from the role_map
+src/
+  core/       embed.js   text → 256-d vector       shard.js   view → rows, streamed
+              rank.js    rows + query → hits       roles.js   which field is the title
+  taste/      taste.js   what YOU like, portably (on @fangorn-network/markov)
+              taste-doc.js · steam.js · vault.js
+  discover/   apps.js    every app bound on chain  directory.js  WHICH corpus
+              explore.js · corpora.js   SEVERAL corpora, open at once
+  agent/      tools.js · view-tools.js · mcp.js (fangorn-mcp) · ui.js · agent-card.js · x402.js
+  market/     terms.js · settle.js · reactions.js · cohort.js · demand.js   who pays whom
+  publish/    graph.js   fs tree ⇄ vertices + edges   enrich.js  what a file says → search text
+              envelope.js · manifest.js · cli.js · view.js · ship.js · eval.ts
+              lint.js    …and whether any of that WORKED
+site/         the stock page every `westmarch-ship` app deploys
+plugin/       the Claude Code plugin: skills + fangorn-fx
+examples/     demo/ (a second consumer + fixtures) · publisher/ (the smallest publisher)
+scripts/      test.js (`npm test`) · build-bin.js (single-file fangorn-mcp)
 ```
 
-`lint.js` sits in the consume/ directory and reads like a consumer, but it is
-for the person who baked the view: every capability on the right is paid for at
-bake time on the left, and the bill is invisible until a reader hits it.
+Every module carries its own self-check (`node src/core/rank.js`); `npm test`
+runs them all, and `npm test -- taste` runs the ones whose path matches.
+
+`lint.js` reads like a consumer, but it is for the person who baked the view:
+every capability a reader has is paid for at bake time, and the bill is
+invisible until a reader hits it.
 
 ## lint.js — what will the index be able to do with this?
 
 ```
-$ node consume/lint.js https://cdn.example/q/qb_1
+$ npx westmarch-lint https://cdn.example/q/qb_1
 archive-transcripts — 21,131 rows — 1 thing stopping readers finding or reading this
   ✗ paywall names 1 field the free shard ships anyway
       text — readers are told these cost money and are handed them for free.
@@ -74,7 +83,7 @@ configure({
 // not a normalisation: every corpus scored the same query vector.
 ```
 
-`example/cross.mjs` runs it against the four fixture bundles.
+`examples/demo/cross.mjs` runs it against the four fixture bundles.
 
 ## ui.js — an interface for data nobody wrote an interface for
 
@@ -119,7 +128,7 @@ correct, and this is meant to be a thing a person owns rather than a profile
 held about them.
 
 ```sh
-node example/taste-demo.mjs        # films -> games, end to end
+node examples/demo/taste-demo.mjs        # films -> games, end to end
 ```
 
 ## steam.js — the cold start, solved by a file you already have
@@ -173,8 +182,8 @@ reachable from an agent:
   tag vocabulary, measures what their shelf holds along it in the shelf's own
   sigma, and returns a verdict: commission, serve, fix, retire, cold.
 
-`example/main.js` exposes the reader's half as `share-reactions` and
-`answer-question`; `example/publisher-console.mjs` is the buyer's half.
+`examples/demo/main.js` exposes the reader's half as `share-reactions` and
+`answer-question`; `examples/demo/publisher-console.mjs` is the buyer's half.
 
 ## directory.js — searching FOR data, before searching IN it
 
@@ -269,15 +278,15 @@ designed against one consumer is a guess; the second app is what earns it.
 ## Test
 
 ```sh
-pnpm test    # every module's own self-check, no network, no browser
+npm test     # every module's own self-check, no network, no browser
 ```
 
-`publish/envelope.js` pins fixed vectors for sond3r's live ids. If that check
+`src/publish/envelope.js` pins fixed vectors for sond3r's live ids. If that check
 fails, the extraction broke money.
 
-`example/` is a second consumer — five WebMCP verbs and a telemetry page — run
+`examples/demo/` is a second consumer — five WebMCP verbs and a telemetry page — run
 against two unrelated bundles to prove the seam holds. See its README.
 
-`example-publisher/` is the other half: the smallest directory that publishes a
+`examples/publisher/` is the other half: the smallest directory that publishes a
 priced, encrypted file to a Fangorn app. Its only dependency is this package —
 publishing to an app does not require a clone of that app. See its README.

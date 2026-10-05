@@ -12,9 +12,9 @@ You need **Node 20 or later**. Chrome is optional (see [Page tools](#page-tools)
 ### Claude Code
 
 ```sh
-claude mcp add fangorn -e FANGORN_LOG_WINDOW=100000 -- \
-  npx -y -p @fangorn-network/westmarch -p @huggingface/transformers fangorn-mcp
-```
+  claude mcp add fangorn -e FANGORN_LOG_WINDOW=100000 -- \
+    npx -y -p @fangorn-network/westmarch -p @huggingface/transformers fangorn-mcp
+```   
 
 Then run `/mcp` in Claude Code and check that `fangorn` shows as connected.
 
@@ -94,10 +94,10 @@ Use this to test local changes:
 git clone git@github.com:fangorn-network/westmarch.git
 cd westmarch
 npm install
-claude mcp add fangorn -e FANGORN_LOG_WINDOW=100000 -- node "$PWD/consume/mcp.js"
+claude mcp add fangorn -e FANGORN_LOG_WINDOW=100000 -- node "$PWD/src/agent/mcp.js"
 ```
 
-No build step is needed. The server runs `consume/mcp.js` directly. After you pull
+No build step is needed. The server runs `src/agent/mcp.js` directly. After you pull
 changes or upgrade `@fangorn-network/sdk`, reconnect the server (`/mcp` → reconnect).
 A server that was already running keeps the old code.
 

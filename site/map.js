@@ -12,8 +12,8 @@
 // records down by type and tag, lists them, and names the regions whose records read most
 // alike (the mean of their embeddings, centered on the app's own mean so boilerplate every
 // region shares does not make them all look the same).
-import { typeOf, values } from "../consume/roles.js";
-import { search } from "../consume/tools.js";
+import { typeOf, values } from "../src/core/roles.js";
+import { search } from "../src/agent/tools.js";
 
 const SVG = "http://www.w3.org/2000/svg";
 const svg = (tag, attrs = {}) => { const e = document.createElementNS(SVG, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };

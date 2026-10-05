@@ -10,8 +10,8 @@
     "skipLibCheck": true,
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
-    "rootDir": "publish",
+    "rootDir": "src/publish",
     "outDir": "dist/ts"
   },
-  "files": ["publish/eval.ts", "publish/westmarch.d.ts"]
+  "files": ["src/publish/eval.ts", "src/publish/westmarch.d.ts"]
 }

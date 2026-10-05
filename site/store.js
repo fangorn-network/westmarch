@@ -1,12 +1,12 @@
 // What a person does on the page, kept on their own device: what they saved, what they
 // passed on, and what they searched this session. Nothing leaves the browser unless they
-// export it. The saved items are also the likes a taste is built from (consume/taste.js),
+// export it. The saved items are also the likes a taste is built from (src/taste/taste.js),
 // so "For you" is theirs, and so is the file they can hand an agent.
 //
 // Saved items are snapshots keyed by the publisher's own id (the identity role), not the
 // row's CID: a record re-published with a new CID must still be the item they saved.
-import { exportTaste, taste } from "../consume/taste.js";
-import { packVec, unpackVec } from "../consume/embed.js";
+import { exportTaste, taste } from "../src/taste/taste.js";
+import { packVec, unpackVec } from "../src/core/embed.js";
 
 const read = (s, k, dflt) => { try { return JSON.parse(s?.getItem(k) ?? "null") ?? dflt; } catch { return dflt; } };
 const write = (s, k, v) => { try { s?.setItem(k, JSON.stringify(v)); } catch { /* private mode or full: the page still works */ } };

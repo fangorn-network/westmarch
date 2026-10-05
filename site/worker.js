@@ -94,10 +94,12 @@ export default {
         const p = url.pathname;
         if (p === "/.well-known/agent-card.json" || p.startsWith("/view/")) out.headers.set("access-control-allow-origin", "*");
         if (p.startsWith("/assets/")) out.headers.set("cache-control", "public, max-age=31536000, immutable");
-        // Shards are content-named, but not forever: a retracted record's shard is deleted, and
-        // pages.dev's edge cache cannot be purged. An hour bounds how long a deleted one lingers.
+        // Shards are content-named, so a reader's browser keeps one for good: a change or a
+        // retraction writes new names. `private`: pages.dev's edge cache cannot be purged, so it
+        // must never hold one, and a retracted record's shard stops being served when the deploy
+        // drops it. (This worker's header wins over _headers, which Pages skips for worker responses.)
         else if (/^\/view\/cdn\/domains\/[^/]+\/shards\//.test(p))
-            out.headers.set("cache-control", (res.headers.get("content-type") ?? "").includes("html") ? "no-store" : "public, max-age=3600");
+            out.headers.set("cache-control", (res.headers.get("content-type") ?? "").includes("html") ? "no-store" : "private, max-age=31536000, immutable");
         return out;
     },
 };

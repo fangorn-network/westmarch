@@ -17,7 +17,7 @@
 // next app by construction, which is the whole reason apps keep rebuilding it.
 // A file the agent can read is the shortest thing that carries it across.
 //
-// ponytail: a plaintext file, no wallet, no sync. `publish/vault.js` is the
+// ponytail: a plaintext file, no wallet, no sync. `src/taste/vault.js` is the
 // upgrade path — same object, sealed to a signature, kept in the graph — and it
 // is worth doing the day the kernel needs to travel between machines, not now.
 // ponytail: every command re-fetches its view. Fine at 917 rows, ~seconds at
@@ -26,12 +26,12 @@
 import { homedir } from "node:os";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { configure, domainManifests, loadShard, trimView } from "../../consume/shard.js";
-import { findCorpora, sourcesFromChain } from "../../consume/directory.js";
-import { linkOf, rolesFrom, textOf, titleOf } from "../../consume/roles.js";
-import { exportTaste, recommend, taste } from "../../consume/taste.js";
-import { EMBED_MODEL, embedQuery, packVec, unpackVec } from "../../consume/embed.js";
-import { browse, describe, facet, getRow, neighbors, search } from "../../consume/tools.js";
+import { configure, domainManifests, loadShard, trimView } from "../../src/core/shard.js";
+import { findCorpora, sourcesFromChain } from "../../src/discover/directory.js";
+import { linkOf, rolesFrom, textOf, titleOf } from "../../src/core/roles.js";
+import { exportTaste, recommend, taste } from "../../src/taste/taste.js";
+import { EMBED_MODEL, embedQuery, packVec, unpackVec } from "../../src/core/embed.js";
+import { browse, describe, facet, getRow, neighbors, search } from "../../src/agent/tools.js";
 
 const HOME = process.env.FANGORN_HOME ?? join(homedir(), ".fangorn");
 const TASTE = join(HOME, "taste.json");

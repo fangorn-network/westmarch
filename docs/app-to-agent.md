@@ -134,6 +134,10 @@ any fall fails, because a recipe that loses a town has dropped its records.
 `match` (a field, or several joined by `|`, to a regex; case-insensitive unless written
 `/re/flags`), `not`. Relevance is a predicate and not a list of record ids, because ids
 are content hashes and a recipe change that re-parses records changes every one.
+The same predicate as `of` scopes a check to some rows: on a `records` or `coverage` check
+it narrows what is counted, and on a search check it narrows what is searched, to match a
+surface that filters (a page tab for people, a type an agent tool reads), so one type of
+record growing cannot crowd the questions another surface answers.
 Without labels, it also searches 200 sampled rows by their own titles (`known@1`, `known@10`).
 
 Worse is: mean precision or `known@10` down more than 0.05, any question the base
@@ -352,7 +356,7 @@ Check it the way a reader will:
 
 ```sh
 (cd site && python3 -m http.server 8765 &)
-node node_modules/@fangorn-network/westmarch/consume/lint.js http://127.0.0.1:8765/view
+npx westmarch-lint http://127.0.0.1:8765/view
 # …-my-app — 20 rows — nothing to fix
 ```
 
@@ -495,13 +499,16 @@ writeFileSync("site/.well-known/agent-card.json", JSON.stringify(card, null, 1))
 
 // The card is read from other origins, so it needs CORS, and so does the view, for
 // agents and pages elsewhere. Bundles and shards are named by their digest, so they
-// never change: tell caches so. (Pages allows one * per rule, hence a rule per domain.)
+// never change: tell caches so. Shards only in the reader's own browser (`private`): a
+// retracted record's bytes must stop being served by shared caches once the deploy drops
+// its shard. (Pages allows one * per rule, hence a rule per domain.)
 const immutable = "  Cache-Control: public, max-age=31536000, immutable\n";
+const mine = "  Cache-Control: private, max-age=31536000, immutable\n";
 writeFileSync("site/_headers",
     "/.well-known/agent-card.json\n  Access-Control-Allow-Origin: *\n"
     + "/view/*\n  Access-Control-Allow-Origin: *\n"
     + `/assets/*\n${immutable}`
-    + readdirSync("site/view/cdn/domains").map((d) => `/view/cdn/domains/${d}/shards/*\n${immutable}`).join(""));
+    + readdirSync("site/view/cdn/domains").map((d) => `/view/cdn/domains/${d}/shards/*\n${mine}`).join(""));
 ```
 
 ```sh
@@ -654,12 +661,12 @@ Every route ends in `discoverApp(cardUrl)`, which accepts a card only if:
 - `appAgentUri(card.appId)` on chain is **exactly** the card URL.
 
 The registry and the index are where you look. The on-chain binding is what you trust.
-`example/discover.mjs` runs all three routes:
+`examples/demo/discover.mjs` runs all three routes:
 
 ```sh
-node example/discover.mjs card   https://kingsfoil.pages.dev/.well-known/agent-card.json
-node example/discover.mjs chain  311637349          # every app bound since this block
-node example/discover.mjs search Kingsfoil          # the public ERC-8004 index
+node examples/demo/discover.mjs card   https://kingsfoil.pages.dev/.well-known/agent-card.json
+node examples/demo/discover.mjs chain  311637349          # every app bound since this block
+node examples/demo/discover.mjs search Kingsfoil          # the public ERC-8004 index
 ```
 
 **From a card URL:**
