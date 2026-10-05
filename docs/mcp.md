@@ -12,9 +12,9 @@ You need **Node 20 or later**. Chrome is optional (see [Page tools](#page-tools)
 ### Claude Code
 
 ```sh
-claude mcp add fangorn -e FANGORN_LOG_WINDOW=100000 -- \
-  npx -y -p @fangorn-network/westmarch -p @huggingface/transformers fangorn-mcp
-```
+  claude mcp add fangorn -e FANGORN_LOG_WINDOW=100000 -- \
+    npx -y -p @fangorn-network/westmarch -p @huggingface/transformers fangorn-mcp
+```   
 
 Then run `/mcp` in Claude Code and check that `fangorn` shows as connected.
 
