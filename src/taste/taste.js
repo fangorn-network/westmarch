@@ -19,16 +19,16 @@
 // model. Here the model is public and the vectors are in files you already
 // downloaded, so the taste is a ~350-byte object you own and can carry.
 //
-// The state is a Markov kernel (@fangorn-network/markov, the one sond3r walks
-// with): likes are plays, rejections are skips, newest last. What leaves this
-// file is what is portable about it:
+// The state is a Markov kernel (@fangorn-network/markov): likes and rejections
+// are fed to it in order, newest last. What leaves this file is what is
+// portable about it:
 //
-//   mu — the kernel's position: an EMA of what you liked   (where you are)
-//   v  — the kernel's velocity, tangent to mu               (where you're heading)
-//   q  — queryVector: mu pushed along v                     (the lookahead you rank with)
-//   no — the kernel's skip centroid                         (where you are NOT going)
+//   mu — the kernel's position: a recency-weighted mean of what you liked
+//   v  — the kernel's velocity                         (where you're heading)
+//   q  — queryVector: mu pushed along v                (the lookahead you rank with)
+//   no — the kernel's pass centroid                    (where you are NOT going)
 
-import { emptyKernel, onPlay, onSkip, queryVector } from "@fangorn-network/markov";
+import { emptyKernel, onLike, onPass, queryVector } from "@fangorn-network/markov";
 import { packVec, unpackVec } from "../core/embed.js";
 import { cosine, diversify, norm } from "../core/rank.js";
 
@@ -40,20 +40,18 @@ const unit = (v) => { if (!v) return null; const n = norm(v); const o = new Floa
  *  kernel's position rate: alpha = 1 - 2^(-1/8). */
 export const HALF_LIFE = 8;
 
-/** Under this many likes there is no heading. The kernel always has a velocity,
- *  but from two or three picks it is the order they happened to be clicked in,
- *  and a direction read off that is invented. */
+/** Under this many likes there is no heading. The kernel has a velocity from
+ *  the second like on, but from two or three picks it is the order they
+ *  happened to be clicked in, and a direction read off that is invented. */
 export const MIN_HEADING = 4;
-
-// The kernel knows tracks: an artist, four tag channels, a duration. A row here is
-// a vector and an id, so the id stands in for the artist and the rest is empty.
-const track = (x) => ({ embedding: Float32Array.from(x.vector), artistId: String(x.id ?? ""), genres: [], moods: [], themes: [], contexts: [], durationMs: 0 });
 
 /**
  * Build a taste from what someone liked and rejected, newest LAST.
  *
  * `likes` and `dislikes` are `{ id, title, vector }`. Vectors come straight off
- * the rows — no re-embedding, so this costs nothing and works offline.
+ * the rows — no re-embedding, so this costs nothing and works offline. A row is
+ * given to the kernel as its vector alone: no group, facets or scalar, since
+ * nothing about a row says which of its fields would be one.
  *
  * `drift` is how far `q` leans past where you are toward where you are heading
  * (the kernel's lookahead bound, lambda_max). 0 ranks what you already like (a
@@ -65,32 +63,16 @@ export function taste(likes = [], dislikes = [], { drift = 0.35 } = {}) {
     const seen = likes.filter((l) => l?.vector?.length);
     if (!seen.length) return null;
     const params = { d: seen[0].vector.length, alpha: 1 - 2 ** (-1 / HALF_LIFE) };
+    const item = (x) => ({ embedding: Float32Array.from(x.vector) });
     let k = emptyKernel(params);
-    for (const l of seen) k = onPlay(k, track(l), null, params);
-
-    // Ranking is by cosine, so only the sphere matters. The kernel starts at the
-    // origin, so after a few plays its mu is short, and its velocity carries the
-    // walk out from the origin along with the walk between picks. Put mu on the
-    // sphere and keep only the part of v that moves ALONG it; the radial part is
-    // the start-up, not a direction anyone chose.
-    const mu = unit(k.mu);
-    let v = null;
-    if (seen.length >= MIN_HEADING) {
-        const along = Float32Array.from(k.v);
-        let r = 0; for (let i = 0; i < mu.length; i++) r += along[i] * mu[i];
-        for (let i = 0; i < mu.length; i++) along[i] -= r * mu[i];
-        if (norm(along) > 1e-6) v = along;
-    }
-    k = { ...k, mu, v: v ?? new Float32Array(mu.length) };
-
-    // Rejections are skips: they push the position away and turn the heading
-    // from them. Their centroid is what `score` repels from.
+    for (const l of seen) k = onLike(k, item(l), null, params);
+    if (seen.length < MIN_HEADING) k = { ...k, v: new Float32Array(params.d) };
     const neg = dislikes.filter((d) => d?.vector?.length);
-    for (const d of neg) k = onSkip(k, track(d), params);
+    for (const d of neg) k = onPass(k, item(d), params);
 
     return {
-        mu: unit(k.mu), v: v && norm(k.v) > 1e-6 ? unit(k.v) : null,
-        q: unit(queryVector(k, { lambda_max: drift })), no: unit(k.skipCentroid), drift,
+        mu: unit(k.mu), v: norm(k.v) > 1e-6 && seen.length >= MIN_HEADING ? unit(k.v) : null,
+        q: unit(queryVector(k, { lambda_max: drift })), no: unit(k.passCentroid), drift,
         from: seen.map((l) => l.title ?? l.id).slice(-12),
         rejected: neg.map((d) => d.title ?? d.id).slice(-12),
         n: seen.length,

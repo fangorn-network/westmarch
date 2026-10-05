@@ -41,7 +41,7 @@
     "lint": "node src/publish/lint.js"
   },
   "dependencies": {
-    "@fangorn-network/markov": "^0.0.2"
+    "@fangorn-network/markov": "^0.1.0"
   },
   "peerDependencies": {
     "@fangorn-network/sdk": "^2026.9.22-dev",

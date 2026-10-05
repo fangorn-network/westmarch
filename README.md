@@ -1,6 +1,6 @@
 # @fangorn-network/westmarch
 
-Everything you need to get started building apps with Fangorn.
+Everything you need to get started building Fangorn apps.
 
 **Start here:** [docs/app-to-agent.md](docs/app-to-agent.md) takes a static site from nothing
 to a Fangorn app and ERC-8004 agent that any agent can discover, verify and drive.
