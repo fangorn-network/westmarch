@@ -26,8 +26,9 @@
 // its `embedder` and this refuses to append to a view another encoder built.
 //
 // ponytail: flat records. quickbeam folds a record's graph neighbours into its text
-// and can fuse publishers by shared identity; that is the hosted tier's job. Edges
-// are not shipped here either (quickbeam's edges.json) until a reader needs them.
+// and can fuse publishers by shared identity; that is the hosted tier's job. Edges are
+// not shipped as edges (quickbeam's edges.json): a relation the schema declares is written
+// onto its source row instead (`linkRelations`), which is all a serverless reader needs.
 
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
@@ -38,7 +39,7 @@ import { coverage as fitCoverage } from "../market/reactions.js";
 export const SCHEMA_NAMESPACE = "fangorn.schema";
 export const TYPE_TAG = "fangorn.type.v1";
 export const EMBEDDER = { runtime: "transformers.js", model: EMBED_MODEL, dtype: EMBED_DTYPE };
-const SINGULAR = ["identity", "title", "subtitle", "temporal", "spatial", "media"];
+const SINGULAR = ["identity", "title", "subtitle", "temporal", "spatial", "media", "thread"];
 const MULTI = ["tags", "measures", "relations", "text"];
 const ZERO = "0x0000000000000000000000000000000000000000";
 // Refit coverage once a domain has grown this many times over what it was fit on.
@@ -118,6 +119,23 @@ export function domainSpec(schema, tags) {
     for (const d of decls) for (const [k, v] of Object.entries(d.presentation ?? {}))
         presentation[k] = v && typeof v === "object" && !Array.isArray(v) ? { ...presentation[k], ...v } : v;
     return { description: decls.map((d) => d.description).filter(Boolean).join(" "), role_map, presentation };
+}
+
+/**
+ * Each declared relation, onto the row it starts from: an agenda item with a `part_of` edge
+ * to a matter carries `part_of: <the matter's identity>`, so a reader groups rows by it
+ * without walking the graph. Undeclared edges are left alone (the schema is the contract).
+ * `records` maps CID → fields and is changed in place.
+ * ponytail: one target per relation and row (the last edge wins); a list when a relation
+ * needs many.
+ */
+export function linkRelations(records, edges, schema) {
+    for (const e of edges ?? []) {
+        const from = records.get(e.sourceCid), to = records.get(e.targetCid);
+        if (!from || !to || !schema.relations.some((r) => r.rel === e.relation && r.from === from.entityType && r.to === to.entityType)) continue;
+        const id = schema.types[to.entityType]?.role_map?.identity;
+        from[e.relation] = String((id && to[id]) ?? e.targetCid);
+    }
 }
 
 // ── a client that only reads ──────────────────────────────────────────────────
@@ -234,6 +252,7 @@ async function publishDomain({ fangorn, schema, publisher, ns, domain, dir, reba
     const { contents } = await fangorn.readNamespace(publisher, ns);
     const records = new Map((contents.vertices ?? []).filter((v) => v.payload && typeof v.payload === "object")
         .map((v) => [v.cid, { ...v.payload, entityType: v.schemaId }]));
+    linkRelations(records, contents.edges, schema);
 
     if (rebake) rmSync(dir, { recursive: true, force: true });   // old shards would stay reachable
     const had = loadDomain(dir);
@@ -248,6 +267,11 @@ async function publishDomain({ fangorn, schema, publisher, ns, domain, dir, reba
     const live = (id) => had.rows.has(id) && !dead.has(id);
     const fresh = [...records.keys()].filter((id) => !live(id));
     const gone = [...had.rows.keys()].filter((id) => live(id) && !records.has(id));
+    // A row already served whose links changed (its matter came later, or moved): new fields,
+    // the same vector, so no embedding, only a rewrite.
+    const relinked = [...had.rows.keys()].filter((id) => live(id) && records.has(id)
+        && JSON.stringify(had.rows.get(id).fields) !== JSON.stringify(records.get(id)));
+    for (const id of relinked) had.rows.get(id).fields = records.get(id);
 
     // Roles per type: declared exactly, else guessed (and said so).
     const byType = new Map();
@@ -271,7 +295,7 @@ async function publishDomain({ fangorn, schema, publisher, ns, domain, dir, reba
         if (Math.floor((n + ids.length) / 1000) > Math.floor(n / 1000)) log(`${domain}: embedded ${n + ids.length}/${fresh.length}`);
         n += ids.length;
     }
-    if (!fresh.length && !gone.length && had.manifest && !rebake) {
+    if (!fresh.length && !gone.length && !relinked.length && had.manifest && !rebake) {
         applySpec(dir, had.manifest, schema, had.rows, dead);   // a schema change alone still lands
         return { added: 0, removed: 0 };
     }
@@ -297,11 +321,11 @@ async function publishDomain({ fangorn, schema, publisher, ns, domain, dir, reba
     }
     for (const id of gone) dead.add(id);
     // A tombstone hides a row from readers, but its shard still serves the bytes. A record
-    // retracted for what it said (a name, an address) has to be gone, so any removal
-    // rewrites the live rows into one shard and the old files are deleted. No re-embedding:
-    // the vectors are already in the rows.
+    // retracted for what it said (a name, an address) has to be gone, so any removal (or a
+    // relink, whose rows' fields changed) rewrites the live rows into one shard and the old
+    // files are deleted. No re-embedding: the vectors are already in the rows.
     // ponytail: rewrites the whole domain on every removal; compact past a threshold if domains get big.
-    if (dead.size) {
+    if (dead.size || relinked.length) {
         for (const s of manifest.shards) rmSync(`${dir}/shards/${s.file}`, { force: true });
         manifest.shards = [];
         for (const id of dead) had.rows.delete(id);
@@ -311,8 +335,8 @@ async function publishDomain({ fangorn, schema, publisher, ns, domain, dir, reba
     manifest.tombstones = [...dead].sort();
     manifest.created_at = Math.floor(Date.now() / 1000);
     applySpec(dir, manifest, schema, had.rows, dead, rolesOf);
-    log(`${domain}: +${fresh.length} embedded, -${gone.length} removed, ${manifest.count} live`);
-    return { added: fresh.length, removed: gone.length };
+    log(`${domain}: +${fresh.length} embedded, -${gone.length} removed, ${relinked.length} relinked, ${manifest.count} live`);
+    return { added: fresh.length, removed: gone.length, ...(relinked.length ? { relinked: relinked.length } : {}) };
 }
 
 /** Counts, types, roles, description, presentation and coverage from what the domain now holds. */
@@ -457,5 +481,31 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
        { added: 2, removed: 0 }, "--rebake starts the domain over");
     eq(readdirSync(`${out}/cdn/domains/${d}/shards`).length, 1, "and leaves no orphaned shards");
     rmSync(out, { recursive: true, force: true });
-    console.log("view.js self-check ok — domain names and embedded text match quickbeam's, the schema is applied, a second run embeds nothing, additions ship as delta shards, removals compact the domain, the real reader sees exactly the live records by the publisher's id, and another encoder's view is refused");
+
+    // Relations: a declared edge lands on its source row as the target's identity; an
+    // undeclared one does not; a link that arrives later rewrites the row without embedding it.
+    {
+        const T = { tag: "civic.item.v1" }, M = { tag: "civic.matter.v1" };
+        const rel = { [`${OWNER}/${SCHEMA_NAMESPACE}`]: { vertices: [
+            { cid: "ti", schemaId: TYPE_TAG, payload: { ...T, role_map: { identity: "item_id", title: "heading", thread: "part_of" } } },
+            { cid: "tm", schemaId: TYPE_TAG, payload: { ...M, role_map: { identity: "matter_id", title: "title" } } }],
+            edges: [{ relation: "part_of", sourceCid: "ti", targetCid: "tm" }] },
+            [`${PUB}/civic`]: { vertices: [
+                { cid: "i1", schemaId: T.tag, payload: { item_id: "a#1", heading: "Rezone, committee" } },
+                { cid: "i2", schemaId: T.tag, payload: { item_id: "b#4", heading: "Rezone, council" } },
+                { cid: "m1", schemaId: M.tag, payload: { matter_id: "plover:7", title: "Rezone" } }],
+            edges: [{ relation: "part_of", sourceCid: "i1", targetCid: "m1" }, { relation: "cites", sourceCid: "i2", targetCid: "m1" }] } };
+        const o = mkdtempSync(`${tmpdir()}/view-`), dr = domainFor(APP, PUB, "civic");
+        const go = () => publishView({ fangorn: localFangorn(rel, { appId: APP, owner: OWNER }), app: APP, namespaces: ["civic"], out: o, embed, log: () => {} });
+        const parts = () => Object.fromEntries([...loadDomain(`${o}/cdn/domains/${dr}`).rows.values()].map((r) => [r.fields.heading ?? r.fields.title, r.fields.part_of ?? r.fields.cites ?? null]));
+        await go();
+        eq(parts(), { "Rezone, committee": "plover:7", "Rezone, council": null, Rezone: null }, "a declared relation carries the target's identity; an undeclared one is not written");
+        eq(readJson(`${o}/cdn/domains/${dr}/manifest`).role_map.thread, "part_of", "the thread role reaches the manifest");
+        rel[`${PUB}/civic`].edges.push({ relation: "part_of", sourceCid: "i2", targetCid: "m1" });
+        const before = embedded.length;
+        eq((await go())[dr], { added: 0, removed: 0, relinked: 1 }, "a link that comes later relinks the row");
+        eq([parts()["Rezone, council"], embedded.length - before], ["plover:7", 0], "without embedding it again");
+        rmSync(o, { recursive: true, force: true });
+    }
+    console.log("view.js self-check ok — domain names and embedded text match quickbeam's, the schema is applied, a second run embeds nothing, additions ship as delta shards, removals compact the domain, the real reader sees exactly the live records by the publisher's id, and another encoder's view is refused, and declared relations land on their source rows");
 }

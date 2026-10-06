@@ -363,7 +363,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
  * `.ship/vectors.ndjson` keeps it cheap, so two recipes over the same data embed only the
  * text that differs.
  *
- * ponytail: reads every `volume_<n>_*.json` but edges in a source's --output-dir; the
+ * ponytail: reads every `volume_<n>_*.json` in a source's --output-dir; the
  * harness publishes only the stems its source declares, so a stale file left by an older
  * shape of a source is built here and not on chain. Clear the stage dir if that bites.
  */
@@ -386,15 +386,22 @@ export async function buildLocal(configPath, out, { crawl = false, only = null, 
         const dir = resolve(cwd, expandEnv(s.command[at + 1]));
         const volume = s.command.includes("--volume") ? s.command[s.command.indexOf("--volume") + 1] : "1";
         const ns = (chain[`${owner}/${s.namespace}`] ??= { vertices: [], edges: [] });
+        const cidOf = new Map();
         for (const f of existsSync(dir) ? readdirSync(dir).sort() : []) {
             const m = new RegExp(`^volume_${volume}_(.+)\\.json$`).exec(f);
             if (!m || m[1] === "edges") continue;
             // The harness publishes {id: name, tag: entity, payload: fields}; the chain
             // addresses it by the payload's hash, and so does this.
-            for (const n of JSON.parse(readFileSync(join(dir, f), "utf8"))) ns.vertices.push({
-                cid: createHash("sha256").update(JSON.stringify(stable(n.fields))).digest("hex"),
-                schemaId: n.fields?.entityType ?? m[1][0].toUpperCase() + m[1].slice(1), payload: n.fields });
+            for (const n of JSON.parse(readFileSync(join(dir, f), "utf8"))) {
+                const cid = createHash("sha256").update(JSON.stringify(stable(n.fields))).digest("hex");
+                cidOf.set(n.name, cid);
+                ns.vertices.push({ cid, schemaId: n.fields?.entityType ?? m[1][0].toUpperCase() + m[1].slice(1), payload: n.fields });
+            }
         }
+        // Edges name vertices by the harness's local ids; the chain returns them by CID.
+        const edges = join(dir, `volume_${volume}_edges.json`);
+        for (const e of existsSync(edges) ? JSON.parse(readFileSync(edges, "utf8")) : [])
+            if (cidOf.has(e.from) && cidOf.has(e.to)) ns.edges.push({ relation: e.rel, sourceCid: cidOf.get(e.from), targetCid: cidOf.get(e.to) });
     }
     // An empty stage is a crawl that did not happen (or a cache that was not restored), not
     // an app with no records; a view of it would grade as a failure for the wrong reason.
