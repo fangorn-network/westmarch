@@ -122,8 +122,12 @@ async function getLogsSince(client, start, filter) {
 /**
  * Every verified app, with its 8004 agent, reputation, and catalog.
  * Unverified apps are dropped, not listed; `dropped` says why, for debugging.
+ *
+ * `onUpdate({ apps, pending })`, if given, is called once the bindings are read
+ * and again as each app lands or drops, so a page can show apps as they arrive.
+ * `pending` counts the bound apps not yet settled.
  */
-export async function readDirectory(client, { chain = CHAIN } = {}) {
+export async function readDirectory(client, { chain = CHAIN, onUpdate = () => {} } = {}) {
     const [bindLogs, regLogs] = await Promise.all([
         getLogsSince(client, chain.appRegistryFrom ?? 0n, { address: chain.appRegistry, event: APP_AGENT_CHANGED }),
         getLogsSince(client, chain.identityFrom ?? 0n, { address: chain.identity, event: REGISTERED }),
@@ -131,23 +135,24 @@ export async function readDirectory(client, { chain = CHAIN } = {}) {
     const registered = regLogs.map((l) => ({ agentId: l.args.agentId, owner: l.args.owner, block: l.blockNumber }));
     const latest = new Map();   // logs come oldest first: the last write wins
     for (const l of bindLogs) latest.set(l.args.app_id, { uri: l.args.agent_uri, block: l.blockNumber });
+    const bound = [...latest].filter(([, { uri }]) => uri);   // an empty uri is unbound on purpose
 
-    // Two passes: verify every card (small), then read catalogs (Quorum's is
-    // 1.7 MB, Kingsfoil has 23). Only a card failure drops an app; an owner or
-    // catalog that fails leaves it listed with less to say about it.
-    const dropped = [];
-    const verified = (await Promise.all([...latest].map(async ([appId, { uri, block }]) => {
-        if (!uri) return null;   // unbound on purpose
+    // One pipeline per app, so the quick ones need not wait on Quorum's 1.7 MB
+    // catalog. Only a card failure drops an app; an owner or catalog that fails
+    // leaves it listed with less to say about it.
+    const apps = [], dropped = [];
+    let pending = bound.length;
+    const settle = () => { pending--; apps.sort((a, b) => a.name.localeCompare(b.name)); onUpdate({ apps: [...apps], pending }); };
+    onUpdate({ apps: [], pending });
+    await Promise.all(bound.map(async ([appId, { uri, block }]) => {
+        let card;
         try {
             if (!/^https:\/\//.test(uri)) throw new Error("card is not https");
-            const card = await json(uri);
+            card = await json(uri);
             const why = verifyCard(card, appId, chain);
             if (why) throw new Error(why);
-            return { appId, uri, block, card };
-        } catch (e) { dropped.push({ card: uri, why: e?.message ?? String(e) }); return null; }
-    }))).filter(Boolean);
+        } catch (e) { dropped.push({ card: uri, why: e?.message ?? String(e) }); return settle(); }
 
-    const apps = await Promise.all(verified.map(async ({ appId, uri, block, card }) => {
         const p = card.capabilities.extensions.find((e) => e.uri === APP_EXTENSION).params;
         const [[owner, agentId, rep], { corpora, unreachable }] = await Promise.all([
             client.readContract({ address: chain.appRegistry, abi: APPS, functionName: "getAppOwner", args: [appId] }).catch(() => null)
@@ -158,7 +163,7 @@ export async function readDirectory(client, { chain = CHAIN } = {}) {
             survey((p.views ?? []).filter((v) => /^https:\/\//.test(v))),
         ]);
         const name = typeof card.name === "string" && card.name.trim() ? card.name.trim() : `App ${appId.slice(0, 10)}`;
-        return {
+        apps.push({
             app: slug(name), name, description: typeof card.description === "string" ? card.description : "",
             site: https(card.url), card: uri, appId, owner,
             boundAt: Number(block), fromBlock: Number(p.fromBlock),
@@ -169,9 +174,9 @@ export async function readDirectory(client, { chain = CHAIN } = {}) {
             rows: corpora.length ? corpora.reduce((n, c) => n + (c.rows || 0), 0) : null,
             unreachable: unreachable.length,
             domains: corpora.map((c) => ({ name: c.domain, description: c.description, rows: c.rows, coverage: c.coverage, model: c.model })),
-        };
+        });
+        settle();
     }));
-    apps.sort((a, b) => a.name.localeCompare(b.name));
     return { apps, dropped };
 }
 
