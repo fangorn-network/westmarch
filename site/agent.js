@@ -42,7 +42,7 @@ export function registerAgent(ctx) {
         inputSchema: obj({}),
         execute: async () => ok(ctx.session?.() ?? { saved: [], searches: [], taste: null }),
     });
-    // Like / dislike and "For you": the same calls the page's 👍 👎 and knobs make (ctx.rate,
+    // Like / dislike and "For you": the same calls the page's save star and knobs make (ctx.rate,
     // ctx.votes, set by main.js), so what an agent records shows on the page.
     mc.registerTool({
         name: "rate",

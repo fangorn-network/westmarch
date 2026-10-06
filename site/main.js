@@ -5,7 +5,7 @@
 //   #/                 the feed (and "For you", once something is saved)
 //   #/search/<query>   search
 //   #/item/<key>       one record: its document, its meeting, what is like it
-//   #/for-you          the taste kernel over 👍 and 👎, with its four knobs
+//   #/for-you          the taste kernel over what you saved (☆), with its four knobs
 //   #/saved            liked items, exportable; the taste they make
 //   #/history          this session's searches
 import { configure, loadShard } from "../src/core/shard.js";
@@ -89,7 +89,8 @@ const marked = (text, terms) => {
     return String(text).split(re).map((part, i) => (i % 2 ? el("mark", {}, part) : part));
 };
 
-// ── taste: 👍 and 👎 on every record, kept on this device ──
+// ── taste: a star on every record (saved, or not), kept on this device ──
+// A saved item is a like the taste is built from. Agents can still pass on items (`rate`).
 // One entry point for the page and the `rate` tool, so a vote an agent casts shows here too.
 const verdictOf = (k) => (store.isSaved(k) ? "like" : store.passed().some((p) => p.key === k) ? "dislike" : null);
 ctx.rate = (id, verdict) => {
@@ -110,13 +111,19 @@ ctx.votes = () => {
     const { likes, dislikes } = store.votes();
     return { likes: likes.map(live).filter((x) => x.vector), dislikes: dislikes.map(live).filter((x) => x.vector) };
 };
-const votes = (r) => el("span", { className: "votes" }, [["like", "👍", "I like this"], ["dislike", "👎", "Not for me"]].map(([v, glyph, label]) => {
-    const b = el("button", { type: "button", className: "vote", title: label, ariaLabel: `${label}: ${titleOf(r, R)}`,
-        onclick: (e) => { e.preventDefault(); ctx.rate(r.id, verdictOf(keyOf(r)) === v ? "clear" : v); } }, glyph);
-    Object.assign(b.dataset, { key: keyOf(r), vote: v });
-    return b;
-}));
-function paintVotes() { for (const b of document.querySelectorAll("button.vote")) b.setAttribute("aria-pressed", String(verdictOf(b.dataset.key) === b.dataset.vote)); }
+const votes = (r) => {
+    const b = el("button", { type: "button", className: "vote star", title: "Save", ariaLabel: `Save: ${titleOf(r, R)}`,
+        onclick: (e) => { e.preventDefault(); ctx.rate(r.id, verdictOf(keyOf(r)) === "like" ? "clear" : "like"); } });
+    Object.assign(b.dataset, { key: keyOf(r), vote: "like" });
+    return el("span", { className: "votes" }, b);
+};
+// aria-pressed carries the state; the glyph follows it (★ saved, ☆ not).
+function paintVotes() {
+    for (const b of document.querySelectorAll("button.vote[data-vote]")) {
+        const on = verdictOf(b.dataset.key) === b.dataset.vote;
+        b.setAttribute("aria-pressed", String(on)); b.textContent = on ? "★" : "☆"; b.title = on ? "Saved" : "Save";
+    }
+}
 
 const row = (r, { terms = [], also = 0, meta = true } = {}) => {
     const d = detail(r, R);
@@ -303,7 +310,7 @@ function forYou() {
     show(el("h2", { className: "page" }, "For you"), picker(),
         el("section", { className: "taste" },
             likes.length || dislikes.length ? el("ul", { className: "pills" }, likes.slice(-30).map((x) => pill(x)), dislikes.slice(-10).map((x) => pill(x, true)))
-                : el("p", { className: "hint" }, "Tap 👍 on records you like and 👎 on ones you don't. Newer likes count more; it all stays in this browser."),
+                : el("p", { className: "hint" }, "Save records with ☆ and this fills with more like them. Newer saves count more; it all stays in this browser."),
             res.taste ? el("p", { className: "hint" }, res.taste.heading ? "Your recent likes point somewhere new; Lookahead follows them." : "Like 4 or more and Lookahead can follow where your taste is heading.") : null,
             el("div", { className: "knobs" }, Object.keys(KNOBS).map(knob)),
             el("button", { type: "button", className: "act", disabled: !knobs.surprise, title: knobs.surprise ? "" : "Turn up Surprise to reroll",
@@ -317,12 +324,12 @@ function saved() {
     const copy = el("button", { type: "button", className: "act", onclick: async () => {
         try { await navigator.clipboard.writeText(bundle()); copy.textContent = "Copied"; } catch { download(`${slug}-session.json`, bundle(), "application/json"); }
     } }, "Copy for an agent");
-    show(el("h2", { className: "page" }, `Liked (${items.length})`),
+    show(el("h2", { className: "page" }, `Saved (${items.length})`),
         items.length ? el("div", { className: "acts" },
             el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.json`, bundle(), "application/json") }, "Export JSON"),
             el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.csv`, toCSV(items), "text/csv") }, "CSV"),
             el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.md`, toMarkdown(items, `${NAME}: saved`), "text/markdown") }, "Markdown"),
-            copy) : el("p", { className: "empty" }, "Nothing liked yet. Tap 👍 on a record; likes stay on this device."),
+            copy) : el("p", { className: "empty" }, "Nothing saved yet. Tap ☆ on a record; what you save stays on this device."),
         t ? el("p", { className: "hint" }, `"For you" is built from these ${t.n}${t.rejected.length ? `, and away from ${t.rejected.length} you passed on` : ""}. It lives in this browser; the export carries it, so an agent can use it too. `,
             el("button", { type: "button", className: "linkish", onclick: () => { store.clear("passed"); saved(); counts(); } }, "Forget what I passed on")) : null,
         el("ul", { className: "list" }, items.slice().reverse().map((i) => {
