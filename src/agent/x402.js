@@ -62,6 +62,17 @@ export async function payAndFetch(url, { privateKey, account, maxPrice, fetchImp
     return { status: paid.status, body, price: req.maxAmountRequired, receipt: receiptHeader ? JSON.parse(unb64(receiptHeader)) : null };
 }
 
+/** Buy one record an app sells (its agent card's `paid`) and check it against the sha256 the
+ *  app published for it (`want`, the row's `paid_sha256`): what was paid for is what was
+ *  committed. Shared by fangorn-mcp's `buy` and the stock page. */
+export async function buyRecord(paid, key, { want, account, privateKey, maxPrice = paid.price, fetchImpl } = {}) {
+    const r = await payAndFetch(paid.url.replace("{id}", encodeURIComponent(key)), { account, privateKey, maxPrice, fetchImpl });
+    if (r.status !== 200) return { id: key, error: `HTTP ${r.status}: ${r.body.slice(0, 200)}` };
+    const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(r.body)))]
+        .map((b) => b.toString(16).padStart(2, "0")).join("");
+    return { id: key, price: r.price, receipt: r.receipt, digest, verified: want ? want === digest : null, record: JSON.parse(r.body) };
+}
+
 // ── self-check: `node src/agent/x402.js` — a stand-in seller that checks the signature ──
 if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/x402.js")) {
     const { privateKeyToAccount, generatePrivateKey } = await import("viem/accounts");

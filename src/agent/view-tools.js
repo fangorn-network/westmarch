@@ -178,16 +178,13 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
             if (!id) throw new Error("id is required");
             const hit = loadedRows().find(({ r, view }) => r.id === id || r[rolesOf(view).identity] === id);
             const key = hit ? hit.r[rolesOf(hit.view).identity] ?? id : id;
-            const { payAndFetch } = await import("./x402.js");
-            const r = await payAndFetch(p.url.replace("{id}", encodeURIComponent(key)),
-                { privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap });
-            if (r.status !== 200) return { id: key, error: `HTTP ${r.status}: ${r.body.slice(0, 200)}` };
-            const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(r.body)))]
-                .map((b) => b.toString(16).padStart(2, "0")).join("");
+            const { buyRecord } = await import("./x402.js");
             const want = hit?.r.paid_sha256;
+            const r = await buyRecord(p, key, { want, privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap });
+            if (r.error) return r;
             return { id: key, paid: r.price ? price : "free", transaction: r.receipt?.transaction ?? null, network: r.receipt?.network ?? p.network,
-                     verified: want ? (want === digest ? "matches the published sha256" : `MISMATCH: published ${want}, got ${digest}`) : "not checked (search for the record first)",
-                     record: JSON.parse(r.body) };
+                     verified: want ? (r.verified ? "matches the published sha256" : `MISMATCH: published ${want}, got ${r.digest}`) : "not checked (search for the record first)",
+                     record: r.record };
         };
         tools.push({ name: "buy", description: `Buy one ${n} record's paid detail for ${price} (x402 on ${p.network}): ${p.description || "the structured record"}. ` +
                 "Pass an id from search. Paid from this server's wallet (FANGORN_MCP_WALLET_KEY), never above FANGORN_MCP_MAX_PRICE.",

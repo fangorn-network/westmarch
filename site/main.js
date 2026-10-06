@@ -32,6 +32,7 @@ const card = await fetch("./.well-known/agent-card.json").then((r) => r.json()).
 const paid = (card.capabilities?.extensions ?? []).map((x) => x.params?.paid).find(Boolean) ?? null;
 const NAME = card.name ?? "Fangorn app";
 document.title = NAME;
+if (paid) $("#walletlink").hidden = false;
 $("#name").textContent = NAME;
 
 // Links to the app's own pages (app.json site.nav), after Saved and History.
@@ -220,10 +221,51 @@ function item(key) {
             d ? el("p", {}, d) : el("p", { className: "hint" }, "No decision is recorded under this item (it may be on an agenda, before the meeting)."),
             facts.length ? el("dl", {}, facts.map(([k, v]) => [el("dt", {}, k.replace(/_/g, " ")), el("dd", {}, String(v))])) : null,
             el("div", { className: "acts" }, votes(r), docBtn, src ? el("a", { href: src, target: "_blank", rel: "noopener", className: "act" }, "Source ↗") : null),
-            paid && r.paid_sha256 ? el("p", { className: "hint" }, `Agents can buy this item's structured record for ${Number(paid.price) / 10 ** (paid.decimals ?? 6)} ${paid.symbol ?? "USDC"} (x402).`) : null,
+            paid && r.paid_sha256 ? decision(r) : null,
             frame),
         siblings.length ? el("section", {}, el("h2", {}, "Same meeting"), el("ul", { className: "list" }, siblings.slice(0, 12).map((x) => row(x, { meta: false })))) : null,
         near.length ? el("section", {}, el("h2", {}, "Similar"), el("ul", { className: "list" }, near.map((x) => row(x)))) : null);
+}
+
+// The item's paid record: what was decided, as fields. Bought with the reader's wallet over x402,
+// as an agent buys it, and checked against the sha256 the app published. A record once bought
+// is kept on this device, so opening the item again never charges twice.
+const PRICE = paid ? `${Number(paid.price) / 10 ** (paid.decimals ?? 6)} ${paid.symbol ?? "USDC"}` : "";
+const bought = { get(k) { try { return JSON.parse(localStorage.getItem(`${SLUG}:paid:${k}`)); } catch { return null; } },
+                 set(k, v) { try { localStorage.setItem(`${SLUG}:paid:${k}`, JSON.stringify(v)); } catch { /* not kept */ } } };
+function decision(r) {
+    const key = r[R.identity] ?? r.id, box = el("section", { className: "paid" });
+    const fields = (got) => {
+        const x = got.record;
+        box.replaceChildren(el("h3", {}, "Decision record"),
+            x.summary ? el("p", {}, x.summary) : null,
+            el("dl", {}, [["Action", x.action], ["Outcome", x.outcome], ["Vote", x.vote && `${x.vote.for}–${x.vote.against}`]]
+                .filter(([, v]) => v).map(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
+            x.amounts?.length ? el("ul", {}, x.amounts.map((a) => el("li", {}, typeof a === "string" ? a : [a.amount, a.for ? ` · ${a.for}` : ""]))) : null,
+            x.organizations?.length ? el("p", {}, "Organizations: ", x.organizations.map((o) => typeof o === "string" ? o : `${o.name}${o.role !== "other" ? ` (${o.role})` : ""}`).join(", ")) : null,
+            el("small", {}, got.verified ? "✓ Matches the record this app published" : got.verified === false ? "✗ Does not match the record this app published" : "",
+               got.receipt?.transaction ? [" · ", el("span", {}, `paid, tx ${got.receipt.transaction.slice(0, 10)}…`)] : ""));
+    };
+    const have = bought.get(key);
+    if (have) { fields(have); return box; }
+    const status = el("small", {}), btn = el("button", { type: "button", className: "act" }, `Read the decision record · ${PRICE}`);
+    btn.onclick = async () => {
+        btn.disabled = true; status.textContent = "Opening your wallet…";
+        try {
+            const w = await (await import("./wallet.js")).wallet(paid);
+            await w.signIn();
+            status.textContent = "Paying…";
+            const got = await w.buy(key, r.paid_sha256);
+            if (got.error) throw new Error(got.error);
+            bought.set(key, got); fields(got);
+        } catch (e) {
+            btn.disabled = false;
+            status.replaceChildren(`Couldn't buy it: ${e.message}. `, el("a", { href: "#/wallet" }, "Your wallet"));
+        }
+    };
+    box.append(el("p", { className: "hint" }, `What was decided, as fields: action, outcome, vote, amounts and who they are for, organizations. Agents buy the same record over x402.`),
+        el("div", { className: "acts" }, btn, status));
+    return box;
 }
 
 function download(name, text, type) {
@@ -292,6 +334,28 @@ function historyView() {
         h.length ? el("button", { type: "button", className: "act", onclick: () => { store.clear("history"); historyView(); } }, "Clear") : null);
 }
 
+// The reader's wallet: who they are signed in as, its balance, and adding funds.
+async function walletView() {
+    show(el("p", { className: "empty" }, "Opening your wallet…"));
+    let w;
+    try { w = await (await import("./wallet.js")).wallet(paid); } catch (e) { return show(el("p", { className: "empty" }, `The wallet is unavailable: ${e.message}`)); }
+    const draw = async () => {
+        if (!location.hash.startsWith("#/wallet")) return;
+        if (!w.authenticated) return show(el("h2", {}, "Wallet"),
+            el("p", {}, `Sign in to buy decision records (${PRICE} each). An email or Google sign-in gives you a wallet here, the same one in every Fangorn app; nothing to install.`),
+            el("div", { className: "acts" }, el("button", { type: "button", className: "act", onclick: () => w.signIn() }, "Sign in")));
+        const bal = w.address ? await w.balance().catch(() => null) : null;
+        show(el("h2", {}, "Wallet"),
+            el("dl", {}, el("dt", {}, "Address"), el("dd", {}, w.address ?? "making your wallet…"),
+               el("dt", {}, "Balance"), el("dd", {}, bal == null ? "…" : `${bal.toFixed(2)} ${paid.symbol ?? "USDC"} on ${w.chain.name}`)),
+            el("div", { className: "acts" },
+                el("button", { type: "button", className: "act", onclick: () => w.addFunds() }, w.faucet ? "Get test funds (faucet)" : "Add funds"),
+                el("button", { type: "button", className: "act", onclick: () => w.logout() }, "Sign out")),
+            w.faucet ? el("p", { className: "hint" }, `This app runs on a test network, where funds are free: use the faucet with your address above.`) : null);
+    };
+    w.onChange(() => { draw(); });
+}
+
 // ── routing ──
 function counts() { const n = store.saved().length; $("#nsaved").textContent = n ? ` (${n})` : ""; }
 function route() {
@@ -304,6 +368,7 @@ function route() {
     if (name === "saved") return saved();
     if (name === "for-you") return forYou();
     if (name === "history") return historyView();
+    if (name === "wallet" && paid) return walletView();
     if (name === "map" && geo) return (mapView ??= createMap(geo, { el, show, row, placeOf, ctx })).render(...arg.split("/").map(decodeURIComponent));
     $("#q input").value = "";
     return feed();
