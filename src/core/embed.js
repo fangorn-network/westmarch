@@ -13,6 +13,11 @@
 
 const MODEL = "nomic-ai/nomic-embed-text-v1.5";
 const DIM = 256;
+// The document side's precision. q8 everywhere by default (the browser's queries are q8).
+// WESTMARCH_EMBED_DTYPE=fp16 is a different encoder (~0.96 cosine to q8): a view records it
+// and refuses to mix the two (view.js), so switching an app is one --rebake.
+const DTYPE = globalThis.process?.env?.WESTMARCH_EMBED_DTYPE ?? "q8";
+export const EMBED_DTYPE = DTYPE;
 
 // Stamped onto every vector a publisher commits. Vectors from different models
 // (or dims) are not comparable — cosine between them is noise, and silently so.
@@ -25,10 +30,11 @@ let _extractor = null;
 const extractor = () => (_extractor ??= (async () => {
     const { pipeline } = await import("@huggingface/transformers");
     // WESTMARCH_EMBED_DEVICE=cuda puts the publisher's document side on a GPU (Node only; needs
-    // onnxruntime-node's CUDA binaries). Still q8 at batch 1, so still the same encoder: its
-    // vectors agree with CPU q8 to ~0.99, closer than the browser's WASM q8 queries (~0.98).
+    // onnxruntime-node's CUDA binaries and the matching CUDA runtime, cuBLAS, cuRAND and cuDNN on
+    // LD_LIBRARY_PATH). q8's integer ops do not run on CUDA, so q8 there is slower than on CPU:
+    // pair it with WESTMARCH_EMBED_DTYPE=fp16, which is ~4x faster than CPU q8, batched.
     const device = globalThis.process?.env?.WESTMARCH_EMBED_DEVICE;
-    return pipeline("feature-extraction", MODEL, { dtype: "q8", ...(device && { device }) });
+    return pipeline("feature-extraction", MODEL, { dtype: DTYPE, ...(device && { device }) });
 })());
 
 /** Standardize over the full vector, slice to `dim`, L2-normalize the slice. */
@@ -59,11 +65,30 @@ export async function embedQueryDirect(text) {
     return matryoshka(output.data);
 }
 
-/** One document, in-process. The batch loop stays with the caller — see embedDocuments. */
-export async function embedDocumentDirect(text) {
-    const ex = await extractor();
-    const output = await ex(`search_document: ${text}`, { pooling: "mean", normalize: false });
-    return matryoshka(output.data);
+/** One document, in-process. Calls made together are embedded as one batch (a GPU's
+ *  speed); q8 stays at batch 1, since batching moves its activation quantization. */
+export function embedDocumentDirect(text) {
+    return new Promise((resolve, reject) => {
+        pending.push({ text, resolve, reject });
+        if (pending.length === 1) setTimeout(flushDocuments, 0);
+    });
+}
+const BATCH = DTYPE === "q8" ? 1 : 32;
+let pending = [];
+async function flushDocuments() {
+    const all = pending;
+    pending = [];
+    try {
+        const ex = await extractor();
+        for (let i = 0; i < all.length; i += BATCH) {
+            const part = all.slice(i, i + BATCH);
+            const output = await ex(part.map((p) => `search_document: ${p.text}`), { pooling: "mean", normalize: false });
+            const d = output.dims.at(-1);
+            part.forEach((p, j) => p.resolve(matryoshka(output.data.slice(j * d, (j + 1) * d))));
+        }
+    } catch (e) {
+        for (const p of all) p.reject(e);
+    }
 }
 
 /** Load the model in-process, and settle when it is actually ready. */

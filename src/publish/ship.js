@@ -161,7 +161,7 @@ function assertSameDeployment(cli) {
 
 // ── the steps ─────────────────────────────────────────────────────────────────
 
-export async function ship(configPath, { crawl = true, deploy = true, dry = false, replace = false, only = null, register = false } = {}) {
+export async function ship(configPath, { crawl = true, deploy = true, dry = false, replace = false, only = null, register = false, rebake = false } = {}) {
     const cfg = loadConfig(configPath);
     if (!register && (!Object.keys(cfg.types).length || !cfg.sources.length))
         throw new Error(`${configPath}: no types or sources yet, so nothing to build; --register sets up the app alone`);
@@ -246,7 +246,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     const namespaces = [...new Set(cfg.sources.map((s) => s.namespace))];
     if (register && !dry) view.writeCatalog(join(site, "view"));   // empty, or what an earlier build left
     const report = dry || register ? {} : await view.publishView({ fangorn, app: cfg.app, namespaces, out: join(site, "view"),
-        fromBlock: BigInt(state.fromBlock), embed: view.cachedEmbed(join(dir, "vectors.ndjson")), log });
+        fromBlock: BigInt(state.fromBlock), embed: view.cachedEmbed(join(dir, "vectors.ndjson")), rebake, log });
 
     // 6. the page, the card, the headers
     if (!existsSync(join(STOCK, "index.html"))) throw new Error(`no stock page at ${STOCK}; run \`npx vite build\` in westmarch/site`);
@@ -480,7 +480,7 @@ if (process.argv[1]?.endsWith("ship.js") || process.argv[1]?.endsWith("westmarch
     }
     const [path, ...flags] = process.argv.slice(2);
     if (!path || flags.includes("--help")) {
-        console.error("usage: westmarch-ship app.json [--no-crawl] [--no-deploy] [--dry-run] [--replace] [--only ns1,ns2]\n" +
+        console.error("usage: westmarch-ship app.json [--no-crawl] [--no-deploy] [--dry-run] [--replace] [--rebake] [--only ns1,ns2]\n" +
                       "       westmarch-ship app.json --register [--dry-run]   (claim, join, empty site, card bound: no data)\n" +
                       "       westmarch-ship app.json --local <out> [--crawl] [--only ns1,ns2]   (no chain, no deploy)");
         process.exit(path ? 0 : 2);
@@ -492,7 +492,7 @@ if (process.argv[1]?.endsWith("ship.js") || process.argv[1]?.endsWith("westmarch
         process.exit(0);
     }
     await ship(path, { crawl: !flags.includes("--no-crawl"), deploy: !flags.includes("--no-deploy"), dry: flags.includes("--dry-run"),
-                       replace: flags.includes("--replace"), register: flags.includes("--register"),
+                       replace: flags.includes("--replace"), register: flags.includes("--register"), rebake: flags.includes("--rebake"),
                        only })
         .catch((e) => { console.error(`[ship] ✗ ${e.message}`); process.exit(1); });
     process.exit(0);   // a CUDA embedder keeps the process alive (and can abort in its teardown)

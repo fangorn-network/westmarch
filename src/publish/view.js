@@ -32,12 +32,12 @@
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { EMBED_DIM, EMBED_MODEL, embedDocumentDirect, packVec, unpackVec } from "../core/embed.js";
+import { EMBED_DIM, EMBED_DTYPE, EMBED_MODEL, embedDocumentDirect, packVec, unpackVec } from "../core/embed.js";
 import { coverage as fitCoverage } from "../market/reactions.js";
 
 export const SCHEMA_NAMESPACE = "fangorn.schema";
 export const TYPE_TAG = "fangorn.type.v1";
-export const EMBEDDER = { runtime: "transformers.js", model: EMBED_MODEL, dtype: "q8" };
+export const EMBEDDER = { runtime: "transformers.js", model: EMBED_MODEL, dtype: EMBED_DTYPE };
 const SINGULAR = ["identity", "title", "subtitle", "temporal", "spatial", "media"];
 const MULTI = ["tags", "measures", "relations", "text"];
 const ZERO = "0x0000000000000000000000000000000000000000";
@@ -263,11 +263,13 @@ async function publishDomain({ fangorn, schema, publisher, ns, domain, dir, reba
 
     let n = 0;
     const lines = [];
-    for (const id of fresh) {
-        const fields = records.get(id);
-        const v = await embed(composeText(fields, rolesOf.get(fields.entityType)));
-        lines.push(JSON.stringify({ track_id: id, fields, v: packVec(v) }));
-        if (++n % 100 === 0) log(`${domain}: embedded ${n}/${fresh.length}`);
+    // 32 at a time: the embedder batches calls made together (embed.js), the GPU's speed.
+    for (let i = 0; i < fresh.length; i += 32) {
+        const ids = fresh.slice(i, i + 32);
+        const vs = await Promise.all(ids.map((id) => embed(composeText(records.get(id), rolesOf.get(records.get(id).entityType)))));
+        ids.forEach((id, j) => lines.push(JSON.stringify({ track_id: id, fields: records.get(id), v: packVec(vs[j]) })));
+        if (Math.floor((n + ids.length) / 1000) > Math.floor(n / 1000)) log(`${domain}: embedded ${n + ids.length}/${fresh.length}`);
+        n += ids.length;
     }
     if (!fresh.length && !gone.length && had.manifest && !rebake) {
         applySpec(dir, had.manifest, schema, had.rows, dead);   // a schema change alone still lands
