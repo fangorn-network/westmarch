@@ -129,11 +129,20 @@ const row = (r, { terms = [], also = 0, meta = true } = {}) => {
         votes(r));
 };
 
-// ── the place chips ──
+// ── the place picker: one native select, whatever the number of places ──
 let only = null;
-const chips = () => (places.length > 1 ? el("div", { className: "chips" }, [[null, ctx.rows.length], ...places].map(([v, n]) =>
-    el("button", { type: "button", className: v === only ? "chip on" : "chip", title: `${n.toLocaleString()} records`,
-                   onclick: () => { only = v; route(); } }, v ?? "All"))) : null);
+const picker = () => (places.length > 1 ? el("label", { className: "picker" }, el("span", {}, `${facet ? facet[0].toUpperCase() + facet.slice(1) : "Place"}`),
+    el("select", { id: "place", onchange: (e) => { only = e.target.value || null; route(); } },
+        [[null, ctx.rows.length], ...places].map(([v, n]) =>
+            el("option", { value: v ?? "", selected: v === only }, `${v ?? "All"} (${n.toLocaleString()})`)))) : null);
+
+// The app's description, first clause up front and the rest a click away: the content starts
+// above the fold, and an agent still reads the whole description off the card.
+const about = (text) => {
+    const cut = text.search(/[:.;]\s/);
+    if (cut < 0 || cut > 160) return el("p", { className: "about" }, text);
+    return el("details", { className: "about" }, el("summary", {}, text.slice(0, cut + 1).replace(/:$/, ".")), el("p", {}, text.slice(cut + 2)));
+};
 const inPlace = (r) => !only || placeOf(r) === only;
 
 // ── views ──
@@ -153,7 +162,7 @@ function feed() {
     const { upcoming, past } = occasions(ctx.rows, R, { facet, only });
     const { likes, dislikes } = ctx.votes();
     const mine = discover(ctx.rows.filter(inPlace), likes, dislikes, { ...knobs, limit: 6 });
-    show(card.description ? el("p", { className: "about" }, card.description) : null, chips(),
+    show(card.description ? about(card.description) : null, picker(),
         mine.picks.length ? el("section", {}, el("h2", {}, "For you"), el("p", { className: "hint" }, `From the ${mine.taste.n} item${mine.taste.n > 1 ? "s" : ""} you liked. `, el("a", { href: "#/for-you" }, "Tune")),
             el("ul", { className: "list" }, mine.picks.map(({ row: r }) => row(r)))) : null,
         upcoming.length ? el("section", {}, el("h2", {}, "Coming up"), upcoming.slice(0, 8).map(occasionCard)) : null,
@@ -193,7 +202,7 @@ function render(q, qv, loading = false) {
     const terms = q.toLowerCase().split(/\W+/).filter((t) => t.length > 2);
     const sorter = el("div", { className: "sort" }, "Sort: ", ["relevance", "newest"].map((s) =>
         el("button", { type: "button", className: s === sortBy ? "chip on" : "chip", onclick: () => { sortBy = s; render(q, qv, loading); } }, s)));
-    show(chips(), el("div", { className: "resultsbar" }, el("span", {}, `${list.length} result${list.length === 1 ? "" : "s"} for “${q}”${only ? ` in ${only}` : ""}`,
+    show(picker(), el("div", { className: "resultsbar" }, el("span", {}, `${list.length} result${list.length === 1 ? "" : "s"} for “${q}”${only ? ` in ${only}` : ""}`,
             loading ? el("small", {}, " · matching words; search by meaning is loading") : null), sorter),
         list.length ? el("ul", { className: "list" }, list.slice(0, 40).map(({ r, also }) => row(r, { terms, also })))
             : el("p", { className: "empty" }, "No matches. Try other words, or All places."));
@@ -291,7 +300,7 @@ function forYou() {
     };
     const pill = (x, no) => el("li", { className: no ? "no" : "" }, x.title,
         el("button", { type: "button", ariaLabel: `Forget ${x.title}`, onclick: () => ctx.rate(x.id, "clear") }, "×"));
-    show(el("h2", { className: "page" }, "For you"), chips(),
+    show(el("h2", { className: "page" }, "For you"), picker(),
         el("section", { className: "taste" },
             likes.length || dislikes.length ? el("ul", { className: "pills" }, likes.slice(-30).map((x) => pill(x)), dislikes.slice(-10).map((x) => pill(x, true)))
                 : el("p", { className: "hint" }, "Tap 👍 on records you like and 👎 on ones you don't. Newer likes count more; it all stays in this browser."),

@@ -50,6 +50,10 @@
   .resultsbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; font-size: .9rem; }
   .sort, .chips, .acts, .votes { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .chips { margin: 4px 0 16px; }
+  .picker { display: inline-flex; flex-direction: column; gap: 4px; margin: 4px 0 16px; font-size: .85rem; color: var(--muted); }
+  .picker select { font: inherit; font-size: 1rem; color: var(--fg); background: var(--bg); border: 1px solid var(--edge); border-radius: var(--radius); padding: 6px 10px; min-width: min(320px, 100%); }
+  details.about summary { cursor: pointer; color: var(--fg); font-size: 1.05rem; }
+  details.about p { color: var(--muted); margin: 6px 0 0; }
   .chip { font-size: .85rem; padding: 2px 10px; }
   .chip.on, .vote[aria-pressed="true"] { border-color: var(--accent); background: var(--mark); }
   .vote { padding: 2px 7px; line-height: 1.3; }
