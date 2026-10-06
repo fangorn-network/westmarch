@@ -34,7 +34,7 @@ export function registerAgent(ctx) {
         inputSchema: obj({ field: { type: "string" }, where: { type: "object" }, limit: { type: "number" } }, ["field"]),
         execute: async ({ field, where, limit = 20 }) => ok(facet(ctx.rows, field, { where, limit })),
     });
-    if (ctx.roles.thread) mc.registerTool({
+    mc.registerTool({
         name: "threads",
         description: "One thing followed across records (a matter from committee to council): each thread's steps in date order, the latest-moving first, with the head record when there is one. `id` for one thread (a step's thread field); `where` narrows the steps.",
         inputSchema: obj({ id: { type: "string" }, where: { type: "object" }, limit: { type: "number" }, offset: { type: "number" } }),
