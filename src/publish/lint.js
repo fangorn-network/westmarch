@@ -18,9 +18,9 @@
 // there are three real outcomes — the reader cannot find you, they find you and
 // cannot read you, or they read you and cannot go anywhere.
 
-import { configure, loadShard, resetShard, trimView } from "../core/shard.js";
+import { configure, loadShard, resetShard, setDomains, trimView } from "../core/shard.js";
 import { shapeOf } from "../agent/ui.js";
-import { inSample, rolesFrom, textOf } from "../core/roles.js";
+import { inSample, linkOf, rolesFrom, textOf } from "../core/roles.js";
 
 /** The model every corpus on this network is baked with. Cosine between two
  *  models' vectors is noise that still looks like a score, so a mismatch is not
@@ -63,14 +63,37 @@ async function served(url, { bytes = null, timeoutMs = 8000 } = {}) {
     finally { clearTimeout(t); }
 }
 
+/** Does a row's link open for a person? A GET that follows redirects. An error status says
+ *  no, and so does a body too small to be a page or a document: Legistar answers a link built
+ *  from the wrong id with HTTP 200 and the 19 bytes "Invalid parameters!". Returns why not,
+ *  or null. Only the first ~1 KB is read. */
+async function opens(url, timeoutMs = 15000) {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+        const res = await fetch(url, { redirect: "follow", signal: ctl.signal });
+        if (!res.ok) return `HTTP ${res.status}`;
+        let n = 0;
+        const reader = res.body?.getReader();
+        while (reader && n < 1024) { const { done, value } = await reader.read(); if (done) break; n += value.length; }
+        reader?.cancel().catch(() => {});
+        return n < 300 ? `answered with ${n} bytes` : null;
+    } catch (e) { return e.name === "AbortError" ? "timed out" : e.message; }
+    finally { clearTimeout(t); }
+}
+
 /**
  * Lint one baked view.
  *
  * `rows` samples the free shard — the only way to catch a paywall that lies and
  * vectors that are not there. It is the free index, the same bytes any reader
  * downloads, but it is the slow part; pass `rows: false` for catalog-only.
+ *
+ * `links` opens a few sampled rows' links on the source sites: a link that is
+ * built wrong looks fine in every record and fails only for the person who
+ * follows it. Off by default, since it reaches other people's servers.
  */
-export async function lint(view, { rows = true, model = NETWORK_MODEL, timeoutMs } = {}) {
+export async function lint(view, { rows = true, links = false, model = NETWORK_MODEL, timeoutMs } = {}) {
     const at = trimView(view);
     const found = [];
     let cat;
@@ -182,6 +205,10 @@ export async function lint(view, { rows = true, model = NETWORK_MODEL, timeoutMs
 
         if (rows) {
             resetShard();
+            // This domain's rows, not the first 2,000 of the whole view (which every domain
+            // used to be graded on, reloaded once per domain). ponytail: setDomains also
+            // matches by prefix, so "…-milwaukee" brings "…-milwaukee-county" along; mild for a sample.
+            setDomains([d.name]);
             // The text role is evaluated AT PARSE TIME, so a lint that does not
             // wire it reads the default sniff and grades a corpus on prose the
             // publisher never declared. (This file had that bug too, which is
@@ -276,6 +303,18 @@ export async function lint(view, { rows = true, model = NETWORK_MODEL, timeoutMs
             // any row, which is exactly the dead end the rule is looking for,
             // and a manifest-only check would have passed it.
             deadEnd(sample.filter((r) => shapeOf(r, roles) !== "read").length);
+
+            // Having a link is not the same as the link opening. Three, spread across the
+            // sample, one at a time: enough to catch a link built wrong for every row.
+            if (links) {
+                const urls = sample.map((r) => linkOf(r, roles)).filter(Boolean);
+                const picks = [...new Set([0, 0.5, 0.99].map((q) => urls[Math.floor(q * urls.length)]))].filter(Boolean);
+                const bad = [];
+                for (const u of picks) { const why = await opens(u, timeoutMs); if (why) bad.push(`${u} (${why})`); }
+                if (bad.length) add("degrades", `${bad.length} of ${picks.length} sampled links do not open`,
+                    `${bad.join("; ")}. A reader who follows them lands on an error, and nothing else looks wrong.`,
+                    "Check how the link is built (presentation.externalUrl, or the rows' own url field) against the source site.");
+            }
         } else {
             deadEnd(0);
         }
@@ -310,7 +349,7 @@ export function format(r) {
 if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/lint.js")) {
     const arg = process.argv.slice(2).find((a) => !a.startsWith("--"));
     if (arg) {
-        console.log(format(await lint(arg, { rows: !process.argv.includes("--no-rows") })));
+        console.log(format(await lint(arg, { rows: !process.argv.includes("--no-rows"), links: process.argv.includes("--links") })));
         process.exit(0);
     }
 
@@ -325,7 +364,9 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
 
     let CATALOG = null, MANIFEST = null, ROWS = [], LOCKED_SERVED = true;
     globalThis.fetch = async (url) => {
-        const { pathname } = new URL(String(url), "https://ok.test");
+        const { pathname, hostname } = new URL(String(url), "https://ok.test");
+        // A source site: /bad answers as Legistar does to a link built from the wrong id.
+        if (hostname === "src.test") return body(pathname === "/bad" ? "Invalid parameters!" : `<!doctype html>${"x".repeat(600)}`);
         if (!CATALOG) return { ok: false, status: 404, headers: new Headers() };
         if (pathname.endsWith("/cdn/catalog")) return body(CATALOG);
         if (/\/cdn\/domains\/[^/]+\/manifest$/.test(pathname)) return MANIFEST ? body(MANIFEST) : { ok: false, status: 404, headers: new Headers() };
@@ -495,7 +536,15 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     if (!r.domains[0].findings.find((f) => f.what.includes("ships anyway")).why.includes("1 of 2")) throw new Error("say how many rows leaked, not just which fields");
 
     if (!format(r).includes("films")) throw new Error("the report must name the domain");
+
+    // Links that every record carries and none of which open.
+    MANIFEST = { name: "films", shards: [{ file: "shard-0000-films.ndjson" }], role_map: { title: "name", text: ["desc"] },
+                 presentation: { externalUrl: { video: "{url}" } } };
+    ROWS = ["good", "bad", "bad"].map((p, i) => ({ track_id: `l${i}`, owner: "0x1", fields: { entityType: "video", name: `L${i}`, desc: "d", url: `https://src.test/${p}` } }));
+    if (has(await lint("https://ok.test/q/v1"), "do not open")) throw new Error("links are only opened when asked (--links)");
+    r = await lint("https://ok.test/q/v1", { links: true });
+    if (!has(r, "1 of 2 sampled links do not open")) throw new Error(`a link answering "Invalid parameters!" must be caught: ${format(r)}`);
     console.log("lint.js self-check ok — unreachable reported not thrown, missing coverage is blocking, a complete bake is silent, "
         + "foreign model excluded, sniffed shape flagged, a dead end judged on the rows rather than the declaration and waived by a reference into another corpus, a text role that is really the filename caught, "
-        + "a paywall naming fields the free shard ships, a paid payload served in the clear from the public view without mistaking a host's HTML fallback for one, and a text role sold whole with no free sample");
+        + "a link that answers with an error page, a paywall naming fields the free shard ships, a paid payload served in the clear from the public view without mistaking a host's HTML fallback for one, and a text role sold whole with no free sample");
 }
