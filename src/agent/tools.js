@@ -12,7 +12,7 @@
 // Pure functions, so `node tools.js` checks them with no browser and no network.
 
 import { bestPassage, cosine, lexScore, norm, zFloor } from "../core/rank.js";
-import { briefOf, collections, linkOf, subtitleOf, titleOf, typeOf, values } from "../core/roles.js";
+import { briefOf, collections, linkOf, pick, subtitleOf, titleOf, typeOf, values } from "../core/roles.js";
 
 /** Fields that are plumbing rather than content — never worth faceting or
  *  showing as "what this corpus holds". */
@@ -214,6 +214,50 @@ export function neighbors(rows, id, roles, { limit = 10, fields } = {}) {
     };
 }
 
+/**
+ * One thing followed across rows: a matter a committee took up and then the council, as a
+ * thread whose steps are in order. Rows group by the declared `thread` role (view.js wrote
+ * each row's target onto it); the thread's head is the target row itself, when this corpus
+ * holds it. The thread that moved last comes first.
+ *
+ * A step is one occasion: rows sharing a date and a subtitle (an agenda and its minutes)
+ * count once, keeping the one that says the most. `where` narrows the steps, `id` asks for
+ * one thread, and `min` (default 2) is how many steps make a thread: a matter taken up once
+ * so far is a record, not news.
+ *
+ * ponytail: the head is found by value (any field of a row that is not itself a step), since
+ * a fused view's identity role names one type's field. Index it if corpora get huge.
+ */
+export function threads(rows, roles, { id, where, min = 2, limit = 20, offset = 0, fields = [] } = {}) {
+    const f = roles.thread;
+    if (!f) return { total: 0, offset, threads: [], error: "this corpus declares no thread relation" };
+    const dateOf = (r) => String(pick(r, roles.temporal) ?? "").slice(0, 10);
+    const groups = new Map();
+    for (const r of rows) {
+        const k = r[f] == null ? "" : String(r[f]);
+        if (!k || (id != null && k !== String(id)) || !matches(r, where)) continue;
+        const occ = `${dateOf(r)}|${subtitleOf(r, roles) ?? ""}`;
+        const g = groups.get(k) ?? groups.set(k, new Map()).get(k);
+        const had = g.get(occ);
+        if (!had || String(r.text ?? "").length > String(had.text ?? "").length) g.set(occ, r);
+    }
+    const heads = new Map();
+    for (const r of rows) {
+        if (r[f] != null) continue;
+        for (const v of Object.values(r)) if (typeof v === "string" && groups.has(v) && !heads.has(v)) heads.set(v, r);
+    }
+    const all = [...groups].map(([k, g]) => {
+        const steps = [...g.values()].sort((a, b) => dateOf(a).localeCompare(dateOf(b)));
+        const head = heads.get(k), last = steps.at(-1);
+        return {
+            id: k, title: titleOf(head ?? last, roles), url: linkOf(head ?? last, roles), first: dateOf(steps[0]), date: dateOf(last),
+            head: head ? brief(head, roles, fields) : null,
+            steps: steps.map((r) => ({ ...brief(r, roles, fields), date: dateOf(r) })),
+        };
+    }).filter((t) => t.steps.length >= min || id != null).sort((a, b) => b.date.localeCompare(a.date) || a.id.localeCompare(b.id));
+    return { total: all.length, offset, threads: all.slice(offset, offset + limit) };
+}
+
 /** One row, whole. Deliberately the only verb that returns everything — the
  *  others preview, so an agent chooses when to spend its context. */
 export function getRow(rows, id, roles) {
@@ -377,5 +421,28 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         }
     }
 
-    console.log("tools.js self-check ok — coverage not schema, semantic/lexical modes + z-floor, list-ish facets + where, neighbours, whole-row fetch, previews truncate");
+    // threads: one matter across meetings, an agenda and its minutes as one step, headed by
+    // the matter's own row, the latest-moving first.
+    {
+        const rl = { title: ["heading", "title"], subtitle: ["meeting"], temporal: ["date"], tags: [], measures: [], thread: "part_of", externalUrl: {} };
+        const pool = [
+            { id: "1", heading: "Rezone Oak St", meeting: "Plan Commission", date: "2026-01-05", part_of: "p:7", text: "on the agenda" },
+            { id: "2", heading: "Rezone Oak St", meeting: "Plan Commission", date: "2026-01-05", part_of: "p:7", text: "recommended for approval 5-0" },
+            { id: "3", heading: "Rezone Oak St", meeting: "Village Board", date: "2026-01-20", part_of: "p:7", text: "adopted" },
+            { id: "4", heading: "Pool bid", meeting: "Village Board", date: "2026-03-01", part_of: "p:9" },
+            { id: "5", heading: "Pool bid", meeting: "Finance", date: "2026-02-20", part_of: "p:9", place: "A" },
+            { id: "6", heading: "Once", meeting: "Village Board", date: "2026-04-01", part_of: "p:11" },
+            { id: "m7", title: "Rezoning of Oak Street", matter_id: "p:7" },
+        ];
+        const t = threads(pool, rl);
+        if (t.threads.map((x) => x.id).join() !== "p:9,p:7") throw new Error(`latest-moving first, one step is not a thread: ${t.threads.map((x) => x.id)}`);
+        const oak = t.threads[1];
+        if (oak.steps.map((s) => s.id).join() !== "2,3" || oak.title !== "Rezoning of Oak Street" || oak.head?.id !== "m7")
+            throw new Error(`an agenda and its minutes are one step, the head titles the thread: ${JSON.stringify(oak)}`);
+        if (threads(pool, rl, { id: "p:11" }).threads[0]?.steps.length !== 1) throw new Error("asked for by id, any thread comes back");
+        if (threads(pool, rl, { where: { place: "A" }, min: 1 }).total !== 1) throw new Error("where narrows the steps");
+        if (!threads(pool, { ...rl, thread: null }).error) throw new Error("no thread role must say so");
+    }
+
+    console.log("tools.js self-check ok — coverage not schema, semantic/lexical modes + z-floor, list-ish facets + where, neighbours, whole-row fetch, previews truncate, threads");
 }

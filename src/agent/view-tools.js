@@ -18,7 +18,7 @@
 
 import { configure, loadShard, trimView } from "../core/shard.js";
 import { rolesFrom, textOf } from "../core/roles.js";
-import { browse, facet, getRow, neighbors, search } from "./tools.js";
+import { browse, facet, getRow, neighbors, search, threads } from "./tools.js";
 import { lexScore, rankDomains } from "../core/rank.js";
 import { existsSync } from "node:fs";
 import { EMBED_MODEL, embedQueryDirect, warmDirect } from "../core/embed.js";
@@ -150,6 +150,10 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
             const [v] = await pick([view]);
             return { view: v.name, ...browse(await load(v), rolesOf(v.view), { limit, offset, sort, where: w }) };
         },
+        threads: async ({ view, id, limit = 20, offset = 0, where: w }) => {
+            const [v] = await pick([view]);
+            return { view: v.name, ...threads(await load(v), rolesOf(v.view), { id, limit, offset, where: w }) };
+        },
     };
 
     const n = app.name;
@@ -166,6 +170,8 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
           inputSchema: { type: "object", properties: { field: str("Field name, e.g. from get"), views: VIEWS, limit: num("Max values (default 20)"), where: WHERE }, required: ["field"] } },
         { name: "browse", description: `List one view of ${n} without a query, with filters, sorting and paging.`,
           inputSchema: { type: "object", properties: { view: str("View name from describe"), limit: num("default 20"), offset: num("default 0"), sort: str("Field to sort by"), where: WHERE }, required: ["view"] } },
+        { name: "threads", description: `One thing followed across records of a ${n} view (a matter from committee to council): steps in date order, the latest-moving first. Views that declare no thread say so.`,
+          inputSchema: { type: "object", properties: { view: str("View name from describe"), id: str("One thread, by a step's thread field"), limit: num("default 20"), offset: num("default 0"), where: WHERE }, required: ["view"] } },
     ];
     // Records the app sells over x402 (its card's `paid`). Paid from this server's wallet,
     // never above FANGORN_MCP_MAX_PRICE, and checked against the sha256 the app published

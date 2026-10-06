@@ -3,6 +3,7 @@
 // the reader saved, kept on their device. All of it from the roles the app declared.
 //
 //   #/                 the feed (and "For you", once something is saved)
+//   #/signals          things followed across records (the `thread` role), a card each
 //   #/search/<query>   search
 //   #/item/<key>       one record: its document, its meeting, what is like it
 //   #/for-you          the taste kernel over what you saved (☆), with its four knobs
@@ -10,7 +11,7 @@
 //   #/history          this session's searches
 import { configure, loadShard } from "../src/core/shard.js";
 import { linkOf, rolesFrom, subtitleOf, textOf, titleOf, values } from "../src/core/roles.js";
-import { getRow, neighbors, search } from "../src/agent/tools.js";
+import { getRow, neighbors, search, threads } from "../src/agent/tools.js";
 import { KNOBS, discover } from "../src/taste/taste.js";
 import { embedQuery } from "../src/core/embed.js";
 import { registerAgent } from "./agent.js";
@@ -53,17 +54,19 @@ const total = await fetch(`${VIEW}/cdn/catalog`).then((r) => r.json()).then((c) 
 let loaded = false, drawn = 0;
 const loading = loadShard(VIEW, (rows) => {   // checked against the manifests' sha256, shard by shard
     ctx.rows = rows; reindex();
-    if (Date.now() - drawn > 1500 && /^(#\/?)?$/.test(location.hash)) { drawn = Date.now(); route(); }
+    if (Date.now() - drawn > 1500 && /^(#\/?(signals)?)?$/.test(location.hash)) { drawn = Date.now(); route(); }
 });
 await described;
 
 // ── records ──
 const R = ctx.roles;
+if (R.thread) $("nav").prepend(el("a", { href: "#/signals" }, "Signals"));
 const keyOf = (r) => String((R.identity && r[R.identity]) ?? r.id);
-let byKey = new Map(), byId = new Map(), facet = null, places = [];
+let byKey = new Map(), byId = new Map(), facet = null, places = [], threadIndex = null;
 function reindex() {
     byKey = new Map(ctx.rows.map((r) => [keyOf(r), r]));
     byId = new Map(ctx.rows.map((r) => [r.id, r]));
+    threadIndex = null;
     facet ??= facetField(ctx.rows, R);
     places = facet ? [...ctx.rows.reduce((m, r) => { const v = placeOf(r); if (v) m.set(v, (m.get(v) ?? 0) + 1); return m; }, new Map())].sort((a, b) => a[0].localeCompare(b[0])) : [];
     const n = ctx.rows.length.toLocaleString();
@@ -136,6 +139,26 @@ const row = (r, { terms = [], also = 0, meta = true } = {}) => {
         votes(r));
 };
 
+// ── threads: one matter (say) followed across meetings, from the `thread` role ──
+const allThreads = () => {
+    if (!threadIndex) {
+        const all = R.thread ? threads(ctx.rows, R, { min: 1, limit: Infinity }).threads : [];
+        threadIndex = { list: all.filter((t) => t.steps.length >= 2), byId: new Map(all.map((t) => [t.id, t])),
+                        byHead: new Map(all.filter((t) => t.head).map((t) => [t.head.id, t])) };
+    }
+    return threadIndex;
+};
+const threadOf = (r) => (R.thread ? (r[R.thread] != null ? allThreads().byId.get(String(r[R.thread])) : allThreads().byHead.get(r.id)) : null);
+// Where a step stands. ponytail: the `outcome` field by convention (Quorum's minutes and Legistar
+// both write it; Legistar's `status` is the agenda's state, not the matter's); declare a stage
+// role if a second app needs another field.
+const stageOf = (r) => r?.outcome ?? null;
+const meetingOf = (r) => (subtitleOf(r, R) ?? "").replace(/\s*·\s*\d{4}-\d\d-\d\d$/, "");
+const shortDay = (d) => (d ? new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "");
+const timeline = (t) => el("ol", { className: "steps" }, t.steps.map((s) => byId.get(s.id)).filter(Boolean).map((r) =>
+    el("li", {}, el("time", { dateTime: dateOf(r) }, shortDay(dateOf(r))),
+        el("span", {}, el("a", { href: itemHref(r) }, meetingOf(r) || titleText(r)), stageOf(r) ? ` · ${stageOf(r)}` : ""))));
+
 // ── the place picker: one native select, whatever the number of places ──
 let only = null;
 const picker = () => (places.length > 1 ? el("label", { className: "picker" }, el("span", {}, `${facet ? facet[0].toUpperCase() + facet.slice(1) : "Place"}`),
@@ -165,8 +188,43 @@ function occasionCard(g) {
 }
 
 let pastShown = 12;
+// A card per thread: where it stands, its timeline, the record it links to, and the paid
+// decision record of its latest step that has one, bought per card.
+function signalCard(t) {
+    const last = byId.get(t.steps.at(-1).id), head = t.head && byId.get(t.head.id);
+    const sold = paid ? t.steps.map((s) => byId.get(s.id)).reverse().find((r) => r?.paid_sha256) : null;
+    const d = detail(last, R);
+    return el("article", { className: "signal" },
+        el("div", { className: "meta" }, el("span", {}, placeOf(last)), head && subtitleOf(head, R) ? el("span", {}, subtitleOf(head, R)) : null,
+            stageOf(last) ? el("span", { className: "stage" }, stageOf(last)) : null, el("time", { dateTime: t.date }, shortDay(t.date))),
+        el("h3", {}, el("a", { href: itemHref(head ?? last), className: "title" }, calm(t.title))),
+        d ? el("p", { className: "detail" }, clip(d)) : null,
+        timeline(t),
+        sold ? decision(sold) : null,
+        el("div", { className: "acts" }, votes(head ?? last), t.url ? el("a", { href: t.url, target: "_blank", rel: "noopener", className: "act" }, "Official record ↗") : null));
+}
+
+let stageOnly = null, signalsShown = 30;
+function signals() {
+    const lastOf = (t) => byId.get(t.steps.at(-1).id);
+    const { list } = allThreads();
+    const stages = [...new Set(list.map((t) => stageOf(lastOf(t))).filter(Boolean))].sort();
+    const mine = list.filter((t) => inPlace(lastOf(t)) && (!stageOnly || stageOf(lastOf(t)) === stageOnly));
+    show(el("h2", { className: "page" }, "Signals"),
+        el("p", { className: "hint" }, "Decisions followed across meetings, from committee to council, the latest to move first. Each links to its official record."),
+        el("div", { className: "chips" }, picker(), stages.length ? el("label", { className: "picker" }, el("span", {}, "Stage"),
+            el("select", { onchange: (e) => { stageOnly = e.target.value || null; signalsShown = 30; signals(); } },
+                [null, ...stages].map((s) => el("option", { value: s ?? "", selected: s === stageOnly }, s ?? "Any stage")))) : null),
+        el("p", { className: "hint" }, `${mine.length.toLocaleString()} signal${mine.length === 1 ? "" : "s"}`),
+        mine.length ? mine.slice(0, signalsShown).map(signalCard)
+            : el("p", { className: "empty" }, loaded ? "Nothing followed across meetings here yet." : "Loading the records…"),
+        mine.length > signalsShown ? el("button", { type: "button", className: "more", onclick: () => { signalsShown += 30; signals(); } }, "Show more") : null);
+}
+
 function feed() {
-    const { upcoming, past } = occasions(ctx.rows, R, { facet, only });
+    // A thread's own record (a matter) is not an occasion: its steps are already in the feed.
+    const heads = allThreads().byHead;
+    const { upcoming, past } = occasions(heads.size ? ctx.rows.filter((r) => !heads.has(r.id)) : ctx.rows, R, { facet, only });
     const { likes, dislikes } = ctx.votes();
     const mine = discover(ctx.rows.filter(inPlace), likes, dislikes, { ...knobs, limit: 6 });
     show(card.description ? about(card.description) : null, picker(),
@@ -219,7 +277,7 @@ function item(key) {
     const r = byKey.get(key);
     if (!r) return show(el("p", { className: "empty" }, "That record is not in this app any more. ", el("a", { href: "#/" }, "Home")));
     const src = docUrl(r), d = detail(r, R);
-    const HIDE = new Set(["id", "owner", "text", "vector", "norm", "embed", "entityType", R.identity, ...R.title, ...R.subtitle, ...R.media, ...(R.temporal ?? [])]);
+    const HIDE = new Set(["id", "owner", "text", "vector", "norm", "embed", "entityType", R.identity, R.thread, ...R.title, ...R.subtitle, ...R.media, ...(R.temporal ?? [])]);
     const facts = Object.entries(r).filter(([k, v]) => !HIDE.has(k) && !/(_id|_sha256)$/.test(k) && (typeof v === "string" || typeof v === "number") && String(v).length < 120);
     const frame = el("div", { className: "doc" });
     const docBtn = src ? el("button", { type: "button", className: "act", onclick: () => {
@@ -229,6 +287,7 @@ function item(key) {
     } }, "View document") : null;
     const occ = occasions(ctx.rows.filter((x) => placeOf(x) === placeOf(r) && dateOf(x) === dateOf(r) && subtitleOf(x, R) === subtitleOf(r, R)), R, { facet });
     const siblings = [...occ.upcoming, ...occ.past].flatMap((g) => g.items).filter((x) => titleOf(x, R) !== titleOf(r, R));
+    const thread = threadOf(r);
     const near = neighbors(ctx.rows, r.id, R, { limit: 12 }).near.map((h) => byId.get(h.id)).filter((x) => x && titleOf(x, R) !== titleOf(r, R)).slice(0, 6);
     show(el("p", {}, el("a", { href: "#/", onclick: (e) => { if (history.length > 1) { e.preventDefault(); history.back(); } } }, "← Back")),
         el("article", { className: "record" },
@@ -239,6 +298,7 @@ function item(key) {
             el("div", { className: "acts" }, votes(r), docBtn, src ? el("a", { href: src, target: "_blank", rel: "noopener", className: "act" }, "Source ↗") : null),
             paid && r.paid_sha256 ? decision(r) : null,
             frame),
+        thread && thread.steps.length > 1 ? el("section", {}, el("h2", {}, "Followed across meetings"), timeline(thread)) : null,
         siblings.length ? el("section", {}, el("h2", {}, "Same meeting"), el("ul", { className: "list" }, siblings.slice(0, 12).map((x) => row(x, { meta: false })))) : null,
         near.length ? el("section", {}, el("h2", {}, "Similar"), el("ul", { className: "list" }, near.map((x) => row(x)))) : null);
 }
@@ -257,6 +317,7 @@ function decision(r) {
             x.summary ? el("p", {}, x.summary) : null,
             el("dl", {}, [["Action", x.action], ["Outcome", x.outcome], ["Vote", x.vote && `${x.vote.for}–${x.vote.against}`]]
                 .filter(([, v]) => v).map(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
+            x.steps?.length > 1 ? el("ol", {}, x.steps.map((st) => el("li", {}, st.result ? `${st.motion} · ${st.result}` : st.motion))) : null,
             x.amounts?.length ? el("ul", {}, x.amounts.map((a) => el("li", {}, typeof a === "string" ? a : [a.amount, a.for ? ` · ${a.for}` : ""]))) : null,
             x.organizations?.length ? el("p", {}, "Organizations: ", x.organizations.map((o) => typeof o === "string" ? o : `${o.name}${o.role !== "other" ? ` (${o.role})` : ""}`).join(", ")) : null,
             el("small", {}, got.verified ? "✓ Matches the record this app published" : got.verified === false ? "✗ Does not match the record this app published" : "",
@@ -381,6 +442,7 @@ function route() {
     document.body.classList.toggle("wide", name === "map");
     if (name === "search" && a) return results(a);
     if (name === "item" && a) return item(a);
+    if (name === "signals" && R.thread) return signals();
     if (name === "saved") return saved();
     if (name === "for-you") return forYou();
     if (name === "history") return historyView();
