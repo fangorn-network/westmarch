@@ -316,7 +316,8 @@ function decision(r) {
     const key = r[R.identity] ?? r.id, box = el("section", { className: "paid" });
     const fields = (got) => {
         const x = got.record;
-        box.replaceChildren(el("h3", {}, "Decision record"),
+        // The DOM's own replaceChildren writes null as "null"; el() is what skips it.
+        box.replaceChildren(...[el("h3", {}, "Decision record"),
             x.summary ? el("p", {}, x.summary) : null,
             el("dl", {}, [["Action", x.action], ["Outcome", x.outcome], ["Vote", x.vote && `${x.vote.for}–${x.vote.against}`]]
                 .filter(([, v]) => v).map(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
@@ -324,7 +325,7 @@ function decision(r) {
             x.amounts?.length ? el("ul", {}, x.amounts.map((a) => el("li", {}, typeof a === "string" ? a : [a.amount, a.for ? ` · ${a.for}` : ""]))) : null,
             x.organizations?.length ? el("p", {}, "Organizations: ", x.organizations.map((o) => typeof o === "string" ? o : `${o.name}${o.role !== "other" ? ` (${o.role})` : ""}`).join(", ")) : null,
             el("small", {}, got.verified ? "✓ Matches the record this app published" : got.verified === false ? "✗ Does not match the record this app published" : "",
-               got.receipt?.transaction ? [" · ", el("span", {}, `paid, tx ${got.receipt.transaction.slice(0, 10)}…`)] : ""));
+               got.receipt?.transaction ? [" · ", el("span", {}, `paid, tx ${got.receipt.transaction.slice(0, 10)}…`)] : "")].filter(Boolean));
     };
     const have = bought.get(key);
     if (have) { fields(have); return box; }
