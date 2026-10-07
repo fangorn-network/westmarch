@@ -225,13 +225,13 @@ function signals() {
     const stages = [...new Set(list.map(threadStage).filter(Boolean))].sort();
     const mine = list.filter((t) => inPlace(lastOf(t)) && (!stageOnly || threadStage(t) === stageOnly));
     show(el("h2", { className: "page" }, "Signals"),
-        el("p", { className: "hint" }, "Decisions followed across meetings, from committee to council, the latest to move first. Each links to its official record."),
+        el("p", { className: "hint" }, "Items that went to more than one meeting, such as from a committee to the council. The most recently updated items are listed first. Each item links to its official record."),
         el("div", { className: "chips" }, picker(), stages.length ? el("label", { className: "picker" }, el("span", {}, "Stage"),
             el("select", { onchange: (e) => { stageOnly = e.target.value || null; signalsShown = 30; signals(); } },
                 [null, ...stages].map((s) => el("option", { value: s ?? "", selected: s === stageOnly }, s ?? "Any stage")))) : null),
         el("p", { className: "hint" }, `${mine.length.toLocaleString()} signal${mine.length === 1 ? "" : "s"}`),
         mine.length ? mine.slice(0, signalsShown).map(signalCard)
-            : el("p", { className: "empty" }, loaded ? "Nothing followed across meetings here yet." : "Loading the records…"),
+            : el("p", { className: "empty" }, loaded ? "No items have been followed across meetings yet." : "Loading records…"),
         mine.length > signalsShown ? el("button", { type: "button", className: "more", onclick: () => { signalsShown += 30; signals(); } }, "Show more") : null);
 }
 
@@ -250,7 +250,7 @@ function decided() {
     const week = all.filter((r) => dateOf(r) >= iso(Date.now() - 7 * DAY));
     const card = (r) => signalCard(threadOf(r)?.steps.length > 1 ? threadOf(r)
         : { id: r.id, title: titleOf(r, R), date: dateOf(r), steps: [{ id: r.id }], head: null, url: docUrl(r) });
-    return { title: week.length >= 3 ? "Decided this week" : "Latest decisions", list: (week.length >= 3 ? week : all), card };
+    return { title: week.length >= 3 ? "Decisions this week" : "Recent decisions", list: (week.length >= 3 ? week : all), card };
 }
 
 let pastShown = 12;
@@ -262,12 +262,12 @@ function feed() {
     show(intro ? intro.cloneNode(true) : card.description ? about(card.description) : null, picker(),
         dec.list.length ? el("section", {}, el("h2", {}, dec.title), dec.list.slice(0, pastShown).map(dec.card),
             dec.list.length > pastShown ? el("button", { type: "button", className: "more", onclick: () => { pastShown += 12; feed(); } }, "Show more") : null) : null,
-        upcoming.length ? el("section", {}, el("h2", {}, "Coming up"), upcoming.slice(0, 6).map(occasionCard)) : null,
+        upcoming.length ? el("section", {}, el("h2", {}, "Upcoming meetings"), upcoming.slice(0, 6).map(occasionCard)) : null,
         mine.picks.length ? el("section", {}, el("h2", {}, "For you"), el("p", { className: "hint" }, `From the ${mine.taste.n} item${mine.taste.n > 1 ? "s" : ""} you liked. `, el("a", { href: "#/for-you" }, "Tune")),
             el("ul", { className: "list" }, mine.picks.map(({ row: r }) => row(r)))) : null,
-        !dec.list.length && !upcoming.length ? el("p", { className: "empty" }, !loaded ? "Loading the records…"
-            : ctx.rows.length ? "Nothing decided here yet. Search above."
-            : "This app is registered and being built. Its records will appear here once they are published.") : null);
+        !dec.list.length && !upcoming.length ? el("p", { className: "empty" }, !loaded ? "Loading records…"
+            : ctx.rows.length ? "No decisions have been published for this place yet. Use the search box above."
+            : "This app is being set up. Its records will appear here after they are published.") : null);
 }
 
 let sortBy = "relevance", seq = 0, mapView = null;
@@ -302,12 +302,12 @@ function render(q, qv, loading = false) {
     show(picker(), el("div", { className: "resultsbar" }, el("span", {}, `${list.length} result${list.length === 1 ? "" : "s"} for “${q}”${only ? ` in ${only}` : ""}`,
             loading ? el("small", {}, " · matching words; search by meaning is loading") : null), sorter),
         list.length ? el("ul", { className: "list" }, list.slice(0, 40).map(({ r, also }) => row(r, { terms, also })))
-            : el("p", { className: "empty" }, "No matches. Try other words, or All places."));
+            : el("p", { className: "empty" }, "No results found. Try different words, or choose All in the place list."));
 }
 
 function item(key) {
     const r = byKey.get(key);
-    if (!r) return show(el("p", { className: "empty" }, "That record is not in this app any more. ", el("a", { href: "#/" }, "Home")));
+    if (!r) return show(el("p", { className: "empty" }, "This record is no longer available. ", el("a", { href: "#/" }, "Go to the home page")));
     const src = docUrl(r), d = detail(r, R);
     const HIDE = new Set(["id", "owner", "text", "vector", "norm", "embed", "entityType", R.identity, R.thread, ...R.title, ...R.subtitle, ...R.media, ...(R.temporal ?? [])]);
     const facts = Object.entries(r).filter(([k, v]) => !HIDE.has(k) && !/(_id|_sha256)$|^paid_/.test(k) && (typeof v === "string" || typeof v === "number") && String(v).length < 120);
@@ -353,12 +353,12 @@ function decision(r) {
             x.steps?.length > 1 ? el("ol", {}, x.steps.map((st) => el("li", {}, st.result ? `${st.motion} · ${st.result}` : st.motion))) : null,
             x.amounts?.length ? el("ul", {}, x.amounts.map((a) => el("li", {}, typeof a === "string" ? a : [a.amount, a.for ? ` · ${a.for}` : ""]))) : null,
             x.organizations?.length ? el("p", {}, "Organizations: ", x.organizations.map((o) => typeof o === "string" ? o : `${o.name}${o.role !== "other" ? ` (${o.role})` : ""}`).join(", ")) : null,
-            el("small", { title: got.receipt?.transaction ?? "" }, got.verified ? "✓ Checked against the record this app published" : got.verified === false ? "✗ Does not match the record this app published" : "",
+            el("small", { title: got.receipt?.transaction ?? "" }, got.verified ? "✓ Verified: matches the record this app published" : got.verified === false ? "✗ Does not match the record this app published" : "",
                got.receipt?.transaction ? ` · Bought for ${PRICE}` : "")].filter(Boolean));
     };
     const have = bought.get(key);
     if (have) { fields(have); return box; }
-    const status = el("small", {}), btn = el("button", { type: "button", className: "act" }, `Read the decision record · ${PRICE}`);
+    const status = el("small", {}), btn = el("button", { type: "button", className: "act" }, `Buy the decision record · ${PRICE}`);
     btn.onclick = async () => {
         btn.disabled = true; status.textContent = "Signing you in…";
         try {
@@ -367,7 +367,7 @@ function decision(r) {
             const bal = await w.balance().catch(() => null);
             if (bal != null && bal < PRICE_N) {
                 btn.disabled = false;
-                return status.replaceChildren(`Your account has ${money(bal)}. `, el("a", { href: "#/account" }, "Add credit"), ` to read it.`);
+                return status.replaceChildren(`Your account balance is ${money(bal)}. `, el("a", { href: "#/account" }, "Add credit"), ` to buy this record.`);
             }
             status.textContent = "Buying…";
             const got = await w.buy(key, r.paid_sha256);
@@ -375,12 +375,12 @@ function decision(r) {
             bought.set(key, got); fields(got);
         } catch (e) {
             btn.disabled = false;
-            status.replaceChildren(`Couldn't buy it: ${e.message}. `, el("a", { href: "#/account" }, "Your account"));
+            status.replaceChildren(`The purchase did not go through: ${e.message}. `, el("a", { href: "#/account" }, "Your account"));
         }
     };
     box.append(el("h3", {}, "Decision record"),
-        el("p", { className: "hint" }, r.paid_includes ? `Includes ${r.paid_includes}, read from the minutes.`
-            : "What was decided, read from the minutes: the action, the vote, the amounts and who they go to, the organizations."),
+        el("p", { className: "hint" }, r.paid_includes ? `Summarized from the minutes. Includes ${r.paid_includes}.`
+            : "Summarized from the minutes: the action, the outcome, the vote, dollar amounts and who receives them, and the organizations involved."),
         el("div", { className: "acts" }, btn, status));
     return box;
 }
@@ -430,7 +430,7 @@ function saved() {
             el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.json`, bundle(), "application/json") }, "Export JSON"),
             el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.csv`, toCSV(items), "text/csv") }, "CSV"),
             el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.md`, toMarkdown(items, `${NAME}: saved`), "text/markdown") }, "Markdown"),
-            copy, el("a", { href: "#/for-you", className: "act" }, "For you: more like these")) : el("p", { className: "empty" }, "Nothing saved yet. Tap ☆ on a record; what you save stays on this device."),
+            copy, el("a", { href: "#/for-you", className: "act" }, "For you: more like these")) : el("p", { className: "empty" }, "You have not saved any records. Select ☆ on a record to save it. Saved records are stored only on this device."),
         t ? el("p", { className: "hint" }, `"For you" is built from these ${t.n}${t.rejected.length ? `, and away from ${t.rejected.length} you passed on` : ""}. It lives in this browser; the export carries it, so an agent can use it too. `,
             el("button", { type: "button", className: "linkish", onclick: () => { store.clear("passed"); saved(); counts(); } }, "Forget what I passed on")) : null,
         el("ul", { className: "list" }, items.slice().reverse().map((i) => {
@@ -464,7 +464,7 @@ async function accountView() {
                 el("button", { type: "button", className: "act", onclick: () => w.logout() }, "Sign out")),
             w.faucet && w.address ? el("section", {}, el("p", { className: "hint" }, `${NAME} is in testing, so credit is free. The button opens Circle's test-credit page: choose USDC on ${w.chain.name}, paste your account number below, and send.`),
                 el("p", {}, el("small", {}, "Account number: "), el("code", {}, w.address), " ", copy)) : null,
-            el("p", { className: "hint" }, "Records you buy stay readable on this device."));
+            el("p", { className: "hint" }, "Records you buy are saved on this device."));
     };
     w.onChange(() => { draw(); });
 }
