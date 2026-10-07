@@ -72,6 +72,7 @@ async function boot(paid) {
             // After a reload Privy is signed in before useWallets lists the embedded wallet (it fills
             // in once something touches it), so the address comes from the user too.
             Object.assign(api, { login: p.login, logout: p.logout, authenticated: p.authenticated, address: w?.address ?? p.user?.wallet?.address ?? null,
+                                 email: p.user?.email?.address ?? p.user?.google?.email ?? null,
                                  walletId: w?.id ?? null, sign: signTypedData, deposit: depositFunds });
             React.useEffect(() => { for (const f of listeners) f(api); });
             React.useEffect(() => { if (p.ready) ready(api); }, [p.ready]);

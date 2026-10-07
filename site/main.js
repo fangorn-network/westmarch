@@ -34,9 +34,12 @@ const card = await fetch("./.well-known/agent-card.json").then((r) => r.json()).
 // whose network can't reach pages.dev (or the card's host) still can.
 const offer = (card.capabilities?.extensions ?? []).map((x) => x.params?.paid).find(Boolean) ?? null;
 const paid = offer && { ...offer, url: offer.url.replace(/^https?:\/\/[^/]+/, location.origin) };
+// A dollar stablecoin is priced in dollars: readers see "$0.01", never the token.
+const money = (n) => (/^USDC?$/i.test(paid?.symbol ?? "USDC") ? `$${n.toFixed(2)}` : `${n} ${paid.symbol}`);
+const PRICE_N = paid ? Number(paid.price) / 10 ** (paid.decimals ?? 6) : 0, PRICE = paid ? money(PRICE_N) : "";
 const NAME = card.name ?? "Fangorn app";
 document.title = NAME;
-if (paid) $("#walletlink").hidden = false;
+if (paid) $("#accountlink").hidden = false;
 $("#name").textContent = NAME;
 
 // Links to the app's own pages (app.json site.nav), after Saved and History.
@@ -138,9 +141,12 @@ const row = (r, { terms = [], also = 0, meta = true } = {}) => {
             el("a", { href: itemHref(r), className: "title" }, marked(titleText(r), terms)),
             meta ? el("small", {}, [placeOf(r), subtitleOf(r, R)].filter(Boolean).join(" · ")) : null,
             d ? el("p", { className: "detail" }, marked(clip(d), terms)) : null,
-            also ? el("small", { className: "also" }, `and ${also} more record${also > 1 ? "s" : ""} of the same item`) : null),
+            also ? el("small", { className: "also" }, `and ${also} more record${also > 1 ? "s" : ""} of the same item`) : null,
+            forSale(r) ? el("small", { className: "forsale" }, `Decision record · ${PRICE}`) : null),
         votes(r));
 };
+
+const forSale = (r) => paid && r.paid_sha256;
 
 // ── threads: one matter (say) followed across meetings, from the `thread` role ──
 const allThreads = () => {
@@ -233,7 +239,10 @@ function feed() {
     const { upcoming, past } = occasions(heads.size ? ctx.rows.filter((r) => !heads.has(r.id)) : ctx.rows, R, { facet, only });
     const { likes, dislikes } = ctx.votes();
     const mine = discover(ctx.rows.filter(inPlace), likes, dislikes, { ...knobs, limit: 6 });
+    const nSold = paid ? ctx.rows.filter((r) => r.paid_sha256 && inPlace(r)).length : 0;
     show(card.description ? about(card.description) : null, picker(),
+        nSold ? el("p", { className: "callout" }, `${nSold.toLocaleString()} decisions${only ? ` in ${only}` : ""} come with a decision record: the vote, the money and who it goes to, and the organizations involved, read from the minutes, ${PRICE} each. `,
+            el("a", { href: R.thread ? "#/signals" : "#/search/decision" }, "See them")) : null,
         mine.picks.length ? el("section", {}, el("h2", {}, "For you"), el("p", { className: "hint" }, `From the ${mine.taste.n} item${mine.taste.n > 1 ? "s" : ""} you liked. `, el("a", { href: "#/for-you" }, "Tune")),
             el("ul", { className: "list" }, mine.picks.map(({ row: r }) => row(r)))) : null,
         upcoming.length ? el("section", {}, el("h2", {}, "Coming up"), upcoming.slice(0, 8).map(occasionCard)) : null,
@@ -284,7 +293,7 @@ function item(key) {
     if (!r) return show(el("p", { className: "empty" }, "That record is not in this app any more. ", el("a", { href: "#/" }, "Home")));
     const src = docUrl(r), d = detail(r, R);
     const HIDE = new Set(["id", "owner", "text", "vector", "norm", "embed", "entityType", R.identity, R.thread, ...R.title, ...R.subtitle, ...R.media, ...(R.temporal ?? [])]);
-    const facts = Object.entries(r).filter(([k, v]) => !HIDE.has(k) && !/(_id|_sha256)$/.test(k) && (typeof v === "string" || typeof v === "number") && String(v).length < 120);
+    const facts = Object.entries(r).filter(([k, v]) => !HIDE.has(k) && !/(_id|_sha256)$|^paid_/.test(k) && (typeof v === "string" || typeof v === "number") && String(v).length < 120);
     const frame = el("div", { className: "doc" });
     const docBtn = src ? el("button", { type: "button", className: "act", onclick: () => {
         if (frame.firstChild) { frame.replaceChildren(); docBtn.textContent = "View document"; return; }
@@ -309,10 +318,10 @@ function item(key) {
         near.length ? el("section", {}, el("h2", {}, "Similar"), el("ul", { className: "list" }, near.map((x) => row(x)))) : null);
 }
 
-// The item's paid record: what was decided, as fields. Bought with the reader's wallet over x402,
-// as an agent buys it, and checked against the sha256 the app published. A record once bought
+// The item's paid record: what was decided, as fields. Bought with the reader's account (a
+// wallet underneath, paying over x402 as an agent does; none of that is said on the page), and
+// checked against the sha256 the app published. A record once bought
 // is kept on this device, so opening the item again never charges twice.
-const PRICE = paid ? `${Number(paid.price) / 10 ** (paid.decimals ?? 6)} ${paid.symbol ?? "USDC"}` : "";
 const bought = { get(k) { try { return JSON.parse(localStorage.getItem(`${SLUG}:paid:${k}`)); } catch { return null; } },
                  set(k, v) { try { localStorage.setItem(`${SLUG}:paid:${k}`, JSON.stringify(v)); } catch { /* not kept */ } } };
 function decision(r) {
@@ -327,27 +336,34 @@ function decision(r) {
             x.steps?.length > 1 ? el("ol", {}, x.steps.map((st) => el("li", {}, st.result ? `${st.motion} · ${st.result}` : st.motion))) : null,
             x.amounts?.length ? el("ul", {}, x.amounts.map((a) => el("li", {}, typeof a === "string" ? a : [a.amount, a.for ? ` · ${a.for}` : ""]))) : null,
             x.organizations?.length ? el("p", {}, "Organizations: ", x.organizations.map((o) => typeof o === "string" ? o : `${o.name}${o.role !== "other" ? ` (${o.role})` : ""}`).join(", ")) : null,
-            el("small", {}, got.verified ? "✓ Matches the record this app published" : got.verified === false ? "✗ Does not match the record this app published" : "",
-               got.receipt?.transaction ? [" · ", el("span", {}, `paid, tx ${got.receipt.transaction.slice(0, 10)}…`)] : "")].filter(Boolean));
+            el("small", { title: got.receipt?.transaction ?? "" }, got.verified ? "✓ Checked against the record this app published" : got.verified === false ? "✗ Does not match the record this app published" : "",
+               got.receipt?.transaction ? ` · Bought for ${PRICE}` : "")].filter(Boolean));
     };
     const have = bought.get(key);
     if (have) { fields(have); return box; }
     const status = el("small", {}), btn = el("button", { type: "button", className: "act" }, `Read the decision record · ${PRICE}`);
     btn.onclick = async () => {
-        btn.disabled = true; status.textContent = "Opening your wallet…";
+        btn.disabled = true; status.textContent = "Signing you in…";
         try {
             const w = await (await import("./wallet.js")).wallet(paid);
             await w.signIn();
-            status.textContent = "Paying…";
+            const bal = await w.balance().catch(() => null);
+            if (bal != null && bal < PRICE_N) {
+                btn.disabled = false;
+                return status.replaceChildren(`Your account has ${money(bal)}. `, el("a", { href: "#/account" }, "Add credit"), ` to read it.`);
+            }
+            status.textContent = "Buying…";
             const got = await w.buy(key, r.paid_sha256);
             if (got.error) throw new Error(got.error);
             bought.set(key, got); fields(got);
         } catch (e) {
             btn.disabled = false;
-            status.replaceChildren(`Couldn't buy it: ${e.message}. `, el("a", { href: "#/wallet" }, "Your wallet"));
+            status.replaceChildren(`Couldn't buy it: ${e.message}. `, el("a", { href: "#/account" }, "Your account"));
         }
     };
-    box.append(el("p", { className: "hint" }, `What was decided, as fields: action, outcome, vote, amounts and who they are for, organizations. Agents buy the same record over x402.`),
+    box.append(el("h3", {}, "Decision record"),
+        el("p", { className: "hint" }, r.paid_includes ? `Includes ${r.paid_includes}, read from the minutes.`
+            : "What was decided, read from the minutes: the action, the vote, the amounts and who they go to, the organizations."),
         el("div", { className: "acts" }, btn, status));
     return box;
 }
@@ -418,24 +434,28 @@ function historyView() {
         h.length ? el("button", { type: "button", className: "act", onclick: () => { store.clear("history"); historyView(); } }, "Clear") : null);
 }
 
-// The reader's wallet: who they are signed in as, its balance, and adding funds.
-async function walletView() {
-    show(el("p", { className: "empty" }, "Opening your wallet…"));
+// The reader's account: who they are signed in as, their credit, and adding to it. A wallet
+// underneath (Privy's, one across every Fangorn app); the page says account and credit.
+async function accountView() {
+    show(el("p", { className: "empty" }, "Opening your account…"));
     let w;
-    try { w = await (await import("./wallet.js")).wallet(paid); } catch (e) { return show(el("p", { className: "empty" }, `The wallet is unavailable: ${e.message}`)); }
+    try { w = await (await import("./wallet.js")).wallet(paid); } catch (e) { return show(el("p", { className: "empty" }, `Accounts are unavailable: ${e.message}`)); }
     const draw = async () => {
-        if (!location.hash.startsWith("#/wallet")) return;
-        if (!w.authenticated) return show(el("h2", {}, "Wallet"),
-            el("p", {}, `Sign in to buy decision records (${PRICE} each). An email or Google sign-in gives you a wallet here, the same one in every Fangorn app; nothing to install.`),
+        if (!location.hash.startsWith("#/account")) return;
+        if (!w.authenticated) return show(el("h2", { className: "page" }, "Account"),
+            el("p", {}, `Sign in to read decision records (${PRICE} each). Use your email or Google: nothing to install, no password, and the same account works in every Fangorn app.`),
             el("div", { className: "acts" }, el("button", { type: "button", className: "act", onclick: () => w.signIn() }, "Sign in")));
         const bal = w.address ? await w.balance().catch(() => null) : null;
-        show(el("h2", {}, "Wallet"),
-            el("dl", {}, el("dt", {}, "Address"), el("dd", {}, w.address ?? "making your wallet…"),
-               el("dt", {}, "Balance"), el("dd", {}, bal == null ? "…" : `${bal.toFixed(2)} ${paid.symbol ?? "USDC"} on ${w.chain.name}`)),
+        const copy = el("button", { type: "button", className: "linkish", onclick: async () => { await navigator.clipboard.writeText(w.address); copy.textContent = "Copied"; } }, "Copy");
+        show(el("h2", { className: "page" }, "Account"),
+            el("dl", {}, el("dt", {}, "Signed in as"), el("dd", {}, w.email ?? "you"),
+               el("dt", {}, "Credit"), el("dd", {}, !w.address ? "setting up your account…" : bal == null ? "…" : `${money(bal)} · ${Math.floor(bal / PRICE_N + 1e-9).toLocaleString()} record${Math.floor(bal / PRICE_N + 1e-9) === 1 ? "" : "s"}`)),
             el("div", { className: "acts" },
-                el("button", { type: "button", className: "act", onclick: () => w.addFunds() }, w.faucet ? "Get test funds (faucet)" : "Add funds"),
+                el("button", { type: "button", className: "act", onclick: () => w.addFunds() }, w.faucet ? "Get free test credit" : "Add credit"),
                 el("button", { type: "button", className: "act", onclick: () => w.logout() }, "Sign out")),
-            w.faucet ? el("p", { className: "hint" }, `This app runs on a test network, where funds are free: use the faucet with your address above.`) : null);
+            w.faucet && w.address ? el("section", {}, el("p", { className: "hint" }, `${NAME} is in testing, so credit is free. The button opens Circle's test-credit page: choose USDC on ${w.chain.name}, paste your account number below, and send.`),
+                el("p", {}, el("small", {}, "Account number: "), el("code", {}, w.address), " ", copy)) : null,
+            el("p", { className: "hint" }, "Records you buy stay readable on this device."));
     };
     w.onChange(() => { draw(); });
 }
@@ -453,7 +473,7 @@ function route() {
     if (name === "saved") return saved();
     if (name === "for-you") return forYou();
     if (name === "history") return historyView();
-    if (name === "wallet" && paid) return walletView();
+    if ((name === "account" || name === "wallet") && paid) return accountView();
     if (name === "map" && geo) return (mapView ??= createMap(geo, { el, show, row, placeOf, ctx })).render(...arg.split("/").map(decodeURIComponent));
     $("#q input").value = "";
     return feed();

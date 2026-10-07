@@ -29,6 +29,8 @@
   small, time, .hint { font-size: .8rem; }
   .paid { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; margin: 12px 0; display: grid; gap: 6px; }
   .paid h3 { margin: 0; font-size: 1rem; } .paid ul { margin: 0; padding-left: 18px; } .detail { margin: 0; font-size: .9rem; }
+  .forsale { color: var(--accent); font-weight: 600; }
+  .callout { border-left: 3px solid var(--accent); padding: 4px 12px; margin: 0 0 16px; }
   mark { background: var(--mark); color: inherit; }
 
   /* the bar: name, search, sections */
@@ -112,7 +114,7 @@
 <header class="bar"><div>
   <a id="home" href="#/"><span id="name">Fangorn app</span></a>
   <form id="q" role="search"><input type="search" disabled placeholder="Loading…" aria-label="Search"></form>
-  <nav><a href="#/for-you">For you</a><a href="#/saved">Saved<span id="nsaved"></span></a><a href="#/history">History</a><a href="#/wallet" id="walletlink" hidden>Wallet</a></nav>
+  <nav><a href="#/for-you">For you</a><a href="#/saved">Saved<span id="nsaved"></span></a><a href="#/history">History</a><a href="#/account" id="accountlink" hidden>Account</a></nav>
 </div></header>
 <main id="view"><p id="status">Loading the data…</p></main>
 <footer>Search runs in your browser; your searches and saved records stay on this device unless you export them.
