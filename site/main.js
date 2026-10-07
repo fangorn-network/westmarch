@@ -199,7 +199,6 @@ function occasionCard(g) {
         el("h3", {}, [g.place, g.label.replace(/\s*·\s*\d{4}-\d\d-\d\d$/, "")].filter(Boolean).join(" — "))), list, more);
 }
 
-let pastShown = 12;
 // A card per thread: where it stands, its timeline, the record it links to, and the paid
 // decision record of its latest step that has one, bought per card.
 function signalCard(t) {
@@ -207,11 +206,11 @@ function signalCard(t) {
     const sold = paid ? t.steps.map((s) => byId.get(s.id)).reverse().find((r) => r?.paid_sha256) : null;
     const d = detail(last, R);
     return el("article", { className: "signal" },
-        el("div", { className: "meta" }, el("span", {}, placeOf(last)), head && subtitleOf(head, R) ? el("span", {}, subtitleOf(head, R)) : null,
+        el("div", { className: "meta" }, el("span", {}, placeOf(last)), el("span", {}, head ? subtitleOf(head, R) : meetingOf(last)),
             threadStage(t) ? el("span", { className: "stage" }, threadStage(t)) : null, el("time", { dateTime: t.date }, shortDay(t.date))),
         el("h3", {}, el("a", { href: itemHref(head ?? last), className: "title" }, calm(t.title))),
         d ? el("p", { className: "detail" }, clip(d)) : null,
-        timeline(t),
+        t.steps.length > 1 ? timeline(t) : null,
         sold ? decision(sold) : null,
         el("div", { className: "acts" }, votes(head ?? last), t.url ? el("a", { href: t.url, target: "_blank", rel: "noopener", className: "act" }, "Official record ↗") : null));
 }
@@ -233,23 +232,38 @@ function signals() {
         mine.length > signalsShown ? el("button", { type: "button", className: "more", onclick: () => { signalsShown += 30; signals(); } }, "Show more") : null);
 }
 
+// What was decided lately: one card per decision (a thread, or a lone record whose minutes
+// say how it went), newest first. The week when it has enough, else the latest there are.
+function decided() {
+    const DAY = 864e5, iso = (t) => new Date(t).toISOString().slice(0, 10);
+    const today = iso(Date.now()), heads = allThreads().byHead, seen = new Map();
+    for (const r of ctx.rows) {
+        const d = dateOf(r);
+        if (!d || d > today || heads.has(r.id) || !inPlace(r) || !stageOf(r)) continue;
+        const k = R.thread && r[R.thread] != null ? String(r[R.thread]) : r.id;
+        if (!seen.has(k) || dateOf(seen.get(k)) < d) seen.set(k, r);
+    }
+    const all = [...seen.values()].sort((a, b) => dateOf(b).localeCompare(dateOf(a)));
+    const week = all.filter((r) => dateOf(r) >= iso(Date.now() - 7 * DAY));
+    const card = (r) => signalCard(threadOf(r)?.steps.length > 1 ? threadOf(r)
+        : { id: r.id, title: titleOf(r, R), date: dateOf(r), steps: [{ id: r.id }], head: null, url: docUrl(r) });
+    return { title: week.length >= 3 ? "Decided this week" : "Latest decisions", list: (week.length >= 3 ? week : all), card };
+}
+
+let pastShown = 12;
 function feed() {
-    // A thread's own record (a matter) is not an occasion: its steps are already in the feed.
-    const heads = allThreads().byHead;
-    const { upcoming, past } = occasions(heads.size ? ctx.rows.filter((r) => !heads.has(r.id)) : ctx.rows, R, { facet, only });
     const { likes, dislikes } = ctx.votes();
     const mine = discover(ctx.rows.filter(inPlace), likes, dislikes, { ...knobs, limit: 6 });
-    const nSold = paid ? ctx.rows.filter((r) => r.paid_sha256 && inPlace(r)).length : 0;
+    const { upcoming } = occasions(ctx.rows, R, { facet, only });
+    const dec = decided();
     show(card.description ? about(card.description) : null, picker(),
-        nSold ? el("p", { className: "callout" }, `${nSold.toLocaleString()} decisions${only ? ` in ${only}` : ""} come with a decision record: the vote, the money and who it goes to, and the organizations involved, read from the minutes, ${PRICE} each. `,
-            el("a", { href: R.thread ? "#/signals" : "#/search/decision" }, "See them")) : null,
+        dec.list.length ? el("section", {}, el("h2", {}, dec.title), dec.list.slice(0, pastShown).map(dec.card),
+            dec.list.length > pastShown ? el("button", { type: "button", className: "more", onclick: () => { pastShown += 12; feed(); } }, "Show more") : null) : null,
+        upcoming.length ? el("section", {}, el("h2", {}, "Coming up"), upcoming.slice(0, 6).map(occasionCard)) : null,
         mine.picks.length ? el("section", {}, el("h2", {}, "For you"), el("p", { className: "hint" }, `From the ${mine.taste.n} item${mine.taste.n > 1 ? "s" : ""} you liked. `, el("a", { href: "#/for-you" }, "Tune")),
             el("ul", { className: "list" }, mine.picks.map(({ row: r }) => row(r)))) : null,
-        upcoming.length ? el("section", {}, el("h2", {}, "Coming up"), upcoming.slice(0, 8).map(occasionCard)) : null,
-        past.length ? el("section", {}, el("h2", {}, "Recently"), past.slice(0, pastShown).map(occasionCard),
-            past.length > pastShown ? el("button", { type: "button", className: "more", onclick: () => { pastShown += 12; feed(); } }, "Show more") : null) : null,
-        !upcoming.length && !past.length ? el("p", { className: "empty" }, !loaded ? "Loading the records…"
-            : ctx.rows.length ? "Nothing dated here yet. Search above."
+        !dec.list.length && !upcoming.length ? el("p", { className: "empty" }, !loaded ? "Loading the records…"
+            : ctx.rows.length ? "Nothing decided here yet. Search above."
             : "This app is registered and being built. Its records will appear here once they are published.") : null);
 }
 
