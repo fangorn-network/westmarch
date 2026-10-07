@@ -36,6 +36,8 @@ async function boot(paid) {
         onChange(f) { listeners.add(f); f(api); return () => listeners.delete(f); },
         /** Signed in with a wallet, opening Privy's login if need be. */
         async signIn() {
+            // onChange calls back at once: with an address already, `off` below would not exist yet.
+            if (api.address) return api;
             if (!api.authenticated) api.login();
             return new Promise((ok) => { const off = api.onChange((a) => { if (a.address) { off(); ok(a); } }); });
         },
