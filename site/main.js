@@ -152,10 +152,13 @@ const allThreads = () => {
     return threadIndex;
 };
 const threadOf = (r) => (R.thread ? (r[R.thread] != null ? allThreads().byId.get(String(r[R.thread])) : allThreads().byHead.get(r.id)) : null);
-// Where a step stands. ponytail: the `outcome` field by convention (Quorum's minutes and Legistar
-// both write it; Legistar's `status` is the agenda's state, not the matter's); declare a stage
-// role if a second app needs another field.
-const stageOf = (r) => r?.outcome ?? null;
+// Where a step stands: its `outcome` (Quorum's minutes, Legistar's action), else its `status`
+// (Legistar's) unless that names the agenda's state rather than the matter's. ponytail: field
+// names by convention; declare a stage role if a second app needs others.
+const NOT_A_STAGE = /agenda|consent|discussion|archiv|miscellan|presentation|published|^items/i;
+const stageOf = (r) => (r?.outcome ?? (r?.status && !NOT_A_STAGE.test(r.status) ? r.status : null))?.trim().toLowerCase() || null;
+// A thread stands where its latest step that says so does.
+const threadStage = (t) => t.steps.map((s) => stageOf(byId.get(s.id))).findLast(Boolean) ?? null;
 const meetingOf = (r) => (subtitleOf(r, R) ?? "").replace(/\s*·\s*\d{4}-\d\d-\d\d$/, "");
 const shortDay = (d) => (d ? new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "");
 const timeline = (t) => el("ol", { className: "steps" }, t.steps.map((s) => byId.get(s.id)).filter(Boolean).map((r) =>
@@ -199,7 +202,7 @@ function signalCard(t) {
     const d = detail(last, R);
     return el("article", { className: "signal" },
         el("div", { className: "meta" }, el("span", {}, placeOf(last)), head && subtitleOf(head, R) ? el("span", {}, subtitleOf(head, R)) : null,
-            stageOf(last) ? el("span", { className: "stage" }, stageOf(last)) : null, el("time", { dateTime: t.date }, shortDay(t.date))),
+            threadStage(t) ? el("span", { className: "stage" }, threadStage(t)) : null, el("time", { dateTime: t.date }, shortDay(t.date))),
         el("h3", {}, el("a", { href: itemHref(head ?? last), className: "title" }, calm(t.title))),
         d ? el("p", { className: "detail" }, clip(d)) : null,
         timeline(t),
@@ -211,8 +214,8 @@ let stageOnly = null, signalsShown = 30;
 function signals() {
     const lastOf = (t) => byId.get(t.steps.at(-1).id);
     const { list } = allThreads();
-    const stages = [...new Set(list.map((t) => stageOf(lastOf(t))).filter(Boolean))].sort();
-    const mine = list.filter((t) => inPlace(lastOf(t)) && (!stageOnly || stageOf(lastOf(t)) === stageOnly));
+    const stages = [...new Set(list.map(threadStage).filter(Boolean))].sort();
+    const mine = list.filter((t) => inPlace(lastOf(t)) && (!stageOnly || threadStage(t) === stageOnly));
     show(el("h2", { className: "page" }, "Signals"),
         el("p", { className: "hint" }, "Decisions followed across meetings, from committee to council, the latest to move first. Each links to its official record."),
         el("div", { className: "chips" }, picker(), stages.length ? el("label", { className: "picker" }, el("span", {}, "Stage"),
