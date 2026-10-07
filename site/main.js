@@ -69,7 +69,7 @@ await described;
 
 // ── records ──
 const R = ctx.roles;
-if (R.thread) $("#primary").prepend(el("a", { href: "#/signals" }, "Signals"));
+if (R.thread) $("#primary").prepend(el("a", { href: "#/signals" }, "Decision tracker"));
 const keyOf = (r) => String((R.identity && r[R.identity]) ?? r.id);
 let byKey = new Map(), byId = new Map(), facet = null, places = [], threadIndex = null;
 function reindex() {
@@ -224,12 +224,12 @@ function signals() {
     const { list } = allThreads();
     const stages = [...new Set(list.map(threadStage).filter(Boolean))].sort();
     const mine = list.filter((t) => inPlace(lastOf(t)) && (!stageOnly || threadStage(t) === stageOnly));
-    show(el("h2", { className: "page" }, "Signals"),
+    show(el("h2", { className: "page" }, "Decision tracker"),
         el("p", { className: "hint" }, "Items that went to more than one meeting, such as from a committee to the council. The most recently updated items are listed first. Each item links to its official record."),
         el("div", { className: "chips" }, picker(), stages.length ? el("label", { className: "picker" }, el("span", {}, "Stage"),
             el("select", { onchange: (e) => { stageOnly = e.target.value || null; signalsShown = 30; signals(); } },
                 [null, ...stages].map((s) => el("option", { value: s ?? "", selected: s === stageOnly }, s ?? "Any stage")))) : null),
-        el("p", { className: "hint" }, `${mine.length.toLocaleString()} signal${mine.length === 1 ? "" : "s"}`),
+        el("p", { className: "hint" }, `${mine.length.toLocaleString()} item${mine.length === 1 ? "" : "s"}`),
         mine.length ? mine.slice(0, signalsShown).map(signalCard)
             : el("p", { className: "empty" }, loaded ? "No items have been followed across meetings yet." : "Loading records…"),
         mine.length > signalsShown ? el("button", { type: "button", className: "more", onclick: () => { signalsShown += 30; signals(); } }, "Show more") : null);
