@@ -219,7 +219,7 @@ export function liveFields(out) {
  * Returns per-domain counts of what changed.
  */
 export async function publishView({ fangorn, app, namespaces, out, fromBlock = 0n, rebake = false,
-                                    embed = embedDocumentDirect, log = console.log, shardRows = 20000 }) {
+                                    embed = embedDocumentDirect, log = console.log, shardRows = 20000, concurrency = 4 }) {
     if (!namespaces?.length) throw new Error("publishView: name the data namespace(s) to publish");
     fangorn.setAppId(app);
     const appId = fangorn.getAppId();
@@ -234,22 +234,51 @@ export async function publishView({ fangorn, app, namespaces, out, fromBlock = 0
     log(`schema: ${declared.length ? declared.join(", ") : "no declared types"}`);
 
     const report = {};
-    for (const ns of namespaces.filter((n) => n !== SCHEMA_NAMESPACE)) {
-        const timelines = await fangorn.appNamespaces({ namespace: ns, fromBlock: BigInt(fromBlock) });
-        log(`${ns}: ${timelines.length} publisher(s) since block ${fromBlock}`);
-        for (const { owner: publisher } of timelines) {
-            const domain = domainFor(appId, publisher, ns);
-            report[domain] = await publishDomain({
-                fangorn, schema, publisher, ns, domain, dir: `${out}/cdn/domains/${domain}`, rebake, embed, log, shardRows,
-            });
-        }
+    // Several namespaces at once: reading one back through an IPFS gateway is block by block and
+    // takes minutes, while its embedding takes seconds. Each domain writes only its own folder.
+    const queue = namespaces.filter((n) => n !== SCHEMA_NAMESPACE);
+    // Who published into each namespace, from ONE scan of the app's commit logs. The chain filters
+    // them by app only, so a scan per namespace re-reads every log of the app each time: 376 s a
+    // namespace through a public RPC, against 3 s to read the namespace itself.
+    const reg = fangorn.getDataRegistry?.();
+    let committed = null;
+    if (reg?.getStateCommittedLogs && reg.namespaceKey) {
+        const logs = await retry(() => reg.getStateCommittedLogs({}, BigInt(fromBlock)));
+        committed = { keys: new Set(logs.map((l) => l.namespaceKey)), publishers: [...new Set(logs.map((l) => l.publisher))] };
+        log(`commit logs since block ${fromBlock}: ${logs.length} from ${committed.publishers.length} publisher(s)`);
     }
+    const publishersOf = (ns) => (committed
+        ? committed.publishers.filter((p) => committed.keys.has(reg.namespaceKey(p, ns))).map((owner) => ({ owner }))
+        : retry(() => fangorn.appNamespaces({ namespace: ns, fromBlock: BigInt(fromBlock) })));
+    const worker = async () => {
+        for (let ns; (ns = queue.shift()) !== undefined;) {
+            const timelines = await publishersOf(ns);
+            log(`${ns}: ${timelines.length} publisher(s) since block ${fromBlock}`);
+            for (const { owner: publisher } of timelines) {
+                const domain = domainFor(appId, publisher, ns);
+                report[domain] = await publishDomain({
+                    fangorn, schema, publisher, ns, domain, dir: `${out}/cdn/domains/${domain}`, rebake, embed, log, shardRows,
+                });
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: concurrency }, worker));
     writeCatalog(out);
     return report;
 }
 
+/** A public RPC answers a burst with 429s: back off and try again, a few times. */
+async function retry(f, tries = 6) {
+    for (let i = 0; ; i++) {
+        try { return await f(); } catch (e) {
+            if (i >= tries - 1 || !/429|Too Many Requests|rate limit|timeout|ECONNRESET|fetch failed/i.test(String(e?.message ?? e))) throw e;
+            await new Promise((ok) => setTimeout(ok, 2000 * 2 ** i));
+        }
+    }
+}
+
 async function publishDomain({ fangorn, schema, publisher, ns, domain, dir, rebake, embed, log, shardRows }) {
-    const { contents } = await fangorn.readNamespace(publisher, ns);
+    const { contents } = await retry(() => fangorn.readNamespace(publisher, ns));
     const records = new Map((contents.vertices ?? []).filter((v) => v.payload && typeof v.payload === "object")
         .map((v) => [v.cid, { ...v.payload, entityType: v.schemaId }]));
     linkRelations(records, contents.edges, schema);
