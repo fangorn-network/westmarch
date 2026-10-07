@@ -39,7 +39,9 @@
   #home { color: var(--fg); text-decoration: none; font: 600 1.1rem var(--font-display); white-space: nowrap; }
   #q { flex: 1 1 240px; }
   #q input { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: transparent; }
-  nav { display: flex; gap: 14px; font-size: .9rem; }
+  /* Where to go on the left; the reader's account and the app's own pages after a rule. */
+  nav { display: flex; gap: 14px; font-size: .9rem; } nav > span { display: flex; gap: inherit; }
+  #aside:not(:empty) { border-left: 1px solid var(--line); padding-left: 14px; }
   nav a { color: var(--muted); text-decoration: none; } nav a.on, nav a:hover { color: var(--fg); }
   main { padding-block: 16px 48px; }
 
@@ -112,8 +114,8 @@
 <link rel="stylesheet" href="./theme.css">
 <header class="bar"><div>
   <a id="home" href="#/"><span id="name">Fangorn app</span></a>
-  <form id="q" role="search"><input type="search" disabled placeholder="Loading…" aria-label="Search"></form>
-  <nav><a href="#/for-you">For you</a><a href="#/saved">Saved<span id="nsaved"></span></a><a href="#/history">History</a><a href="#/account" id="accountlink" hidden>Account</a></nav>
+  <form id="q" role="search"><input type="search" disabled placeholder="Loading…" aria-label="Search" list="recent" autocomplete="off"><datalist id="recent"></datalist></form>
+  <nav><span id="primary"><a href="#/saved">Saved<span id="nsaved"></span></a></span><span id="aside"><a href="#/account" id="accountlink" hidden>Account</a></span></nav>
 </div></header>
 <main id="view"><p id="status">Loading the data…</p></main>
 <footer>Search runs in your browser; your searches and saved records stay on this device unless you export them.

@@ -8,7 +8,6 @@
 //   #/item/<key>       one record: its document, its meeting, what is like it
 //   #/for-you          the taste kernel over what you saved (☆), with its four knobs
 //   #/saved            liked items, exportable; the taste they make
-//   #/history          this session's searches
 import { configure, loadShard } from "../src/core/shard.js";
 import { linkOf, rolesFrom, subtitleOf, textOf, titleOf, values } from "../src/core/roles.js";
 import { getRow, neighbors, search, threads } from "../src/agent/tools.js";
@@ -43,11 +42,11 @@ if (paid) $("#accountlink").hidden = false;
 $("#name").textContent = NAME;
 
 // Links to the app's own pages (app.json site.nav), after Saved and History.
-fetch("./nav.json").then((r) => r.json()).then((links) => $("nav").append(...links.map((l) => el("a", { href: l.href }, l.label)))).catch(() => {});
+fetch("./nav.json").then((r) => r.json()).then((links) => $("#aside").append(...links.map((l) => el("a", { href: l.href }, l.label)))).catch(() => {});
 // A map, when the app ships one (map.json): regions to shade and search on. Pages answers a
 // missing file with index.html, so only JSON counts.
 const geo = await fetch("./map.json").then((r) => ((r.headers.get("content-type") ?? "").includes("json") ? r.json() : null)).catch(() => null);
-if (geo) $("nav").prepend(el("a", { href: "#/map" }, "Map"));
+if (geo) $("#primary").prepend(el("a", { href: "#/map" }, "Map"));
 
 const input = $("#q input");
 input.disabled = false;
@@ -66,7 +65,7 @@ await described;
 
 // ── records ──
 const R = ctx.roles;
-if (R.thread) $("nav").prepend(el("a", { href: "#/signals" }, "Signals"));
+if (R.thread) $("#primary").prepend(el("a", { href: "#/signals" }, "Signals"));
 const keyOf = (r) => String((R.identity && r[R.identity]) ?? r.id);
 let byKey = new Map(), byId = new Map(), facet = null, places = [], threadIndex = null;
 function reindex() {
@@ -427,7 +426,7 @@ function saved() {
             el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.json`, bundle(), "application/json") }, "Export JSON"),
             el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.csv`, toCSV(items), "text/csv") }, "CSV"),
             el("button", { type: "button", className: "act", onclick: () => download(`${slug}-saved.md`, toMarkdown(items, `${NAME}: saved`), "text/markdown") }, "Markdown"),
-            copy) : el("p", { className: "empty" }, "Nothing saved yet. Tap ☆ on a record; what you save stays on this device."),
+            copy, el("a", { href: "#/for-you", className: "act" }, "For you: more like these")) : el("p", { className: "empty" }, "Nothing saved yet. Tap ☆ on a record; what you save stays on this device."),
         t ? el("p", { className: "hint" }, `"For you" is built from these ${t.n}${t.rejected.length ? `, and away from ${t.rejected.length} you passed on` : ""}. It lives in this browser; the export carries it, so an agent can use it too. `,
             el("button", { type: "button", className: "linkish", onclick: () => { store.clear("passed"); saved(); counts(); } }, "Forget what I passed on")) : null,
         el("ul", { className: "list" }, items.slice().reverse().map((i) => {
@@ -438,14 +437,6 @@ function saved() {
                 i.detail ? el("p", { className: "detail" }, clip(i.detail)) : null),
                 el("button", { type: "button", className: "vote", ariaLabel: `Forget ${i.title}`, title: "Forget", onclick: () => { store.unvote(i.key); saved(); counts(); } }, "×"));
         })));
-}
-
-function historyView() {
-    const h = store.history();
-    show(el("h2", { className: "page" }, "Searches this session"),
-        h.length ? el("ul", { className: "list" }, h.map(({ q, at }) => el("li", { className: "row" }, el("div", { className: "main" },
-            el("a", { href: `#/search/${encodeURIComponent(q)}`, className: "title" }, q), el("small", {}, new Date(at).toLocaleTimeString()))))) : el("p", { className: "empty" }, "No searches yet."),
-        h.length ? el("button", { type: "button", className: "act", onclick: () => { store.clear("history"); historyView(); } }, "Clear") : null);
 }
 
 // The reader's account: who they are signed in as, their credit, and adding to it. A wallet
@@ -475,21 +466,24 @@ async function accountView() {
 }
 
 // ── routing ──
-function counts() { const n = store.saved().length; $("#nsaved").textContent = n ? ` (${n})` : ""; }
+// This session's searches come back as the search box's own suggestions, in place of a History page.
+function counts() {
+    const n = store.saved().length; $("#nsaved").textContent = n ? ` (${n})` : "";
+    $("#recent").replaceChildren(...store.history().map(({ q }) => el("option", { value: q })));
+}
 function route() {
     const [, name = "", arg = ""] = (location.hash.match(/^#\/([^/]*)\/?(.*)$/) ?? []);
     const a = decodeURIComponent(arg);
     for (const l of document.querySelectorAll("nav a")) l.classList.toggle("on", l.getAttribute("href") === `#/${name}`);
     document.body.classList.toggle("wide", name === "map");
+    if (name !== "search") $("#q input").value = "";
     if (name === "search" && a) return results(a);
     if (name === "item" && a) return item(a);
     if (name === "signals" && R.thread) return signals();
     if (name === "saved") return saved();
     if (name === "for-you") return forYou();
-    if (name === "history") return historyView();
     if ((name === "account" || name === "wallet") && paid) return accountView();
     if (name === "map" && geo) return (mapView ??= createMap(geo, { el, show, row, placeOf, ctx })).render(...arg.split("/").map(decodeURIComponent));
-    $("#q input").value = "";
     return feed();
 }
 
@@ -503,8 +497,8 @@ input.oninput = () => {
         results(q);
     }, 250);
 };
-$("#q").onsubmit = (e) => { e.preventDefault(); const q = input.value.trim(); if (!q) return; store.remember(q); location.hash = `#/search/${encodeURIComponent(q)}`; };
-view.addEventListener("click", (e) => { if (e.target.closest("a.title") && location.hash.startsWith("#/search/")) store.remember(input.value); });
+$("#q").onsubmit = (e) => { e.preventDefault(); const q = input.value.trim(); if (!q) return; store.remember(q); counts(); location.hash = `#/search/${encodeURIComponent(q)}`; };
+view.addEventListener("click", (e) => { if (e.target.closest("a.title") && location.hash.startsWith("#/search/")) { store.remember(input.value); counts(); } });
 window.onhashchange = route;
 counts();
 route();
