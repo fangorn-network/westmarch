@@ -255,7 +255,8 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     cpSync(STOCK, site, { recursive: true });
     if (cfg.site.pages) cpSync(resolve(base, cfg.site.pages), site, { recursive: true });
     writeFileSync(join(site, "nav.json"), JSON.stringify(cfg.site.nav ?? []));
-    const url = deploy && !dry ? pagesUrl(cfg) : state.url ?? `https://${cfg.site.project}.pages.dev`;
+    // site.url: the app's own domain (a custom domain on the Pages project), named in the card.
+    const url = cfg.site.url?.replace(/\/$/, "") ?? (deploy && !dry ? pagesUrl(cfg) : state.url ?? `https://${cfg.site.project}.pages.dev`);
     // Paid records: every source's paid_dir → site/_paid (served only through the worker).
     let paid = null, sale = null;
     const live = view.liveFields(join(site, "view"));

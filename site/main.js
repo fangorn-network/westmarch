@@ -30,7 +30,10 @@ const described = new Promise((ok) => { rolesReady = ok; });
 configure({ onManifests: (ms) => { ctx.roles = rolesFrom(ms); rolesReady(); }, rowText: (f) => textOf(f, ctx.roles) });
 
 const card = await fetch("./.well-known/agent-card.json").then((r) => r.json()).catch(() => ({}));
-const paid = (card.capabilities?.extensions ?? []).map((x) => x.params?.paid).find(Boolean) ?? null;
+// Buy from the origin this page is on: a custom domain serves the same worker, and a reader
+// whose network can't reach pages.dev (or the card's host) still can.
+const offer = (card.capabilities?.extensions ?? []).map((x) => x.params?.paid).find(Boolean) ?? null;
+const paid = offer && { ...offer, url: offer.url.replace(/^https?:\/\/[^/]+/, location.origin) };
 const NAME = card.name ?? "Fangorn app";
 document.title = NAME;
 if (paid) $("#walletlink").hidden = false;
