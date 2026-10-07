@@ -46,6 +46,7 @@ const log = (s) => console.error(`[ship] ${s}`);
 //   "app": "quorum", "name": "Quorum", "description": "…", "tags": ["civic"],
 //   "site": { "project": "quorum", "account": "<cloudflare account id>",
 //             "pages": "pages",   // optional: the app's own files, copied over the stock page
+//                                 //   (pages/intro.html, a fragment, replaces the description on the front page)
 //             "nav": [{ "href": "coverage.html", "label": "Coverage" }],   // optional: header links to them
 //             "agent": "app/agent.js" },   // optional: the module whose registerAgent the card lists, when
 //                                          // `pages` replaces the stock index.html with a page of its own

@@ -47,6 +47,10 @@ fetch("./nav.json").then((r) => r.json()).then((links) => $("#aside").append(...
 // missing file with index.html, so only JSON counts.
 const geo = await fetch("./map.json").then((r) => ((r.headers.get("content-type") ?? "").includes("json") ? r.json() : null)).catch(() => null);
 if (geo) $("#primary").prepend(el("a", { href: "#/map" }, "Map"));
+// The app's own front-page intro, when it ships one (intro.html: a fragment, not a page),
+// in place of the folded description. A whole document is Pages' index.html fallback.
+const intro = await fetch("./intro.html").then((r) => r.text())
+    .then((t) => (/^\s*<!doctype/i.test(t) ? null : Object.assign(el("section", { className: "intro" }), { innerHTML: t }))).catch(() => null);
 
 const input = $("#q input");
 input.disabled = false;
@@ -255,7 +259,7 @@ function feed() {
     const mine = discover(ctx.rows.filter(inPlace), likes, dislikes, { ...knobs, limit: 6 });
     const { upcoming } = occasions(ctx.rows, R, { facet, only });
     const dec = decided();
-    show(card.description ? about(card.description) : null, picker(),
+    show(intro ? intro.cloneNode(true) : card.description ? about(card.description) : null, picker(),
         dec.list.length ? el("section", {}, el("h2", {}, dec.title), dec.list.slice(0, pastShown).map(dec.card),
             dec.list.length > pastShown ? el("button", { type: "button", className: "more", onclick: () => { pastShown += 12; feed(); } }, "Show more") : null) : null,
         upcoming.length ? el("section", {}, el("h2", {}, "Coming up"), upcoming.slice(0, 6).map(occasionCard)) : null,
