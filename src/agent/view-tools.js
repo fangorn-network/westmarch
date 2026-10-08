@@ -188,14 +188,23 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
             if (ids?.length) {
                 // Many at once, one price: from the allowance file (FANGORN_MCP_VOUCHERS, vouchers the
                 // person's wallet signed) if there is one, else one payment from the wallet key.
-                const { buyBatch } = await import("./x402.js");
+                const { buyBatch, withLock } = await import("./x402.js");
                 const fs = await import("node:fs");
-                const vf = process.env.FANGORN_MCP_VOUCHERS, vouchers = vf ? JSON.parse(fs.readFileSync(vf, "utf8")) : undefined;
+                const vf = process.env.FANGORN_MCP_VOUCHERS;
                 const rs = ids.map(resolve), want = Object.fromEntries(rs.filter((r) => r.want).map((r) => [r.key, r.want]));
-                const r = await buyBatch(p, rs.map((r) => r.key), { want, vouchers, privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap * BigInt(rs.length) });
-                if (vf) fs.writeFileSync(vf, JSON.stringify(vouchers));
+                const opts = { want, privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap * BigInt(rs.length) };
+                // The file is read, spent from and saved under one lock, and saved even when the
+                // purchase fails: buyBatch drops the vouchers the seller settled or refused either way.
+                const r = vf
+                    ? await withLock(vf, async () => {
+                        const vouchers = JSON.parse(fs.readFileSync(vf, "utf8"));
+                        try { return await buyBatch(p, rs.map((r) => r.key), { ...opts, vouchers }); }
+                        finally { fs.writeFileSync(vf, JSON.stringify(vouchers)); }
+                    })
+                    : await buyBatch(p, rs.map((r) => r.key), opts);
                 const bad = r.records.filter((x) => x.verified === false).map((x) => x.id);
                 return { bought: r.records.length, missing: r.missing, verified: bad.length ? `MISMATCH for ${bad.join(", ")}` : "every record searched first matches its published sha256",
+                         ...(r.undelivered.length ? { not_bought: r.undelivered, why: r.error } : {}),
                          manifest: r.manifest, records: r.records.map(({ id, record }) => ({ id, record })) };
             }
             if (!id) throw new Error("id or ids is required");

@@ -103,11 +103,31 @@ export async function signVouchers(req, account, { total, denominations, days = 
 export function pick(vouchers, amount) {
     let left = BigInt(amount);
     const out = [];
-    for (const v of [...vouchers].sort((a, b) => (BigInt(b.payload.authorization.value) > BigInt(a.payload.authorization.value) ? 1 : -1))) {
+    for (const v of [...vouchers].sort((a, b) => { const x = BigInt(a.payload.authorization.value), y = BigInt(b.payload.authorization.value); return x > y ? -1 : x < y ? 1 : 0; })) {   // largest first; equal ones keep their order
         const x = BigInt(v.payload.authorization.value);
         if (x <= left) { out.push(v); left -= x; }
     }
     return left === 0n ? out : null;   // ponytail: greedy; exact for denominations that divide each other
+}
+
+/** Run `fn` holding `<path>.lock` (Node only): two fangorn-mcp processes sharing one allowance
+ *  file would otherwise pick the same vouchers and race. A lock older than `staleMs` belongs to
+ *  a crashed purchase and is taken over.
+ *  ponytail: a takeover can race a third process for the same stale lock; add a pid check if
+ *  more than two servers ever share a file. */
+export async function withLock(path, fn, { staleMs = 120_000, waitMs = 30_000 } = {}) {
+    const fs = await import("node:fs"), lock = `${path}.lock`, start = Date.now();
+    for (;;) {
+        try { fs.closeSync(fs.openSync(lock, "wx")); break; } catch (e) {
+            if (e.code !== "EEXIST") throw e;
+            let age = 0;
+            try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch { continue; }   // released meanwhile
+            if (age > staleMs) { fs.rmSync(lock, { force: true }); continue; }
+            if (Date.now() - start > waitMs) throw new Error(`the allowance is in use by another purchase (${lock})`);
+            await new Promise((ok) => setTimeout(ok, 100));
+        }
+    }
+    try { return await fn(); } finally { fs.rmSync(lock, { force: true }); }
 }
 
 /** Buy many records at once. Pays from `vouchers` (spent ones are removed from the array) or
@@ -131,15 +151,26 @@ export async function buyBatch(paid, ids, { want = {}, vouchers, account, privat
     }
     const res = await post({ "X-PAYMENT": b64(JSON.stringify(payments)) });
     const body = await res.json();
+    // Drop every voucher the seller says it settled (`paid`) or could not (`rejected`: spent, or
+    // the wallet cannot cover it), on success, partial delivery and refusal alike, so a dead
+    // voucher is never offered twice. A seller that names none: all of them on a 200.
+    const nonce = (p) => p.payload.authorization.nonce;
+    const paidNonces = new Set(body.paid ?? (res.status === 200 ? payments.map(nonce) : []));
+    if (vouchers) for (const n of [...paidNonces, ...(body.rejected ?? [])]) {
+        const k = vouchers.findIndex((v) => nonce(v) === n);
+        if (k >= 0) vouchers.splice(k, 1);
+    }
     if (res.status !== 200) throw new Error(`payment refused: ${body.error ?? JSON.stringify(body).slice(0, 200)}`);
-    if (vouchers) for (const p of payments) vouchers.splice(vouchers.indexOf(p), 1);
+    const spent = payments.filter((p) => paidNonces.has(nonce(p))).reduce((s, p) => s + BigInt(p.payload.authorization.value), 0n);
     const records = [];
     for (const { id, body: text } of body.items) {
         const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)))]
             .map((b) => b.toString(16).padStart(2, "0")).join("");
         records.push({ id, sha256: digest, verified: want[id] ? want[id] === digest : null, record: JSON.parse(text) });
     }
-    return { records, missing: body.missing, manifest: { app: url, bought: new Date().toISOString(), price: req.maxAmountRequired,
+    // `undelivered` + `error`: a payment failed after others settled; these ids were not paid for.
+    return { records, missing: body.missing, undelivered: body.undelivered ?? [], error: body.error ?? null,
+        manifest: { app: url, bought: new Date().toISOString(), price: String(spent),
         asset: req.asset, network: req.network, transactions: body.receipts.map((r) => r.transaction),
         records: records.map(({ id, sha256 }) => ({ id, sha256 })) } };
 }
@@ -224,7 +255,29 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         if (replay.status !== 402 || (await replay.json()).items) throw new Error("a spent voucher must not buy anything");
         const short = await viaWorker("https://x/paid", { method: "POST", body: JSON.stringify({ ids: ["a", "b"] }), headers: { "X-PAYMENT": b64(JSON.stringify([fresh])) } });
         if (short.status !== 402) throw new Error("payments short of the price must be refused");
+        // A spent voucher still in the stack, behind a fresh one (a crash before the file was
+        // saved): the fresh one settles and buys one record, the spent one is refused, and both
+        // leave the stack so neither is offered again.
+        const fresh2 = vs.find((v) => v !== fresh && v.payload.authorization.value === "100000");
+        const stack = [fresh2, usedOne];
+        const half = await buyBatch(paidCard, ["a", "b"], { vouchers: stack, fetchImpl: viaWorker });
+        if (half.records.length !== 1 || half.undelivered[0] !== "b" || !half.error || half.manifest.price !== "100000" || stack.length !== 0)
+            throw new Error(`partial settle: ${JSON.stringify({ ...half, stack: stack.length })}`);
+        // The spent voucher first: nothing settles, nothing is sent, and it is dropped.
+        const stack2 = [usedOne, fresh];
+        let threw = false;
+        try { await buyBatch(paidCard, ["a", "b"], { vouchers: stack2, fetchImpl: viaWorker }); } catch { threw = true; }
+        if (!threw || stack2.length !== 1 || stack2[0] !== fresh) throw new Error(`refused batch must drop only the spent voucher: ${stack2.length}`);
+        // The allowance lock: two purchases at once take turns; a crashed one's lock is taken over.
+        const vfile = `${mkdtempSync(`${tmpdir()}/wm-`)}/vouchers.json`, order = [];
+        const turn = (name) => withLock(vfile, async () => { order.push(`${name}+`); await new Promise((ok) => setTimeout(ok, 50)); order.push(`${name}-`); });
+        await Promise.all([turn("a"), turn("b")]);
+        if (order.join() !== "a+,a-,b+,b-" && order.join() !== "b+,b-,a+,a-") throw new Error(`lock interleaved: ${order}`);
+        writeFileSync(`${vfile}.lock`, "");
+        const { utimesSync, existsSync } = await import("node:fs");
+        utimesSync(`${vfile}.lock`, new Date(Date.now() - 300_000), new Date(Date.now() - 300_000));
+        if (await withLock(vfile, async () => 7) !== 7 || existsSync(`${vfile}.lock`)) throw new Error("a stale lock must be taken over and released");
     } finally { globalThis.fetch = realFetch; }
-    console.log("x402.js batch self-check ok — one price for the ids that exist, paid by one signature or by vouchers signed ahead, spent vouchers removed and refused if replayed, short payment refused");
+    console.log("x402.js batch self-check ok — one price for the ids that exist, paid by one signature or by vouchers signed ahead, spent vouchers removed and refused if replayed, short payment refused, a half-settled batch delivers what was paid and drops spent vouchers, the allowance file is locked per purchase");
     console.log("x402.js self-check ok — a signed EIP-3009 authorization the seller can verify, exactly the asked amount to the asked payee, the receipt read back, and a price over the cap refused before signing");
 }

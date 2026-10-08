@@ -48,10 +48,14 @@ async function fileFor(id) {
 }
 
 async function facilitator(path, payment, requirements) {
-    const r = await fetch(`${CONFIG.paid.facilitator}/${path}`, {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ x402Version: 1, paymentPayload: payment, paymentRequirements: requirements }),
-    });
+    // A network failure is an answer too: thrown, it would turn a half-settled batch into a 500.
+    let r;
+    try {
+        r = await fetch(`${CONFIG.paid.facilitator}/${path}`, {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ x402Version: 1, paymentPayload: payment, paymentRequirements: requirements }),
+        });
+    } catch (e) { return { error: `facilitator ${path}: ${e.message}` }; }
     const text = await r.text();
     try { return JSON.parse(text); } catch { return { error: `facilitator ${path}: HTTP ${r.status} ${text.slice(0, 200)}` }; }
 }
@@ -120,16 +124,26 @@ async function sellBatch(request, env, url) {
         const v = await facilitator("verify", p, requirements(auths[i].value));
         if (!v.isValid) return refuse(`payment ${i + 1}: ${v.invalidReason ?? v.error ?? "did not verify"}`);
     }
-    // Every payment settles before anything is sent: a spent voucher passes verify but not
-    // settle, and must not ride along with a good one. ponytail: if one fails after others
-    // settled, the refusal names those for a manual refund; rare (facilitator errors).
+    // Settle one by one. A spent voucher (or one the wallet can no longer cover) passes verify
+    // and fails here. If that happens after others settled, the buyer still gets what the
+    // settled money pays for, never more: a spent voucher riding along with a fresh one buys
+    // only what the fresh one pays for. `paid` and `rejected` name the vouchers (by nonce) so
+    // the buyer's stack can drop them either way.
     const receipts = [];
+    let settled = 0n;
     for (const [i, p] of payments.entries()) {
         const s = await facilitator("settle", p, requirements(auths[i].value));
-        if (!s.success) return refuse(`payment ${i + 1}: ${s.errorReason ?? s.error ?? "settlement failed"}`, { settled: receipts.map((r) => r.transaction) });
+        if (!s.success) {
+            const error = `payment ${i + 1}: ${s.errorReason ?? s.error ?? "settlement failed"}`;
+            if (!receipts.length) return refuse(error, { rejected: [auths[i].nonce] });
+            const n = Number(settled / BigInt(P.price));
+            return json({ items: found.slice(0, n), missing, undelivered: found.slice(n).map((f) => f.id), receipts, error,
+                paid: auths.slice(0, i).map((a) => a.nonce), rejected: [auths[i].nonce] });
+        }
         receipts.push(s);
+        settled += BigInt(auths[i].value);
     }
-    return json({ items: found, missing, receipts });
+    return json({ items: found, missing, receipts, paid: auths.map((a) => a.nonce) });
 }
 
 export default {
