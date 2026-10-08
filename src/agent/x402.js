@@ -122,8 +122,8 @@ export async function buyRecord(paid, key, { ct, want, account, privateKey, maxP
     return { id: key, price: r.price, receipt: r.receipt, digest: opened.sha256, verified: opened.verified, record: opened.record };
 }
 
-/** The typed data a reader signs to read with a membership. The same as Barliman's
- *  readTypedData (x402f/packages/barliman): change both together. */
+/** The typed data a reader signs to read with a membership: a copy of @fangorn-network/barliman's
+ *  src/read.js, which its /check verifies. ponytail: import it once barliman is on npm. */
 export const readTypedData = ({ registry, chainId, appId, tokenId, ids, issuedAt }) => ({
     domain: { name: "Fangorn Read", version: "1", chainId: Number(chainId), verifyingContract: registry },
     types: { Read: [{ name: "app", type: "bytes32" }, { name: "tokenId", type: "uint256" }, { name: "ids", type: "string[]" }, { name: "issuedAt", type: "uint256" }] },

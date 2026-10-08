@@ -55,7 +55,7 @@
     }
   },
   "devDependencies": {
-    "@fangorn-network/fetch": "file:../x402f/packages/fetch",
+    "@fangorn-network/barliman": "file:../barliman",
     "@fangorn-network/sdk": "^2026.9.22-dev",
     "@huggingface/transformers": "^4.2.0",
     "@noble/curves": "^1.9.1",

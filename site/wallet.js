@@ -98,7 +98,7 @@ async function boot(paid) {
         /** Pay for one period and claim it. `step(text)` hears where it is. */
         async join(step = () => {}) {
             await api.signIn();
-            const f = await import("@fangorn-network/fetch");
+            const f = await import("@fangorn-network/barliman");
             const account = api.account();
             step("Preparing your membership…");
             const identity = await f.identityFrom(account);
