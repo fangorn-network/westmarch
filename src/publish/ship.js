@@ -252,15 +252,20 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     // 6. the page, the card, the headers
     if (!existsSync(join(STOCK, "index.html"))) throw new Error(`no stock page at ${STOCK}; run \`npx vite build\` in westmarch/site`);
     mkdirSync(site, { recursive: true });
-    for (const f of readdirSync(site, { withFileTypes: true })) if (f.name !== "view" && f.name !== "_paid") rmSync(join(site, f.name), { recursive: true, force: true });
+    for (const f of readdirSync(site, { withFileTypes: true })) if (f.name !== "view") rmSync(join(site, f.name), { recursive: true, force: true });
     cpSync(STOCK, site, { recursive: true });
     if (cfg.site.pages) cpSync(resolve(base, cfg.site.pages), site, { recursive: true });
     writeFileSync(join(site, "nav.json"), JSON.stringify(cfg.site.nav ?? []));
     // site.url: the app's own domain (a custom domain on the Pages project), named in the card.
     const url = cfg.site.url?.replace(/\/$/, "") ?? (deploy && !dry ? pagesUrl(cfg) : state.url ?? `https://${cfg.site.project}.pages.dev`);
-    // Paid records: every source's paid_dir → site/_paid (served only through the worker).
+    // Paid records are in the committed rows already, encrypted (`paid_ct`: AES-256-GCM under
+    // HMAC-SHA256(PAID_SECRET, id), see x402.js). The worker sells keys, never records, so the
+    // data a buyer pays for is on IPFS, committed, and in their hands before they pay.
+    // PAID_SECRET is a Pages secret (`wrangler pages secret put PAID_SECRET`), the same value the
+    // sources encrypt with.
     let paid = null, sale = null;
     const live = view.liveFields(join(site, "view"));
+    rmSync(join(site, "_paid"), { recursive: true, force: true });   // from builds before encryption
     if (cfg.paid) {
         const network = cfg.paid.network ?? "arbitrum-sepolia";
         const asset = cfg.paid.asset ?? USDC[network];
@@ -268,24 +273,19 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
         const decimals = cfg.paid.decimals ?? 6;
         const [whole, frac = ""] = String(cfg.paid.price).split(".");
         const price = (BigInt(whole) * 10n ** BigInt(decimals) + BigInt((frac + "0".repeat(decimals)).slice(0, decimals) || "0")).toString();
-        paid = { url: `${url}/paid/{id}`, price, asset, network, decimals, symbol: cfg.paid.symbol ?? "USDC", description: cfg.paid.description ?? "" };
-        // Only records a live row vouches for (its committed paid_sha256): one left over from
-        // an item since removed or re-extracted is not for sale, whatever is still on disk.
-        rmSync(join(site, "_paid"), { recursive: true, force: true });
-        mkdirSync(join(site, "_paid"), { recursive: true });
-        const vouched = new Set(live.map((f) => f.paid_sha256).filter(Boolean));
-        let n = 0;
-        for (const s of cfg.sources) {
-            const d = s.paid_dir && resolve(s.cwd ? resolve(base, s.cwd.replace(/^~/, homedir())) : base, s.paid_dir);
-            if (d && existsSync(d)) for (const f of readdirSync(d)) {
-                const bytes = readFileSync(join(d, f));
-                if (!vouched.has(createHash("sha256").update(bytes).digest("hex"))) continue;
-                writeFileSync(join(site, "_paid", f), bytes); n++;
-            }
-        }
+        const { keccak256, toHex } = await import("viem");
+        const appId = keccak256(toHex(cfg.app));   // the SDK's appId(name)
+        // A membership (MembershipRegistry, joined and claimed through Barliman) reads for free.
+        const membership = cfg.paid.membership ? { registry: cfg.paid.membership.registry, barliman: cfg.paid.membership.barliman.replace(/\/$/, ""),
+                                                   chainId: cfg.paid.membership.chainId ?? 421614, appId } : null;
+        paid = { url: `${url}/paid/{id}`, key_url: `${url}/key`, price, asset, network, decimals, symbol: cfg.paid.symbol ?? "USDC",
+                 description: cfg.paid.description ?? "", ...(membership ? { membership } : {}) };
         sale = { price, network, asset, payTo: cfg.paid.payTo ?? owner, facilitator: cfg.paid.facilitator ?? "https://facilitator.payai.network",
-                 name: cfg.paid.tokenName ?? "USD Coin", version: cfg.paid.tokenVersion ?? "2", description: paid.description };
-        log(`paid: ${n} record(s) at ${cfg.paid.price} ${paid.symbol} on ${network}, to ${sale.payTo}`);
+                 name: cfg.paid.tokenName ?? "USD Coin", version: cfg.paid.tokenVersion ?? "2", description: paid.description,
+                 ...(membership ? { membership } : {}) };
+        const sealed = live.filter((f) => f.paid_ct).length;
+        log(`paid: ${sealed} encrypted record(s) at ${cfg.paid.price} ${paid.symbol} on ${network}, to ${sale.payTo}${membership ? ", or with a membership" : ""}`);
+        if (!sealed && live.some((f) => f.paid_sha256)) log("paid: rows carry paid_sha256 but no paid_ct; set PAID_SECRET for the sources and re-publish");
     }
     // The worker: paid records if any, and each record's source document shown in the page.
     // Only the hosts the app's own records link to (their media role) are proxied.

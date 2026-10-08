@@ -6,14 +6,17 @@
 //                         page cannot fetch or frame them itself. Only hosts the app's own
 //                         records link to (CONFIG.docHosts), only PDFs, cached for a day.
 //   GET /paid/<item id>   with CONFIG.paid: 402 + the price; with a valid X-PAYMENT header, the
-//                         facilitator verifies and settles it, then the record is returned
-//   POST /paid {ids}      many records for one price, paid by one payment or several (vouchers)
-//   GET /_paid/*        404 to everyone: the records sit here as static files, and the
-//                         only way to one is through a settled payment
+//                         facilitator verifies and settles it, then the record's KEY is returned
+//   POST /paid {ids}      many keys for one price, paid by one payment or several (vouchers)
+//   POST /key {ids, tokenId, issuedAt, signature}
+//                         keys for a member: Barliman checks the signed request against the
+//                         MembershipRegistry (`canRead`), and nothing is paid here
 //   anything else         the static site, with the headers _headers would have set
 //
-// A record that does not exist is a 404 before any price is quoted: nobody pays for nothing.
-// Each record's sha256 is in the app's public (committed) data, so a buyer can check it.
+// The paid records are not here. Each is already in the app's committed rows on IPFS,
+// encrypted (`paid_ct`, AES-256-GCM), with the sha256 of its plaintext beside it. This worker
+// sells only the key, HMAC-SHA256(PAID_SECRET, id): the buyer holds the ciphertext before
+// paying, so nobody pays for a record that does not exist, and decrypts and checks it after.
 
 const CONFIG = /*CONFIG*/ { docHosts: [], paid: null } /*END*/;
 
@@ -42,10 +45,15 @@ async function doc(request, url) {
     return res;
 }
 
-async function fileFor(id) {
-    const d = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(id)));
-    return [...d].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
+/** A record's key: HMAC-SHA256(PAID_SECRET, id), hex. The same derivation as the sources that
+ *  encrypt (and x402.js's paidKey). */
+async function keyFor(env, id) {
+    if (!env.PAID_SECRET) throw new Error("PAID_SECRET is not set (wrangler pages secret put PAID_SECRET)");
+    const k = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.PAID_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(id)));
+    return [...mac].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
+const keysFor = async (env, ids) => Object.fromEntries(await Promise.all(ids.map(async (id) => [id, await keyFor(env, id)])));
 
 async function facilitator(path, payment, requirements) {
     // A network failure is an answer too: thrown, it would turn a half-settled batch into a 500.
@@ -63,10 +71,7 @@ async function facilitator(path, payment, requirements) {
 async function sell(request, env, url) {
     const P = CONFIG.paid;
     const id = decodeURIComponent(url.pathname.slice("/paid/".length));
-    const record = await env.ASSETS.fetch(new URL(`/_paid/${await fileFor(id)}.json`, url));
-    // Pages answers an unknown path with index.html and a 200 (its single-page fallback), so
-    // "ok" is not "exists": only a JSON body is a record. Nobody is quoted a price for nothing.
-    if (!record.ok || !(record.headers.get("content-type") ?? "").includes("json")) return json({ error: `no paid record for ${id}` }, 404);
+    if (!id) return json({ error: "no id" }, 400);
     const requirements = {
         scheme: "exact", network: P.network, maxAmountRequired: P.price, resource: url.href,
         description: P.description, mimeType: "application/json", payTo: P.payTo,
@@ -81,34 +86,26 @@ async function sell(request, env, url) {
     if (!verified.isValid) return refuse(verified.invalidReason ?? verified.error ?? "payment did not verify");
     const settled = await facilitator("settle", payment, requirements);
     if (!settled.success) return refuse(settled.errorReason ?? settled.error ?? "settlement failed");
-    return new Response(await record.text(), {
-        headers: { "content-type": "application/json", "x-payment-response": btoa(JSON.stringify(settled)), ...CORS },
-    });
+    return json({ id, key: await keyFor(env, id) }, 200, { "x-payment-response": btoa(JSON.stringify(settled)) });
 }
 
-// POST /paid {ids}: many records, one price. 402 with the total for the ones that exist; then
-// X-PAYMENT may be one payment or a JSON array of them (an agent's vouchers) that add up to it.
-// ponytail: free-plan Workers allow 50 subrequests (records + 2 facilitator calls per payment),
-// hence the caps; the $5 plan (1,000) or one packed file per batch raises them.
-const MAX_BATCH = 25, MAX_PAYMENTS = 10;
+// POST /paid {ids}: many keys, one price. 402 with the total; then X-PAYMENT may be one payment
+// or a JSON array of them (an agent's vouchers) that add up to it. The only subrequests are the
+// facilitator's (2 per payment, 50 on the free plan), hence MAX_PAYMENTS; keys cost nothing.
+const MAX_BATCH = 1000, MAX_PAYMENTS = 10;
 async function sellBatch(request, env, url) {
     const P = CONFIG.paid;
     let ids;
     try { ids = [...new Set((await request.json()).ids)].filter((x) => typeof x === "string"); } catch { return json({ error: "body must be {\"ids\": [...]}" }, 400); }
     if (!ids.length || ids.length > MAX_BATCH) return json({ error: `between 1 and ${MAX_BATCH} ids per purchase` }, 400);
-    const found = [], missing = [];
-    for (const id of ids) {
-        const r = await env.ASSETS.fetch(new URL(`/_paid/${await fileFor(id)}.json`, url));
-        if (r.ok && (r.headers.get("content-type") ?? "").includes("json")) found.push({ id, body: await r.text() }); else missing.push(id);
-    }
-    if (!found.length) return json({ error: "none of these ids is sold here", missing }, 404);
+    const found = ids, missing = [];
     const total = BigInt(P.price) * BigInt(found.length);
     const requirements = (amount) => ({
         scheme: "exact", network: P.network, maxAmountRequired: String(amount), resource: url.href,
         description: P.description, mimeType: "application/json", payTo: P.payTo,
         maxTimeoutSeconds: 120, asset: P.asset, extra: { name: P.name, version: P.version },
     });
-    const refuse = (error, more = {}) => json({ x402Version: 1, error, accepts: [requirements(total)], found: found.map((f) => f.id), missing, ...more }, 402);
+    const refuse = (error, more = {}) => json({ x402Version: 1, error, accepts: [requirements(total)], found, missing, ...more }, 402);
     const header = request.headers.get("X-PAYMENT");
     if (!header) return refuse("X-PAYMENT header is required");
     let payments;
@@ -137,23 +134,44 @@ async function sellBatch(request, env, url) {
             const error = `payment ${i + 1}: ${s.errorReason ?? s.error ?? "settlement failed"}`;
             if (!receipts.length) return refuse(error, { rejected: [auths[i].nonce] });
             const n = Number(settled / BigInt(P.price));
-            return json({ items: found.slice(0, n), missing, undelivered: found.slice(n).map((f) => f.id), receipts, error,
+            return json({ keys: await keysFor(env, found.slice(0, n)), missing, undelivered: found.slice(n), receipts, error,
                 paid: auths.slice(0, i).map((a) => a.nonce), rejected: [auths[i].nonce] });
         }
         receipts.push(s);
         settled += BigInt(auths[i].value);
     }
-    return json({ items: found, missing, receipts, paid: auths.map((a) => a.nonce) });
+    return json({ keys: await keysFor(env, found), missing, receipts, paid: auths.map((a) => a.nonce) });
+}
+
+// POST /key: keys for a member. Barliman recovers who signed the request and asks the
+// MembershipRegistry whether that address may read this app now; this worker trusts its answer.
+// ponytail: one Barliman call per request; cache {tokenId, reader} → until if it gets busy.
+async function member(request, env) {
+    const M = CONFIG.paid.membership;
+    if (!M) return json({ error: "this app sells no memberships" }, 404);
+    let b;
+    try { b = await request.json(); } catch { return json({ error: "body must be JSON" }, 400); }
+    const ids = [...new Set(b?.ids ?? [])].filter((x) => typeof x === "string");
+    if (!ids.length || ids.length > MAX_BATCH) return json({ error: `between 1 and ${MAX_BATCH} ids` }, 400);
+    let check;
+    try {
+        const r = await fetch(`${M.barliman}/check`, { method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ appId: M.appId, tokenId: String(b.tokenId), ids, issuedAt: b.issuedAt, signature: b.signature }) });
+        check = await r.json();
+    } catch (e) { return json({ error: `could not check the membership: ${e.message}` }, 502); }
+    if (!check.ok) return json({ error: check.error ?? "this membership cannot read this app now", until: check.until ?? null }, 403);
+    return json({ keys: await keysFor(env, ids), reader: check.reader, until: check.until });
 }
 
 export default {
     async fetch(request, env) {
         const url = new URL(request.url);
         if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
-        if (url.pathname.startsWith("/_paid/") || url.pathname === "/_worker.js") return new Response("not found", { status: 404 });
+        if (url.pathname === "/_worker.js") return new Response("not found", { status: 404 });
         if (url.pathname === "/doc") return doc(request, url);
         if (url.pathname === "/paid" && request.method === "POST") return CONFIG.paid ? sellBatch(request, env, url) : json({ error: "nothing is sold here" }, 404);
         if (url.pathname.startsWith("/paid/")) return CONFIG.paid ? sell(request, env, url) : json({ error: "nothing is sold here" }, 404);
+        if (url.pathname === "/key" && request.method === "POST") return CONFIG.paid ? member(request, env) : json({ error: "nothing is sold here" }, 404);
 
         const res = await env.ASSETS.fetch(request);
         const out = new Response(res.body, res);

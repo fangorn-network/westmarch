@@ -149,7 +149,7 @@ const row = (r, { terms = [], also = 0, meta = true } = {}) => {
         votes(r));
 };
 
-const forSale = (r) => paid && r.paid_sha256;
+const forSale = (r) => paid && r.paid_ct;
 
 // ── threads: one matter (say) followed across meetings, from the `thread` role ──
 const allThreads = () => {
@@ -206,7 +206,7 @@ function occasionCard(g) {
 // decision record of its latest step that has one, bought per card.
 function signalCard(t) {
     const last = byId.get(t.steps.at(-1).id), head = t.head && byId.get(t.head.id);
-    const sold = paid ? t.steps.map((s) => byId.get(s.id)).reverse().find((r) => r?.paid_sha256) : null;
+    const sold = paid ? t.steps.map((s) => byId.get(s.id)).reverse().find((r) => r?.paid_ct) : null;
     const d = detail(last, R);
     return el("article", { className: "signal" },
         el("div", { className: "meta" }, el("span", {}, placeOf(last)), el("span", {}, head ? subtitleOf(head, R) : meetingOf(last)),
@@ -328,7 +328,7 @@ function item(key) {
             d ? el("p", {}, d) : el("p", { className: "hint" }, "No decision is recorded under this item (it may be on an agenda, before the meeting)."),
             facts.length ? el("dl", {}, facts.map(([k, v]) => [el("dt", {}, k.replace(/_/g, " ")), el("dd", {}, String(v))])) : null,
             el("div", { className: "acts" }, votes(r), docBtn, src ? el("a", { href: src, target: "_blank", rel: "noopener", className: "act" }, "Source ↗") : null),
-            paid && r.paid_sha256 ? decision(r) : null,
+            paid && r.paid_ct ? decision(r) : null,
             frame),
         thread && thread.steps.length > 1 ? el("section", {}, el("h2", {}, "Followed across meetings"), timeline(thread)) : null,
         siblings.length ? el("section", {}, el("h2", {}, "Same meeting"), el("ul", { className: "list" }, siblings.slice(0, 12).map((x) => row(x, { meta: false })))) : null,
@@ -364,13 +364,21 @@ function decision(r) {
         try {
             const w = await (await import("./wallet.js")).wallet(paid);
             await w.signIn();
+            // A member reads for free: nothing is charged.
+            const m = paid.membership ? await w.member().catch(() => null) : null;
+            if (m?.until > Date.now() / 1000) {
+                status.textContent = "Opening with your membership…";
+                const got = (await w.read([key], { [key]: r.paid_ct }, { [key]: r.paid_sha256 })).records[0];
+                if (got.error) throw new Error(got.error);
+                bought.set(key, got); return fields(got);
+            }
             const bal = await w.balance().catch(() => null);
             if (bal != null && bal < PRICE_N) {
                 btn.disabled = false;
                 return status.replaceChildren(`Your account balance is ${money(bal)}. `, el("a", { href: "#/account" }, "Add credit"), ` to buy this record.`);
             }
             status.textContent = "Buying…";
-            const got = await w.buy(key, r.paid_sha256);
+            const got = await w.buy(key, r.paid_sha256, r.paid_ct);
             if (got.error) throw new Error(got.error);
             bought.set(key, got); fields(got);
         } catch (e) {
@@ -381,7 +389,8 @@ function decision(r) {
     box.append(el("h3", {}, "Decision record"),
         el("p", { className: "hint" }, r.paid_includes ? `Summarized from the minutes. Includes ${r.paid_includes}.`
             : "Summarized from the minutes: the action, the outcome, the vote, dollar amounts and who receives them, and the organizations involved."),
-        el("div", { className: "acts" }, btn, status));
+        el("div", { className: "acts" }, btn, status),
+        paid.membership ? el("p", { className: "hint" }, "Members read every decision record at no charge. ", el("a", { href: "#/account" }, "Become a member")) : null);
     return box;
 }
 
@@ -460,13 +469,40 @@ async function accountView() {
             el("dl", {}, el("dt", {}, "Signed in as"), el("dd", {}, w.email ?? "you"),
                el("dt", {}, "Credit"), el("dd", {}, !w.address ? "setting up your account…" : bal == null ? "…" : `${money(bal)} · ${Math.floor(bal / PRICE_N + 1e-9).toLocaleString()} record${Math.floor(bal / PRICE_N + 1e-9) === 1 ? "" : "s"}`)),
             el("div", { className: "acts" },
-                el("button", { type: "button", className: "act", onclick: () => w.addFunds() }, w.faucet ? "Get free test credit" : "Add credit"),
+                el("button", { type: "button", className: "act", onclick: async (e) => {
+                    e.target.disabled = true;
+                    try { const sent = await w.addFunds(); if (sent?.sent) e.target.textContent = `Added ${money(Number(sent.sent) / 10 ** (paid.decimals ?? 6))} of test credit`; else if (sent?.note) e.target.textContent = "You already have test credit"; draw(); }
+                    catch (err) { e.target.textContent = `Could not add credit: ${err.message}`; }
+                } }, w.faucet ? "Get free test credit" : "Add credit"),
                 el("button", { type: "button", className: "act", onclick: () => w.logout() }, "Sign out")),
-            w.faucet && w.address ? el("section", {}, el("p", { className: "hint" }, `${NAME} is in testing, so credit is free. The button opens Circle's test-credit page: choose USDC on ${w.chain.name}, paste your account number below, and send.`),
+            w.faucet && w.address && !paid.membership ? el("section", {}, el("p", { className: "hint" }, `${NAME} is in testing, so credit is free. The button opens Circle's test-credit page: choose USDC on ${w.chain.name}, paste your account number below, and send.`),
                 el("p", {}, el("small", {}, "Account number: "), el("code", {}, w.address), " ", copy)) : null,
+            paid.membership && w.address ? await membershipBox(w) : null,
             el("p", { className: "hint" }, "Records you buy are saved on this device."));
     };
     w.onChange(() => { draw(); });
+}
+
+// A membership: every decision record in this app, at no charge per record, for a period.
+// The page never says wallet, token or proof.
+async function membershipBox(w) {
+    const box = el("section", {}, el("h3", {}, "Membership"));
+    const [m, plan] = await Promise.all([w.member().catch(() => null), w.plan().catch(() => null)]);
+    if (m?.until > Date.now() / 1000) {
+        box.append(el("p", {}, `You are a member until ${new Date(m.until * 1000).toLocaleDateString()}. Every decision record opens at no charge.`));
+        return box;
+    }
+    if (!plan || !plan.units) return null;
+    const status = el("small", {});
+    const btn = el("button", { type: "button", className: "act" }, `Become a member · ${money(plan.price)} for ${plan.days} days`);
+    btn.onclick = async () => {
+        btn.disabled = true;
+        try { await w.join((t) => { status.textContent = t; }); status.textContent = "You are a member."; location.reload(); }
+        catch (e) { btn.disabled = false; status.textContent = `The membership did not go through: ${e.message}`; }
+    };
+    box.append(el("p", { className: "hint" }, `A member reads every decision record in ${NAME} at no charge for ${plan.days} days. Your membership is not linked to your account in public records.`),
+        el("div", { className: "acts" }, btn, status));
+    return box;
 }
 
 // ── routing ──

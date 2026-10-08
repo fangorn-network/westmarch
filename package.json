@@ -1,6 +1,6 @@
 {
   "name": "@fangorn-network/westmarch",
-  "version": "0.0.19-dev",
+  "version": "0.0.20-dev",
   "description": "Publisher and consumer surfaces for a Fangorn app: shape a graph, publish it, read it back as a searchable, agent-drivable catalog",
   "license": "MIT",
   "type": "module",
@@ -55,6 +55,7 @@
     }
   },
   "devDependencies": {
+    "@fangorn-network/fetch": "file:../x402f/packages/fetch",
     "@fangorn-network/sdk": "^2026.9.22-dev",
     "@huggingface/transformers": "^4.2.0",
     "@noble/curves": "^1.9.1",

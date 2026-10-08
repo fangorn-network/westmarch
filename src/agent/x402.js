@@ -62,15 +62,88 @@ export async function payAndFetch(url, { privateKey, account, maxPrice, fetchImp
     return { status: paid.status, body, price: req.maxAmountRequired, receipt: receiptHeader ? JSON.parse(unb64(receiptHeader)) : null };
 }
 
-/** Buy one record an app sells (its agent card's `paid`) and check it against the sha256 the
- *  app published for it (`want`, the row's `paid_sha256`): what was paid for is what was
- *  committed. Shared by fangorn-mcp's `buy` and the stock page. */
-export async function buyRecord(paid, key, { want, account, privateKey, maxPrice = paid.price, fetchImpl } = {}) {
+// ── Sealed records ────────────────────────────────────────────────────────────────────────
+// An app's paid record is in its committed rows already, sealed: `paid_ct` is
+// base64(nonce[12] ‖ AES-256-GCM(key, record)), with key = HMAC-SHA256(PAID_SECRET, id), and
+// `paid_sha256` is the sha256 of the record itself. A purchase buys the key, never the data,
+// so the buyer has the ciphertext (and so knows the record exists) before paying, and checks
+// what it decrypts against the committed hash after. Sources seal with the same derivation.
+
+const hex = (u8) => [...u8].map((b) => b.toString(16).padStart(2, "0")).join("");
+const unhex = (h) => Uint8Array.from(h.match(/../g).map((x) => parseInt(x, 16)));
+const fromB64 = (s) => Uint8Array.from(unb64bytes(s));
+function unb64bytes(s) { return typeof atob === "function" ? [...atob(s)].map((c) => c.charCodeAt(0)) : [...Buffer.from(s, "base64")]; }
+const toB64 = (u8) => (typeof btoa === "function" ? btoa(String.fromCharCode(...u8)) : Buffer.from(u8).toString("base64"));
+const sha256 = async (bytes) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
+
+/** A record's key, hex: HMAC-SHA256(secret, id). The worker's keyFor; here for sources and tests. */
+export async function paidKey(secret, id) {
+    const k = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    return hex(new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(id))));
+}
+
+/** Seal `text` under `keyHex`: what a source writes as `paid_ct`. */
+export async function sealPaid(keyHex, text) {
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const k = await crypto.subtle.importKey("raw", unhex(keyHex), "AES-GCM", false, ["encrypt"]);
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, k, new TextEncoder().encode(text)));
+    const out = new Uint8Array(12 + ct.length);
+    out.set(nonce); out.set(ct, 12);
+    return toB64(out);
+}
+
+/** Open a sealed record and check it against the committed sha256 (`want`, if known). */
+export async function openPaid(ct, keyHex, want) {
+    const bytes = fromB64(ct);
+    const k = await crypto.subtle.importKey("raw", unhex(keyHex), "AES-GCM", false, ["decrypt"]);
+    const plain = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.slice(0, 12) }, k, bytes.slice(12)));
+    const sha = await sha256(plain);
+    return { sha256: sha, verified: want ? want === sha : null, record: JSON.parse(new TextDecoder().decode(plain)) };
+}
+
+/** Open every record a seller sent a key for. `ct[id]` is the row's paid_ct, `want[id]` its paid_sha256. */
+async function openAll(keys, ct, want) {
+    const out = [];
+    for (const [id, key] of Object.entries(keys ?? {})) {
+        if (!ct[id]) { out.push({ id, key, error: "no sealed record for this id in the rows read" }); continue; }
+        try { out.push({ id, ...(await openPaid(ct[id], key, want[id])) }); }
+        catch (e) { out.push({ id, key, error: `could not open: ${e.message}` }); }
+    }
+    return out;
+}
+
+/** Buy one record an app sells (its agent card's `paid`): pay for its key, open `ct` (the
+ *  row's paid_ct) and check it against `want` (its paid_sha256). Shared by fangorn-mcp and the page. */
+export async function buyRecord(paid, key, { ct, want, account, privateKey, maxPrice = paid.price, fetchImpl } = {}) {
+    if (!ct) return { id: key, error: "this row carries no sealed record (paid_ct): nothing to buy" };
     const r = await payAndFetch(paid.url.replace("{id}", encodeURIComponent(key)), { account, privateKey, maxPrice, fetchImpl });
     if (r.status !== 200) return { id: key, error: `HTTP ${r.status}: ${r.body.slice(0, 200)}` };
-    const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(r.body)))]
-        .map((b) => b.toString(16).padStart(2, "0")).join("");
-    return { id: key, price: r.price, receipt: r.receipt, digest, verified: want ? want === digest : null, record: JSON.parse(r.body) };
+    const opened = await openPaid(ct, JSON.parse(r.body).key, want);
+    return { id: key, price: r.price, receipt: r.receipt, digest: opened.sha256, verified: opened.verified, record: opened.record };
+}
+
+/** The typed data a reader signs to read with a membership. The same as Barliman's
+ *  readTypedData (x402f/packages/barliman): change both together. */
+export const readTypedData = ({ registry, chainId, appId, tokenId, ids, issuedAt }) => ({
+    domain: { name: "Fangorn Read", version: "1", chainId: Number(chainId), verifyingContract: registry },
+    types: { Read: [{ name: "app", type: "bytes32" }, { name: "tokenId", type: "uint256" }, { name: "ids", type: "string[]" }, { name: "issuedAt", type: "uint256" }] },
+    primaryType: "Read",
+    message: { app: appId, tokenId: BigInt(tokenId), ids, issuedAt: BigInt(issuedAt) },
+});
+
+/** Read records with a membership: `reader` (the holder, or the agent it named) signs the
+ *  request, the app's worker has Barliman check it, and the keys come back. Nothing is paid. */
+export async function readAsMember(paid, ids, { reader, tokenId, ct = {}, want = {}, fetchImpl = fetch } = {}) {
+    const m = paid.membership;
+    if (!m) throw new Error("this app sells no memberships");
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const signature = await reader.signTypedData(readTypedData({ registry: m.registry, chainId: m.chainId, appId: m.appId, tokenId, ids, issuedAt }));
+    const url = paid.key_url ?? paid.url.replace(/\/paid\/\{id\}$/, "/key");
+    const res = await fetchImpl(url, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids, tokenId: String(tokenId), issuedAt, signature }) });
+    const body = await res.json();
+    if (res.status !== 200) throw new Error(`membership refused: ${body.error ?? res.status}`);
+    return { records: await openAll(body.keys, ct, want), until: body.until };
 }
 
 // ── Batches and vouchers ──────────────────────────────────────────────────────────────────
@@ -131,10 +204,14 @@ export async function withLock(path, fn, { staleMs = 120_000, waitMs = 30_000 } 
 }
 
 /** Buy many records at once. Pays from `vouchers` (spent ones are removed from the array) or
- *  signs one exact payment with `account`/`privateKey`. Each record is checked against
- *  `want[id]` (its published sha256). Returns the records and a manifest a third party can check. */
-export async function buyBatch(paid, ids, { want = {}, vouchers, account, privateKey, maxPrice, fetchImpl = fetch } = {}) {
+ *  signs one exact payment with `account`/`privateKey`. Each key opens `ct[id]` (the row's
+ *  paid_ct), checked against `want[id]` (its paid_sha256). Returns the records and a manifest a
+ *  third party can check. */
+export async function buyBatch(paid, allIds, { ct = {}, want = {}, vouchers, account, privateKey, maxPrice, fetchImpl = fetch } = {}) {
     const url = paid.url.replace(/\/\{id\}$/, "");
+    // Only ids whose sealed record is in hand are bought: anything else would pay for nothing.
+    const ids = allIds.filter((id) => ct[id]), unsealed = allIds.filter((id) => !ct[id]);
+    if (!ids.length) throw new Error(`none of these rows carries a sealed record (paid_ct): ${unsealed.join(", ")}`);
     const post = (headers = {}) => fetchImpl(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ ids }) });
     const first = await post();
     const offer = await first.json();
@@ -162,14 +239,9 @@ export async function buyBatch(paid, ids, { want = {}, vouchers, account, privat
     }
     if (res.status !== 200) throw new Error(`payment refused: ${body.error ?? JSON.stringify(body).slice(0, 200)}`);
     const spent = payments.filter((p) => paidNonces.has(nonce(p))).reduce((s, p) => s + BigInt(p.payload.authorization.value), 0n);
-    const records = [];
-    for (const { id, body: text } of body.items) {
-        const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)))]
-            .map((b) => b.toString(16).padStart(2, "0")).join("");
-        records.push({ id, sha256: digest, verified: want[id] ? want[id] === digest : null, record: JSON.parse(text) });
-    }
+    const records = await openAll(body.keys, ct, want);
     // `undelivered` + `error`: a payment failed after others settled; these ids were not paid for.
-    return { records, missing: body.missing, undelivered: body.undelivered ?? [], error: body.error ?? null,
+    return { records, missing: [...unsealed, ...(body.missing ?? [])], undelivered: body.undelivered ?? [], error: body.error ?? null,
         manifest: { app: url, bought: new Date().toISOString(), price: String(spent),
         asset: req.asset, network: req.network, transactions: body.receipts.map((r) => r.transaction),
         records: records.map(({ id, sha256 }) => ({ id, sha256 })) } };
@@ -208,18 +280,31 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     // that checks signatures and refuses a nonce settled twice, and vouchers signed ahead.
     const { readFileSync, writeFileSync, mkdtempSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
-    const sale = { price: "100000", network: "arbitrum-sepolia", asset: USDC, payTo: SELLER, facilitator: "https://fac", name: "USD Coin", version: "2", description: "" };
+    const membership = { registry: `0x${"12".repeat(20)}`, barliman: "https://barliman", chainId: 421614, appId: `0x${"ab".repeat(32)}` };
+    const sale = { price: "100000", network: "arbitrum-sepolia", asset: USDC, payTo: SELLER, facilitator: "https://fac", name: "USD Coin", version: "2", description: "", membership };
     const src = readFileSync(new URL("../../site/worker.js", import.meta.url), "utf8").replace(/\/\*CONFIG\*\/[\s\S]*?\/\*END\*\//, JSON.stringify({ docHosts: [], paid: sale }));
     const wfile = `${mkdtempSync(`${tmpdir()}/wm-`)}/worker.mjs`;
     writeFileSync(wfile, src);
     const worker = (await import(wfile)).default;
-    const hex = async (s) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))].map((b) => b.toString(16).padStart(2, "0")).join("");
-    const files = {};
-    for (const id of ["a", "b", "c"]) files[`/_paid/${(await hex(id)).slice(0, 32)}.json`] = JSON.stringify({ id, amount: 1 });
-    const env = { ASSETS: { fetch: async (u) => files[new URL(u).pathname] ? new Response(files[new URL(u).pathname], { headers: { "content-type": "application/json" } }) : new Response("<html>", { headers: { "content-type": "text/html" } }) } };
+    // The rows as a buyer reads them: each record sealed under its key, with the plaintext's sha256.
+    const SECRET = "s3cret", ct = {}, want = {};
+    for (const id of ["a", "b", "c"]) {
+        const plain = JSON.stringify({ id, amount: 1 });
+        ct[id] = await sealPaid(await paidKey(SECRET, id), plain);
+        want[id] = await sha256(new TextEncoder().encode(plain));
+    }
+    const env = { PAID_SECRET: SECRET };
+    const member = privateKeyToAccount(generatePrivateKey()), memberToken = "77";
     const spent = new Set();
     const realFetch = globalThis.fetch;
+    const { recoverTypedDataAddress } = await import("viem");
     globalThis.fetch = async (u, init) => {
+        if (u === "https://barliman/check") {   // a stand-in Barliman: the member's token reads, nobody else's
+            const b = JSON.parse(init.body);
+            const reader = await recoverTypedDataAddress({ ...readTypedData({ registry: membership.registry, chainId: 421614, ...b }), signature: b.signature });
+            const ok = reader === member.address && b.tokenId === memberToken && b.appId === membership.appId;
+            return new Response(JSON.stringify({ ok, reader, until: ok ? "1900000000" : "0" }));
+        }
         const { paymentPayload: p, paymentRequirements: q } = JSON.parse(init.body), a = p.payload.authorization;
         if (u.endsWith("/verify")) {
             const ok = await verifyTypedData({ address: a.from, signature: p.payload.signature,
@@ -235,24 +320,28 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         return new Response(JSON.stringify({ success: true, transaction: `0x${spent.size}` }));
     };
     const viaWorker = (u, init) => worker.fetch(new Request(u, init), env);
-    const paidCard = { url: "https://x/paid/{id}", price: sale.price };
+    const paidCard = { url: "https://x/paid/{id}", key_url: "https://x/key", price: sale.price, membership };
     try {
-        // One exact payment from a wallet: 2 of 3 ids exist, 2 × $0.10, the missing one not charged.
-        const one = await buyBatch(paidCard, ["a", "b", "zz"], { account: buyer, maxPrice: 200000n, want: { a: await hex(files[Object.keys(files)[0]]) }, fetchImpl: viaWorker });
-        if (one.records.length !== 2 || one.missing[0] !== "zz" || one.manifest.price !== "200000" || one.records[0].verified !== true)
+        // One record, one payment: the key opens the row's sealed record, which matches its hash.
+        const single = await buyRecord(paidCard, "a", { ct: ct.a, want: want.a, account: buyer, maxPrice: 100000n, fetchImpl: viaWorker });
+        if (single.verified !== true || single.record.id !== "a") throw new Error(`single key: ${JSON.stringify(single)}`);
+        // One exact payment from a wallet: 2 of 3 ids are sealed in the rows, 2 × $0.10, the
+        // third is never quoted (no ciphertext in hand, nothing to pay for).
+        const one = await buyBatch(paidCard, ["a", "b", "zz"], { account: buyer, maxPrice: 200000n, ct, want, fetchImpl: viaWorker });
+        if (one.records.length !== 2 || one.missing[0] !== "zz" || one.manifest.price !== "200000" || !one.records.every((r) => r.verified === true))
             throw new Error(`batch with a wallet: ${JSON.stringify(one)}`);
         // $2 of vouchers in $0.10 / $1, 30 days: any multiple of $0.10 can be paid exactly.
         const vs = await signVouchers({ ...paidCard, scheme: "exact", network: sale.network, payTo: SELLER, asset: USDC, extra: { name: "USD Coin", version: "2" } },
             buyer, { total: 2000000n, denominations: [100000n, 1000000n] });
         if (vs.length !== 11 || pick(vs, 1700000n).length !== 8 || pick(vs, 2100000n) !== null) throw new Error(`vouchers: ${vs.length}`);
         const before = [...vs];
-        const three = await buyBatch(paidCard, ["a", "b", "c"], { vouchers: vs, fetchImpl: viaWorker });
+        const three = await buyBatch(paidCard, ["a", "b", "c"], { vouchers: vs, ct, want, fetchImpl: viaWorker });
         if (three.records.length !== 3 || vs.length !== 8 || three.manifest.transactions.length !== 3) throw new Error(`batch with vouchers: ${JSON.stringify(three.manifest)}`);
         // A spent $0.10 voucher riding along with a fresh one: both verify, settle refuses, nothing sent.
         const usedOne = before.find((v) => !vs.includes(v) && v.payload.authorization.value === "100000");
         const fresh = vs.find((v) => v.payload.authorization.value === "100000");
         const replay = await viaWorker("https://x/paid", { method: "POST", body: JSON.stringify({ ids: ["a", "b"] }), headers: { "X-PAYMENT": b64(JSON.stringify([usedOne, fresh])) } });
-        if (replay.status !== 402 || (await replay.json()).items) throw new Error("a spent voucher must not buy anything");
+        if (replay.status !== 402 || (await replay.json()).keys) throw new Error("a spent voucher must not buy anything");
         const short = await viaWorker("https://x/paid", { method: "POST", body: JSON.stringify({ ids: ["a", "b"] }), headers: { "X-PAYMENT": b64(JSON.stringify([fresh])) } });
         if (short.status !== 402) throw new Error("payments short of the price must be refused");
         // A spent voucher still in the stack, behind a fresh one (a crash before the file was
@@ -260,14 +349,20 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         // leave the stack so neither is offered again.
         const fresh2 = vs.find((v) => v !== fresh && v.payload.authorization.value === "100000");
         const stack = [fresh2, usedOne];
-        const half = await buyBatch(paidCard, ["a", "b"], { vouchers: stack, fetchImpl: viaWorker });
+        const half = await buyBatch(paidCard, ["a", "b"], { vouchers: stack, ct, want, fetchImpl: viaWorker });
         if (half.records.length !== 1 || half.undelivered[0] !== "b" || !half.error || half.manifest.price !== "100000" || stack.length !== 0)
             throw new Error(`partial settle: ${JSON.stringify({ ...half, stack: stack.length })}`);
         // The spent voucher first: nothing settles, nothing is sent, and it is dropped.
         const stack2 = [usedOne, fresh];
         let threw = false;
-        try { await buyBatch(paidCard, ["a", "b"], { vouchers: stack2, fetchImpl: viaWorker }); } catch { threw = true; }
+        try { await buyBatch(paidCard, ["a", "b"], { vouchers: stack2, ct, want, fetchImpl: viaWorker }); } catch { threw = true; }
         if (!threw || stack2.length !== 1 || stack2[0] !== fresh) throw new Error(`refused batch must drop only the spent voucher: ${stack2.length}`);
+        // A member reads for free: the signed request names the token; a stranger's is refused.
+        const read = await readAsMember(paidCard, ["a", "c"], { reader: member, tokenId: memberToken, ct, want, fetchImpl: viaWorker });
+        if (read.records.length !== 2 || !read.records.every((r) => r.verified === true)) throw new Error(`member read: ${JSON.stringify(read)}`);
+        let stranger = false;
+        try { await readAsMember(paidCard, ["a"], { reader: buyer, tokenId: memberToken, ct, want, fetchImpl: viaWorker }); } catch { stranger = true; }
+        if (!stranger) throw new Error("a reader the membership does not name must be refused");
         // The allowance lock: two purchases at once take turns; a crashed one's lock is taken over.
         const vfile = `${mkdtempSync(`${tmpdir()}/wm-`)}/vouchers.json`, order = [];
         const turn = (name) => withLock(vfile, async () => { order.push(`${name}+`); await new Promise((ok) => setTimeout(ok, 50)); order.push(`${name}-`); });
@@ -278,6 +373,6 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         utimesSync(`${vfile}.lock`, new Date(Date.now() - 300_000), new Date(Date.now() - 300_000));
         if (await withLock(vfile, async () => 7) !== 7 || existsSync(`${vfile}.lock`)) throw new Error("a stale lock must be taken over and released");
     } finally { globalThis.fetch = realFetch; }
-    console.log("x402.js batch self-check ok — one price for the ids that exist, paid by one signature or by vouchers signed ahead, spent vouchers removed and refused if replayed, short payment refused, a half-settled batch delivers what was paid and drops spent vouchers, the allowance file is locked per purchase");
+    console.log("x402.js batch self-check ok — keys, not records: each opens the row's sealed record and matches its hash; a member reads free and a stranger is refused; one price for the ids sealed in the rows, paid by one signature or by vouchers signed ahead, spent vouchers removed and refused if replayed, short payment refused, a half-settled batch delivers what was paid and drops spent vouchers, the allowance file is locked per purchase");
     console.log("x402.js self-check ok — a signed EIP-3009 authorization the seller can verify, exactly the asked amount to the asked payee, the receipt read back, and a price over the cap refused before signing");
 }

@@ -182,17 +182,29 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
         const cap = BigInt(Math.round(Number(process.env.FANGORN_MCP_MAX_PRICE ?? "0.10") * 10 ** dec));
         const resolve = (id) => {
             const hit = loadedRows().find(({ r, view }) => r.id === id || r[rolesOf(view).identity] === id);
-            return { key: hit ? hit.r[rolesOf(hit.view).identity] ?? id : id, want: hit?.r.paid_sha256 };
+            return { key: hit ? hit.r[rolesOf(hit.view).identity] ?? id : id, want: hit?.r.paid_sha256, ct: hit?.r.paid_ct };
         };
         run.buy = async ({ id, ids }) => {
+            const { buyBatch, withLock, readAsMember } = await import("./x402.js");
+            const rs = (ids?.length ? ids : id ? [id] : []).map(resolve);
+            const ct = Object.fromEntries(rs.filter((r) => r.ct).map((r) => [r.key, r.ct]));
+            const want = Object.fromEntries(rs.filter((r) => r.want).map((r) => [r.key, r.want]));
+            const verdict = (records) => { const bad = records.filter((x) => x.verified === false).map((x) => x.id);
+                return bad.length ? `MISMATCH for ${bad.join(", ")}` : "every record opened matches its published sha256"; };
+            // A membership the agent was named on (FANGORN_MCP_READER_KEY + FANGORN_MCP_MEMBERSHIP,
+            // the token id): read for free, nothing paid.
+            if (process.env.FANGORN_MCP_READER_KEY && process.env.FANGORN_MCP_MEMBERSHIP && p.membership) {
+                const { privateKeyToAccount } = await import("viem/accounts");
+                const r = await readAsMember(p, rs.map((r) => r.key).filter((k) => ct[k]), { reader: privateKeyToAccount(process.env.FANGORN_MCP_READER_KEY),
+                    tokenId: process.env.FANGORN_MCP_MEMBERSHIP, ct, want });
+                return { read: r.records.length, with: "membership", until: r.until, verified: verdict(r.records), records: r.records.map(({ id, record, error }) => ({ id, record, error })) };
+            }
             if (ids?.length) {
                 // Many at once, one price: from the allowance file (FANGORN_MCP_VOUCHERS, vouchers the
                 // person's wallet signed) if there is one, else one payment from the wallet key.
-                const { buyBatch, withLock } = await import("./x402.js");
                 const fs = await import("node:fs");
                 const vf = process.env.FANGORN_MCP_VOUCHERS;
-                const rs = ids.map(resolve), want = Object.fromEntries(rs.filter((r) => r.want).map((r) => [r.key, r.want]));
-                const opts = { want, privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap * BigInt(rs.length) };
+                const opts = { ct, want, privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap * BigInt(rs.length) };
                 // The file is read, spent from and saved under one lock, and saved even when the
                 // purchase fails: buyBatch drops the vouchers the seller settled or refused either way.
                 const r = vf
@@ -202,23 +214,24 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
                         finally { fs.writeFileSync(vf, JSON.stringify(vouchers)); }
                     })
                     : await buyBatch(p, rs.map((r) => r.key), opts);
-                const bad = r.records.filter((x) => x.verified === false).map((x) => x.id);
-                return { bought: r.records.length, missing: r.missing, verified: bad.length ? `MISMATCH for ${bad.join(", ")}` : "every record searched first matches its published sha256",
+                return { bought: r.records.length, missing: r.missing, verified: verdict(r.records),
                          ...(r.undelivered.length ? { not_bought: r.undelivered, why: r.error } : {}),
-                         manifest: r.manifest, records: r.records.map(({ id, record }) => ({ id, record })) };
+                         manifest: r.manifest, records: r.records.map(({ id, record, error }) => ({ id, record, error })) };
             }
             if (!id) throw new Error("id or ids is required");
-            const { key, want } = resolve(id);
+            const { key, want: w, ct: c } = resolve(id);
+            if (!c) return { id: key, error: "search for the record first: its sealed copy (paid_ct) comes from the row, and nothing is bought without it" };
             const { buyRecord } = await import("./x402.js");
-            const r = await buyRecord(p, key, { want, privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap });
+            const r = await buyRecord(p, key, { ct: c, want: w, privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap });
             if (r.error) return r;
             return { id: key, paid: r.price ? price : "free", transaction: r.receipt?.transaction ?? null, network: r.receipt?.network ?? p.network,
-                     verified: want ? (r.verified ? "matches the published sha256" : `MISMATCH: published ${want}, got ${r.digest}`) : "not checked (search for the record first)",
+                     verified: w ? (r.verified ? "matches the published sha256" : `MISMATCH: published ${w}, got ${r.digest}`) : "not checked (the row has no paid_sha256)",
                      record: r.record };
         };
         tools.push({ name: "buy", description: `Buy one ${n} record's paid detail for ${price} (x402 on ${p.network}): ${p.description || "the structured record"}. ` +
-                "Pass an id from search, or ids for up to 25 at once (one price, one manifest of hashes and transactions). " +
-                "Paid from the allowance (FANGORN_MCP_VOUCHERS) or this server's wallet (FANGORN_MCP_WALLET_KEY), never above FANGORN_MCP_MAX_PRICE a record.",
+                "Pass an id from search, or ids for up to 1000 at once (one price, one manifest of hashes and transactions). " +
+                "The record is already in the row, sealed; this buys its key and opens it. " +
+                "Read free with a membership the agent was named on (FANGORN_MCP_READER_KEY + FANGORN_MCP_MEMBERSHIP); otherwise paid from the allowance (FANGORN_MCP_VOUCHERS) or this server's wallet (FANGORN_MCP_WALLET_KEY), never above FANGORN_MCP_MAX_PRICE a record.",
             inputSchema: { type: "object", properties: { id: str("A record id from search or get"), ids: { type: "array", items: { type: "string" }, description: "Several record ids, bought together" } } } });
     }
 
