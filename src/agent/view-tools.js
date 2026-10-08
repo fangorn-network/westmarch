@@ -180,12 +180,27 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
         const p = app.paid, dec = p.decimals ?? 6;
         const price = `${(Number(p.price) / 10 ** dec).toFixed(dec).replace(/0+$/, "").replace(/\.$/, "")} ${p.symbol ?? "USDC"}`;
         const cap = BigInt(Math.round(Number(process.env.FANGORN_MCP_MAX_PRICE ?? "0.10") * 10 ** dec));
-        run.buy = async ({ id }) => {
-            if (!id) throw new Error("id is required");
+        const resolve = (id) => {
             const hit = loadedRows().find(({ r, view }) => r.id === id || r[rolesOf(view).identity] === id);
-            const key = hit ? hit.r[rolesOf(hit.view).identity] ?? id : id;
+            return { key: hit ? hit.r[rolesOf(hit.view).identity] ?? id : id, want: hit?.r.paid_sha256 };
+        };
+        run.buy = async ({ id, ids }) => {
+            if (ids?.length) {
+                // Many at once, one price: from the allowance file (FANGORN_MCP_VOUCHERS, vouchers the
+                // person's wallet signed) if there is one, else one payment from the wallet key.
+                const { buyBatch } = await import("./x402.js");
+                const fs = await import("node:fs");
+                const vf = process.env.FANGORN_MCP_VOUCHERS, vouchers = vf ? JSON.parse(fs.readFileSync(vf, "utf8")) : undefined;
+                const rs = ids.map(resolve), want = Object.fromEntries(rs.filter((r) => r.want).map((r) => [r.key, r.want]));
+                const r = await buyBatch(p, rs.map((r) => r.key), { want, vouchers, privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap * BigInt(rs.length) });
+                if (vf) fs.writeFileSync(vf, JSON.stringify(vouchers));
+                const bad = r.records.filter((x) => x.verified === false).map((x) => x.id);
+                return { bought: r.records.length, missing: r.missing, verified: bad.length ? `MISMATCH for ${bad.join(", ")}` : "every record searched first matches its published sha256",
+                         manifest: r.manifest, records: r.records.map(({ id, record }) => ({ id, record })) };
+            }
+            if (!id) throw new Error("id or ids is required");
+            const { key, want } = resolve(id);
             const { buyRecord } = await import("./x402.js");
-            const want = hit?.r.paid_sha256;
             const r = await buyRecord(p, key, { want, privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap });
             if (r.error) return r;
             return { id: key, paid: r.price ? price : "free", transaction: r.receipt?.transaction ?? null, network: r.receipt?.network ?? p.network,
@@ -193,8 +208,9 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
                      record: r.record };
         };
         tools.push({ name: "buy", description: `Buy one ${n} record's paid detail for ${price} (x402 on ${p.network}): ${p.description || "the structured record"}. ` +
-                "Pass an id from search. Paid from this server's wallet (FANGORN_MCP_WALLET_KEY), never above FANGORN_MCP_MAX_PRICE.",
-            inputSchema: { type: "object", properties: { id: str("A record id from search or get") }, required: ["id"] } });
+                "Pass an id from search, or ids for up to 25 at once (one price, one manifest of hashes and transactions). " +
+                "Paid from the allowance (FANGORN_MCP_VOUCHERS) or this server's wallet (FANGORN_MCP_WALLET_KEY), never above FANGORN_MCP_MAX_PRICE a record.",
+            inputSchema: { type: "object", properties: { id: str("A record id from search or get"), ids: { type: "array", items: { type: "string" }, description: "Several record ids, bought together" } } } });
     }
 
     return { tools, call: async (name, args = {}) => {
