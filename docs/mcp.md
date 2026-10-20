@@ -3,7 +3,8 @@
 `fangorn-mcp` is one MCP server for every Fangorn app. It reads the list of apps
 from the chain, checks each app's agent card, and gives your agent tools to search
 the app's data. Each app answers from its own MCP server (its Worker at `/mcp`),
-so nothing is downloaded and no browser runs. It needs no account, API key or wallet.
+so nothing is downloaded and no browser runs. It needs no account or API key, and a wallet
+only for apps that charge.
 
 You need **Node 20 or later**.
 
@@ -20,7 +21,18 @@ claude mcp add --transport http my-app https://my-app.example/mcp
 
 ## Install
 
-### Claude Code
+### Claude Code plugin
+
+```sh
+claude plugin marketplace add fangorn-network/westmarch && claude plugin install fangorn-index@fangorn
+```
+
+This adds the `fangorn` server and the `fangorn-index` skill. The server reads
+`FANGORN_MCP_WALLET_KEY`, `FANGORN_MCP_MAX_PRICE` and `FANGORN_NETWORK` from the environment
+Claude Code starts in, so set them in your shell, not in a config file. It leaves out
+`@huggingface/transformers`, so `find-apps` matches words; use the command below for meaning.
+
+### Claude Code, by hand
 
 ```sh
   claude mcp add fangorn -- \
@@ -82,6 +94,9 @@ Here is an example of what you can ask:
 | Env var / flag | Default | What it does |
 |---|---|---|
 | `FANGORN_NETWORK` | `baseSepolia` | The network whose apps to list and open: `baseSepolia` or `arbitrumSepolia`. |
+| `FANGORN_MCP_WALLET_KEY` | none | A private key (with or without `0x`) to pay x402 prices with, in USDC on the network each app names. Unset, a paid call returns its price instead. |
+| `FANGORN_MCP_MAX_PRICE` | `0.10` | The most it pays for one call, in USDC. |
+| `FANGORN_MCP_MAX_PASS` | never | The most it pays for a pass, in USDC; under it, it buys the pass instead of paying per call. |
 | `FANGORN_LOG_WINDOW` | the network's | Blocks read per chain request. Only for a private RPC that takes wider ranges than the public one. |
 | `--from-block <n>` | registry deploy block | Block to start the app scan from, for other deployments. |
 | `FANGORN_MCP_TRACE=1` | off | Print step timings to stderr. |

@@ -1,39 +1,48 @@
-# fangorn-index
+# The Fangorn plugins
 
-A Claude Code plugin with two skills.
+Two Claude Code plugins from one marketplace (`.claude-plugin/marketplace.json`).
 
-**`fangorn-app`** builds an app: records → graph → schema → commit → view →
-page → agent card → on-chain binding, with the API shapes and the pins that
-cannot change stated up front. It is the agent-facing form of
-`docs/app-to-agent.md`, and points at that guide section by section rather than
-repeating it. It triggers on anything like "put this dataset on Fangorn" or "make
-this searchable by agents".
+**`fangorn-index`** (this folder) is for people and agents using Fangorn apps:
 
-**`fangorn-improve`** keeps a live app getting better: each run picks one thing (a failing
-guardrail, a broken source, an accepted Observation, the largest coverage gap, the weakest
-question), proves it locally with `westmarch-eval`, and opens one pull request that the
-app's `eval` gate then grades. It never publishes, deploys or merges. Run it by hand or on
-a schedule (`/loop`).
+- The **`fangorn-index`** skill makes the app index usable by an agent: find which
+  publisher has what, read enough of it to decide, and hand off to the app that owns
+  it, carrying a taste kernel that works in every corpus on the network. The rest of
+  this file is about that skill.
+- The **`fangorn`** MCP server (`.mcp.json`) is `fangorn-mcp` from npm: it lists the
+  apps on chain, opens one and relays its tools, and pays x402 prices with
+  `FANGORN_MCP_WALLET_KEY` when that is set in your environment (see `docs/mcp.md`).
 
-**`fangorn-index`** makes the Fangorn app index usable by an agent: find
-which publisher has what, read enough of it to decide, and hand off to the app
-that owns it — carrying a taste kernel that works in every corpus on the network.
-The rest of this file is about that skill.
+**`fangorn-builder`** (`../plugin-builder`) is for app owners:
 
-Ships inside the `@fangorn/westmarch` repo, and imports it by relative path. It
-is not standalone.
+- **`fangorn-app`** builds an app: records → graph → schema → commit → view →
+  page → agent card → on-chain binding, with the API shapes and the pins that
+  cannot change stated up front. It is the agent-facing form of
+  `docs/app-to-agent.md`, and points at that guide section by section rather than
+  repeating it. It triggers on anything like "put this dataset on Fangorn" or "make
+  this searchable by agents".
+- **`fangorn-improve`** keeps a live app getting better: each run picks one thing (a failing
+  guardrail, a broken source, an accepted Observation, the largest coverage gap, the weakest
+  question), proves it locally with `westmarch-eval`, and opens one pull request that the
+  app's `eval` gate then grades. It never publishes, deploys or merges. Run it by hand or on
+  a schedule (`/loop`).
 
-## What it is not
+The skills run their commands from the published `@fangorn-network/westmarch` through
+`npx`, so a change to `src/` reaches users when the package is published, not when this
+repo is pushed.
 
-**Not an MCP server, and not a browser driver.** `sond3r-tv` drives a live tab
+## What the skill is not
+
+**Not a browser driver.** `sond3r-tv` drives a live tab
 through WebMCP, which is the right shape when the app IS the product. This is the
 other half: an index that points at apps needs no runtime of its own, and no
 publisher should have to host a server to be findable. Every verb is a function
-`@fangorn/westmarch` already exports, and the shell is the transport.
+`@fangorn-network/westmarch` already exports, and the shell is the transport. The MCP server
+beside it is for clients that would rather call tools than run commands.
 
 ## Install
 
 ```sh
+# or, from a shell: claude plugin marketplace add … && claude plugin install …
 /plugin marketplace add fangorn-network/westmarch
 /plugin install fangorn-index@fangorn     # consumers: skill + MCP
 /plugin install fangorn-builder@fangorn   # app owners and publishers

@@ -6,7 +6,8 @@ Everything you need to get started building Fangorn apps, and the free tier that
 to a Fangorn app and ERC-8004 agent that any agent can discover, verify and drive.
 
 **Just want to query apps from Claude or another MCP client?** [docs/mcp.md](docs/mcp.md)
-installs `fangorn-mcp` in one command.
+installs `fangorn-mcp` in one command; in Claude Code, `claude plugin marketplace add
+fangorn-network/westmarch && claude plugin install fangorn-index@fangorn` adds it with its skill.
 
 
 ## The free tier: one Worker per app
@@ -59,7 +60,8 @@ src/
               envelope.js · manifest.js · cli.js · view.js · ship.js · eval.ts
               lint.js    …and whether any of that WORKED
 site/         the stock page every `westmarch-ship` app deploys
-plugin/       the Claude Code plugin: skills + fangorn-fx
+plugin/       Claude Code plugin fangorn-index: its skill, fangorn-fx, the fangorn MCP server
+plugin-builder/  Claude Code plugin fangorn-builder: fangorn-app, fangorn-improve
 examples/     demo/ (a second consumer + fixtures) · publisher/ (the smallest publisher)
 scripts/      test.js (`npm test`) · build-bin.js (single-file fangorn-mcp)
 ```

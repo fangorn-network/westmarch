@@ -106,13 +106,20 @@ and commit `.ship/state.json`; Quorum's `.github/workflows/ship.yml` is a workin
 five towns' meetings crawled, published, embedded and deployed by `westmarch-ship`, then
 searched and bought (x402, settled on Arbitrum Sepolia) from `fangorn-mcp` in a fresh
 session. FAR Desk (`https://far-desk.quickbeam.workers.dev`, agent `84532:10323`) is the
-private one: 3,113 sealed FAR sections on Base Sepolia, searched per call and with a pass.
+private one: 3,113 sealed FAR sections, registered on Base Sepolia and selling in real USDC on
+Base, searched per call and with a pass; its `search` tool is in PayAI's Bazaar.
 Kingsfoil, the reference at the end, predates `ship` and was built by hand.
 
 ## A private app: the data is the product
 
 `"private": { "pass": { "price": "5", "days": 30 }, "call": "0.01" }` in `app.json`, settled like
 `paid` (`network`, `payTo`, `asset`, `facilitator`). What changes:
+
+- **Real money.** Settlement is set apart from the app's chain: `"network": "base"` in `private`
+  (or `paid`) charges USDC on Base while the app and its agent stay on Base Sepolia, where the
+  Fangorn contracts are. Set `payTo` to a wallet you control and have backed up; it defaults to
+  the owner key ship signs with. On a mainnet the page's button opens Privy's card funding
+  (enable it in the Privy dashboard) instead of the faucet. Try a low price first.
 
 - **Storage.** Each source stages its records (it needs `--output-dir`); ship seals every row whole,
   `{sealed: base64(nonce ‖ AES-256-GCM(rowKey, row))}` with rowKey = HMAC-SHA256(PAID_SECRET,
@@ -131,7 +138,10 @@ Kingsfoil, the reference at the end, predates `ship` and was built by hand.
 - **Discovery.** The card's Fangorn extension carries `access` (pass URL and prices), and its
   skills are tagged `x402`, so the ERC-8004 registration says `x402Support: true`.
   `/openapi.json` and `/.well-known/x402` list `POST /pass` for x402scan; the facilitator's Bazaar
-  lists `/pass` and each tool (as `type: "mcp"`) after its first sale.
+  lists `/pass` and each tool (as `type: "mcp"`, resource `<app>/mcp`) after its first sale, so make
+  one paid call yourself (paying from `payTo` is accepted). Check with
+  `curl "https://facilitator.payai.network/discovery/resources?payTo=<payTo>"`. Mainnet agents find
+  the app here, since its ERC-8004 registration is on Base Sepolia.
 - **The page.** Without a pass it shows what is inside (the free catalog and `describe`: how many
   records, when they were updated), a "Get a pass" button (Privy sign-in, then x402; on a testnet
   it links the faucet when the balance is short), and the lines to add the app to an agent
@@ -645,7 +655,14 @@ can keep an app current: a cron job, a CI workflow, or an agent that just publis
 ## Using Fangorn apps from an agent
 
 `fangorn-mcp` is one MCP server for every Fangorn app: a new app needs no new
-registration. Install it through npm (node ≥ 20):
+registration. In Claude Code, the `fangorn-index` plugin installs it with the skill that uses it:
+
+```sh
+claude plugin marketplace add fangorn-network/westmarch && claude plugin install fangorn-index@fangorn
+```
+
+App owners add `fangorn-builder@fangorn` (the `fangorn-app` and `fangorn-improve` skills).
+Without the plugin, install it through npm (node ≥ 20):
 
 ```sh
 claude mcp add fangorn -- \
@@ -654,8 +671,9 @@ claude mcp add fangorn -- \
 
 Without `-p @huggingface/transformers`, the install is ~500 MB lighter and `search` ranks by
 words, not meaning. It lists the apps on Base Sepolia; add `-e FANGORN_NETWORK=arbitrumSepolia`
-before `--` for those still on Arbitrum Sepolia. For private apps, `-e FANGORN_MCP_WALLET_KEY=…`
-lets it pay (see [A private app](#a-private-app-the-data-is-the-product)).
+before `--` for those still on Arbitrum Sepolia. For private apps, `FANGORN_MCP_WALLET_KEY` lets it pay
+(see [A private app](#a-private-app-the-data-is-the-product)); the plugin reads it from your
+environment, while `-e` stores it in `~/.claude.json` in plain text.
 
 [docs/mcp.md](mcp.md) has the full setup: other MCP clients, every setting, running from
 source, and troubleshooting. A single-file binary (`bun build-bin.js`) exists but is not
