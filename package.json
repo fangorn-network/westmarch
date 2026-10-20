@@ -1,7 +1,7 @@
 {
   "name": "@fangorn-network/westmarch",
   "version": "0.0.20-dev",
-  "description": "Publisher and consumer surfaces for a Fangorn app: shape a graph, publish it, read it back as a searchable, agent-drivable catalog",
+  "description": "The free tier for a Fangorn app: one Cloudflare Worker that indexes what the app presents, serves it as a view and an MCP server, and hosts its site",
   "license": "MIT",
   "type": "module",
   "exports": {
@@ -38,13 +38,14 @@
     "build": "tsc -p .",
     "prepare": "tsc -p .",
     "test": "node scripts/test.js",
-    "lint": "node src/publish/lint.js"
+    "lint": "node src/publish/lint.js",
+    "e2e:worker": "node scripts/e2e-worker.mjs"
   },
   "dependencies": {
     "@fangorn-network/markov": "^0.1.0"
   },
   "peerDependencies": {
-    "@fangorn-network/sdk": "^2026.9.22-dev",
+    "@fangorn-network/sdk": "^2026.10.20-dev",
     "@huggingface/transformers": "^4.2.0",
     "@noble/curves": "^1.9.1",
     "viem": "^2.55.1"
@@ -56,11 +57,12 @@
   },
   "devDependencies": {
     "@fangorn-network/barliman": "file:../barliman",
-    "@fangorn-network/sdk": "^2026.9.22-dev",
+    "@fangorn-network/sdk": "^2026.10.20-dev",
     "@huggingface/transformers": "^4.2.0",
     "@noble/curves": "^1.9.1",
     "@privy-io/react-auth": "^3.47.0",
     "@stripe/stripe-js": "^10.0.0",
+    "graphql": "^16.14.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "typescript": "^5.9.3",
@@ -82,6 +84,7 @@
     "site/dist",
     "site/feed.js",
     "site/worker.js",
+    "site/no-model.js",
     "site/store.js",
     "dist/ts",
     "plugin/scripts/fx.mjs"

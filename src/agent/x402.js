@@ -276,16 +276,13 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     try { await payAndFetch("https://x/paid/1", { account: buyer, maxPrice: 9999n, fetchImpl: seller }); } catch (e) { refused = /exceeds the cap/.test(e.message); }
     if (!refused) throw new Error("a price over the cap must be refused before signing");
 
-    // Batches through the real worker (CONFIG filled in as ship does), a stand-in facilitator
+    // Batches through the real worker (CONFIG as ship deploys it), a stand-in facilitator
     // that checks signatures and refuses a nonce settled twice, and vouchers signed ahead.
-    const { readFileSync, writeFileSync, mkdtempSync } = await import("node:fs");
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const membership = { registry: `0x${"12".repeat(20)}`, barliman: "https://barliman", chainId: 421614, appId: `0x${"ab".repeat(32)}` };
     const sale = { price: "100000", network: "arbitrum-sepolia", asset: USDC, payTo: SELLER, facilitator: "https://fac", name: "USD Coin", version: "2", description: "", membership };
-    const src = readFileSync(new URL("../../site/worker.js", import.meta.url), "utf8").replace(/\/\*CONFIG\*\/[\s\S]*?\/\*END\*\//, JSON.stringify({ docHosts: [], paid: sale }));
-    const wfile = `${mkdtempSync(`${tmpdir()}/wm-`)}/worker.mjs`;
-    writeFileSync(wfile, src);
-    const worker = (await import(wfile)).default;
+    const worker = (await import("../../site/worker.js")).default;
     // The rows as a buyer reads them: each record sealed under its key, with the plaintext's sha256.
     const SECRET = "s3cret", ct = {}, want = {};
     for (const id of ["a", "b", "c"]) {
@@ -293,7 +290,7 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         ct[id] = await sealPaid(await paidKey(SECRET, id), plain);
         want[id] = await sha256(new TextEncoder().encode(plain));
     }
-    const env = { PAID_SECRET: SECRET };
+    const env = { PAID_SECRET: SECRET, CONFIG: { paid: sale } };
     const member = privateKeyToAccount(generatePrivateKey()), memberToken = "77";
     const spent = new Set();
     const realFetch = globalThis.fetch;

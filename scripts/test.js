@@ -12,7 +12,7 @@ const checks = [
     "src/discover/explore.js", "src/agent/mcp.js --selfcheck", "src/core/roles.js", "src/core/shard.js",
     "src/discover/directory.js", "src/taste/taste.js", "src/taste/steam.js", "src/taste/taste-doc.js",
     "src/discover/corpora.js", "src/agent/ui.js", "src/publish/lint.js", "src/agent/tools.js",
-    "src/agent/x402.js", "site/feed.js", "site/store.js",
+    "src/agent/x402.js", "site/feed.js", "site/store.js", "site/worker.js",
 ];
 const only = process.argv.slice(2);
 for (const c of checks) {

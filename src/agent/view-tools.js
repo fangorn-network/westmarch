@@ -69,9 +69,10 @@ const WHERE = { type: "object", description: 'Equality filters, e.g. {"phase":"P
  * The tools for one app, or null when its card names no views.
  * `app` is `{ name, desc, views }` from a verified card. `fetchCatalog(url)` may
  * answer from a stale copy: the survey only describes and routes, and loading a
- * view re-reads its catalog through shard.js either way.
+ * view re-reads its catalog through shard.js either way. `queryVector(q)` embeds a
+ * query (null to rank by words); a Worker passes its own encoder.
  */
-export function viewTools(app, { fetchCatalog = fetch } = {}) {
+export function viewTools(app, { fetchCatalog = fetch, queryVector: embedQ = queryVector } = {}) {
     if (!app.views?.length) return null;
     const names = new Map();   // view url → its name in every result
     const label = (url) => names.get(url) ?? url.split("/").pop();
@@ -115,7 +116,7 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
         }),
         search: async ({ query, limit = 10, views, where: w }) => {
             if (!query) throw new Error("query is required");
-            const qv = await queryVector(query);
+            const qv = await embedQ(query);
             const ranked = views?.length ? await pick(views) : (await route(query, qv)).slice(0, ROUTE_TOP);
             const others = views?.length ? [] : (await route(query, qv)).slice(ROUTE_TOP, ROUTE_TOP + 5).map((v) => v.name);
             const per = await Promise.all(ranked.map(async (v) =>
@@ -125,7 +126,9 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
                      next_views: others, hits };
         },
         get: async ({ id, view }) => {
-            if (view) for (const v of await pick([view])) await load(v);
+            // Nothing loaded (a fresh Worker isolate: each request may land on a new one): load every view.
+            // ponytail: downloads every view for an app with many; route by id when that shows.
+            for (const v of view ? await pick([view]) : loaded.size ? [] : await survey()) await load(v);
             for (const [v, rows] of loaded) { const r = getRow(rows, id, rolesOf(v)); if (r) return r; }
             return { error: `${id} is not in a loaded view. Search for it, or pass its view.`, loaded: [...loaded.keys()].map(label) };
         },

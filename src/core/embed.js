@@ -1,55 +1,54 @@
-// In-browser query embedder. Lifted from embeddings/examples/src/lib/embed.ts —
-// the query vector MUST come out of the same model and post-processing as the
+// The network's one embedding model, on both sides of every search. The query
+// vector MUST come out of the same model, prompt and post-processing as the
 // document vectors in the shard, or cosine is meaningless.
 //
-// Document side (quickbeam/embeddings.py): fastembed nomic-embed-text-v1.5 on
-//   "search_document: " + text, then matryoshka(vec, 256).
-// Query side (here): same model on "search_query: " + text (nomic is asymmetric),
-//   then the identical matryoshka.
+// EmbeddingGemma-300m, asymmetric by prompt (QUERY / DOCUMENT below), truncated
+// to 256 dims (it is Matryoshka-trained) and L2-normalized. Two runtimes run it:
+//   - a Fangorn app's Worker (Workers AI `@cf/google/embeddinggemma-300m`), the
+//     free tier's indexer (site/worker.js), on the document side;
+//   - transformers.js here, in a reader's tab or a Node publisher, on either side.
+// They agree closely but not bit for bit, so a view names its `embedder` and is only
+// ever appended to by the runtime that made it (view.js).
 //
-// If the embedding pipeline switches model or dim, change MODEL/DIM here to match.
-// transformers.js is dynamically imported so its ~MB runtime stays out of the main
+// transformers.js is dynamically imported so its runtime stays out of the main
 // bundle and a load failure degrades to lexical search instead of breaking the app.
 
-const MODEL = "nomic-ai/nomic-embed-text-v1.5";
+const MODEL = "google/embeddinggemma-300m";
+const ONNX = "onnx-community/embeddinggemma-300m-ONNX";
 const DIM = 256;
-// The document side's precision. q8 everywhere by default (the browser's queries are q8).
-// WESTMARCH_EMBED_DTYPE=fp16 is a different encoder (~0.96 cosine to q8): a view records it
-// and refuses to mix the two (view.js), so switching an app is one --rebake.
+/** The model card's retrieval prompts. Exported so every runtime uses the same text. */
+export const QUERY = "task: search result | query: ";
+export const DOCUMENT = "title: none | text: ";
+// The document side's precision in transformers.js. q8 by default (the browser's queries are q8).
+// EmbeddingGemma's activations do not survive fp16; WESTMARCH_EMBED_DTYPE=fp32 is the slow exact one.
 const DTYPE = globalThis.process?.env?.WESTMARCH_EMBED_DTYPE ?? "q8";
 export const EMBED_DTYPE = DTYPE;
 
-// Stamped onto every vector a publisher commits. Vectors from different models
-// (or dims) are not comparable — cosine between them is noise, and silently so.
-// The shard bake drops any vector whose stamp doesn't match rather than blending
-// corpora, which is the one thing that can quietly ruin a shared index.
+// Stamped onto every view. Vectors from different models (or dims) are not
+// comparable — cosine between them is noise, and silently so.
 export const EMBED_MODEL = MODEL;
 export const EMBED_DIM = DIM;
+/** A short name for the space a taste or a reaction lives in. */
+export const SPACE = `embeddinggemma-${DIM}`;
 
-let _extractor = null;
-const extractor = () => (_extractor ??= (async () => {
-    const { pipeline } = await import("@huggingface/transformers");
-    // WESTMARCH_EMBED_DEVICE=cuda puts the publisher's document side on a GPU (Node only; needs
-    // onnxruntime-node's CUDA binaries and the matching CUDA runtime, cuBLAS, cuRAND and cuDNN on
-    // LD_LIBRARY_PATH). q8's integer ops do not run on CUDA, so q8 there is slower than on CPU:
-    // pair it with WESTMARCH_EMBED_DTYPE=fp16, which is ~4x faster than CPU q8, batched.
+let _model = null;
+const model = () => (_model ??= (async () => {
+    const { AutoModel, AutoTokenizer } = await import("@huggingface/transformers");
+    // WESTMARCH_EMBED_DEVICE=cuda puts a Node publisher's document side on a GPU.
     const device = globalThis.process?.env?.WESTMARCH_EMBED_DEVICE;
-    return pipeline("feature-extraction", MODEL, { dtype: DTYPE, ...(device && { device }) });
+    const [tokenizer, m] = await Promise.all([AutoTokenizer.from_pretrained(ONNX),
+        AutoModel.from_pretrained(ONNX, { dtype: DTYPE, ...(device && { device }) })]);
+    // `sentence_embedding`, not mean pooling: the model's dense head runs after the pool.
+    return async (texts) => {
+        const { sentence_embedding: e } = await m(await tokenizer(texts, { padding: true, truncation: true }));
+        const d = e.dims.at(-1);
+        return texts.map((_, j) => matryoshka(e.data.slice(j * d, (j + 1) * d)));
+    };
 })());
 
-/** Standardize over the full vector, slice to `dim`, L2-normalize the slice. */
-function matryoshka(vec, dim = DIM) {
-    const n = vec.length;
-    let mean = 0;
-    for (let i = 0; i < n; i++) mean += vec[i];
-    mean /= n;
-    let varsum = 0;
-    for (let i = 0; i < n; i++) varsum += (vec[i] - mean) ** 2;
-    const std = Math.sqrt(varsum / n + 1e-5);
-
-    const out = new Array(Math.min(dim, n));
-    for (let i = 0; i < out.length; i++) out[i] = (vec[i] - mean) / std;
-
+/** Truncate to `dim` and L2-normalize: EmbeddingGemma's Matryoshka truncation. */
+export function matryoshka(vec, dim = DIM) {
+    const out = Array.from(vec.slice(0, dim), Number);
     let norm = 0;
     for (const x of out) norm += x * x;
     norm = Math.sqrt(norm);
@@ -60,9 +59,8 @@ function matryoshka(vec, dim = DIM) {
 /** Free text → 256-d L2-normalized vector. Throws if the model can't load —
  *  callers fall back to lexical. First call downloads the model (slow). */
 export async function embedQueryDirect(text) {
-    const ex = await extractor();
-    const output = await ex(`search_query: ${text}`, { pooling: "mean", normalize: false });
-    return matryoshka(output.data);
+    const [v] = await (await model())([QUERY + text]);
+    return v;
 }
 
 /** One document, in-process. Calls made together are embedded as one batch (a GPU's
@@ -79,20 +77,22 @@ async function flushDocuments() {
     const all = pending;
     pending = [];
     try {
-        const ex = await extractor();
-        for (let i = 0; i < all.length; i += BATCH) {
-            const part = all.slice(i, i + BATCH);
-            const output = await ex(part.map((p) => `search_document: ${p.text}`), { pooling: "mean", normalize: false });
-            const d = output.dims.at(-1);
-            part.forEach((p, j) => p.resolve(matryoshka(output.data.slice(j * d, (j + 1) * d))));
-        }
+        const vs = await embedRaw(all.map((p) => DOCUMENT + p.text));
+        all.forEach((p, j) => p.resolve(vs[j]));
     } catch (e) {
         for (const p of all) p.reject(e);
     }
 }
 
+/** Texts that already carry their prompt → vectors, in-process: a stand-in for the Worker's AI binding (devnet.js). */
+export async function embedRaw(texts) {
+    const run = await model(), out = [];
+    for (let i = 0; i < texts.length; i += BATCH) out.push(...await run(texts.slice(i, i + BATCH)));
+    return out;
+}
+
 /** Load the model in-process, and settle when it is actually ready. */
-export const warmDirect = () => extractor().then(() => {});
+export const warmDirect = () => model().then(() => {});
 
 // ── off the main thread ──────────────────────────────────────────────────────
 //
@@ -136,9 +136,8 @@ const ask = (kind, text) => new Promise((resolve, reject) => {
 export const embedQuery = (text) => (offThread() ? ask("query", text) : embedQueryDirect(text));
 
 /**
- * Document side. Same model, the OTHER nomic prefix — it's an asymmetric model,
- * so documents embedded with "search_query: " would rank against real queries
- * about as well as random.
+ * Document side. Same model, the OTHER prompt — it's asymmetric, so documents
+ * embedded with the query prompt rank against real queries worse.
  *
  * Runs one at a time on purpose: this executes in a publisher's browser during
  * publish, and a batch large enough to matter is a batch large enough to lock
@@ -235,7 +234,7 @@ export function unpackBits(b64) {
  * focus — the pipeline is a memoized singleton on whichever thread owns it.
  *
  * Call this on INTENT (the search box taking focus), never on page load: it is a
- * 131MB download, and until someone types there is nothing for it to embed. The
+ * ~300MB download, and until someone types there is nothing for it to embed. The
  * whole first-paint path — browse, shelves, channels, the field, the compass —
  * runs on the document vectors already in the shard.
  */

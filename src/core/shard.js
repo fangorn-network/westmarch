@@ -52,6 +52,7 @@ const _meta = new Map(); // view base → [manifest, …]
 let _rowText = (f) => [f.name, f.path, f.desc].filter(Boolean).join(" ");
 /** How to learn the default view. Overridden by the app; unset means an app that
  *  always passes an explicit view base, which is a legitimate way to use this. */
+let _fetch = (url) => fetch(url);
 let _resolveView = null;
 /** Called with the domain manifests once they land and BEFORE the first shard is
  *  parsed. See configure(). */
@@ -74,8 +75,11 @@ let _onManifests = null;
  * the argument the second corpus loaded would silently be parsed with the
  * first one's text role.
  */
-export function configure({ resolveView, rowText, onManifests } = {}) {
+export function configure({ resolveView, rowText, onManifests, fetch: f } = {}) {
     if (resolveView) _resolveView = resolveView;
+    // `fetch`: how a view's files are read. A Worker serving its own view reads them from
+    // its bucket, since a Worker cannot fetch its own URL.
+    if (f) _fetch = f;
     if (rowText) _rowText = rowText;
     if (onManifests) _onManifests = onManifests;
 }
@@ -171,7 +175,7 @@ export async function loadShard(base, onRows) {
  *  below. Exported because an app resolving its own view reads config the same
  *  way, and a second copy of the sniff would drift. */
 export async function fetchText(url) {
-    const res = await fetch(url);
+    const res = await _fetch(url);
     if (!res.ok) throw new Error(`shard: HTTP ${res.status} for ${url}`);
 
     // Who gunzips depends on the server. `cdn serve` sends a shard as
@@ -266,7 +270,7 @@ async function verifyShard(url, expect, chunks, gz) {
  *  read, so this is an optimisation and never a requirement.
  */
 async function fetchLines(url, onLine, expect) {
-    const res = await fetch(url);
+    const res = await _fetch(url);
     if (!res.ok) throw new Error(`shard: HTTP ${res.status} for ${url}`);
     if (!res.body) {
         // The buffered path has every byte before it parses one, so it can verify

@@ -6,7 +6,7 @@ description: Build, publish and register a Fangorn app with @fangorn-network/wes
 # Building a Fangorn app with westmarch
 
 A Fangorn app is a database with no server. Its records are committed to the owner's
-namespace on Arbitrum Sepolia; a view of them (content-addressed shards with embeddings)
+namespace on Arbitrum Sepolia or Base Sepolia (`"network"` in `app.json`); a view of them (content-addressed shards with embeddings)
 is hosted as static files on Cloudflare Pages; a page searches them in the reader's tab;
 an agent card bound on chain lets any agent find, verify and drive it. It improves by a
 loop the owner runs: new records always ship, and a change to *how* records are made
@@ -181,12 +181,12 @@ Do not open with this list. Check what you can yourself (`node -v`, `fangorn --v
 Node, the Fangorn CLI, the wallet and Cloudflare to register; quickbeam before the first
 local build; Pinata before *Go live*.
 
-- Node 22 and the Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.9.22-dev`, or whatever
+- Node 22 and the Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.10.20-dev`, or whatever
   newer version westmarch's `package.json` lists as its `@fangorn-network/sdk` peer.
 - Python 3 with quickbeam, whose harness every source runs on. Quorum pins it in
   `sources/requirements.txt` as
   `quickbeam @ git+https://github.com/fangorn-network/embeddings@tony/dev`.
-- A wallet on Arbitrum Sepolia with a little ETH. **It owns the app forever**, so it
+- A wallet on the app's network (Arbitrum Sepolia or Base Sepolia) with a little ETH. **It owns the app forever**, so it
   must be the wallet that will publish the data. Never generate a key for a real app;
   throwaway keys are only for read-only paths. Needed to register.
 - A Pinata JWT, because commits and the ERC-8004 agent pin files to IPFS. Not needed

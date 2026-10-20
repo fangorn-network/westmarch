@@ -1,6 +1,6 @@
 // The embedder, off the main thread.
 //
-// nomic-embed-text-v1.5 q8 is a 131MB ONNX download, and ONNX Runtime's WASM init
+// EmbeddingGemma-300m q8 is a ~300MB ONNX download, and ONNX Runtime's WASM init
 // and every inference after it are synchronous CPU. On the main thread that is a
 // frozen tab for as long as it takes — which on a first visit is a minute or two
 // of an app that looks broken rather than busy.

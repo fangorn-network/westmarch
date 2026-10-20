@@ -1,6 +1,6 @@
 # @fangorn-network/westmarch
 
-Everything you need to get started building Fangorn apps.
+Everything you need to get started building Fangorn apps, and the free tier that runs them.
 
 **Start here:** [docs/app-to-agent.md](docs/app-to-agent.md) takes a static site from nothing
 to a Fangorn app and ERC-8004 agent that any agent can discover, verify and drive.
@@ -8,6 +8,34 @@ to a Fangorn app and ERC-8004 agent that any agent can discover, verify and driv
 **Just want to query apps from Claude or another MCP client?** [docs/mcp.md](docs/mcp.md)
 installs `fangorn-mcp` in one command.
 
+
+## The free tier: one Worker per app
+
+```sh
+westmarch-ship app.json        # claim the app, commit its schema, run its sources, deploy its Worker
+```
+
+An app on the free tier is one Cloudflare Worker (`site/worker.js`), and nobody runs anything
+after the deploy:
+
+- **Indexer.** A cron follows the update log from where it left off, and runs the
+  embedding lens (WHITEPAPER_1 §3.4) over every member's repo whose head moved: `view.js`, with
+  the Worker's AI binding as the encoder (`@cf/google/embeddinggemma-300m`, 256 dims). The view
+  goes to R2. A repo whose publisher leaves the app, or that the app excludes, loses its domain on the next run.
+- **View.** `/view/cdn/…`: the catalog, manifests and content-named shards a reader ranks in
+  its own tab, so a query need never leave it.
+- **MCP.** `/mcp`, streamable HTTP: describe, search, get, similar, count, browse and threads
+  over the view, the query embedded by the same runtime as the rows. Add it to a client as a
+  URL; there is nothing to install.
+- **Site and card.** The stock page, and the agent card naming the app, its repos, its view
+  and its MCP endpoint, bound on chain.
+
+The whole network embeds with one model (`src/core/embed.js`): EmbeddingGemma-300m, by its
+retrieval prompts, truncated to 256 dims. A tab runs it with transformers.js (q8) and the Worker
+with Workers AI; on the same rows they agree to ~0.996 cosine (`E2E_PARITY=1 npm run e2e:worker`).
+
+`npm run e2e:worker` runs the whole tier on this machine: the contracts on anvil, a local IPFS
+gateway, publishers, and the Worker under `wrangler dev` with its real AI binding.
 
 **For Publishers** — shape a tree into a commit graph, describe what's in it, seal and upload the bytes. Needs `fangorn`. Runs anywhere: a script, a server, a browser.
 

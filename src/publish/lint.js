@@ -21,11 +21,12 @@
 import { configure, loadShard, resetShard, setDomains, trimView } from "../core/shard.js";
 import { shapeOf } from "../agent/ui.js";
 import { inSample, linkOf, rolesFrom, textOf } from "../core/roles.js";
+import { EMBED_MODEL } from "../core/embed.js";
 
 /** The model every corpus on this network is baked with. Cosine between two
  *  models' vectors is noise that still looks like a score, so a mismatch is not
  *  a warning — it is exclusion from the directory. */
-export const NETWORK_MODEL = "nomic-ai/nomic-embed-text-v1.5";
+export const NETWORK_MODEL = EMBED_MODEL;
 
 const F = (level, what, why, fix) => ({ level, what, why, fix });
 

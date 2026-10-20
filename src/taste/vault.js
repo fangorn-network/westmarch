@@ -35,6 +35,8 @@
 // somewhere to put the version, and there is no second reader to coordinate with
 // yet. Add a `keyEpoch` to the vertex when one exists.
 
+import { SPACE } from "../core/embed.js";
+
 const ENC = new TextEncoder();
 const DEC = new TextDecoder();
 
@@ -94,7 +96,7 @@ export async function open(key, blob) {
 export const TASTE_ID = "self/taste";
 export const tasteVertex = (blob) => ({
     id: TASTE_ID, tag: "taste",
-    payload: { kind: "taste", model: "nomic-256", enc: `vault-v${VAULT_VERSION}`, blob: JSON.stringify(blob) },
+    payload: { kind: "taste", model: SPACE, enc: `vault-v${VAULT_VERSION}`, blob: JSON.stringify(blob) },
 });
 
 /** Pull the sealed blob back out of whatever `fangorn read` handed over. */
