@@ -14,7 +14,7 @@ import { getRow, neighbors, search, threads } from "../src/agent/tools.js";
 import { KNOBS, discover } from "../src/taste/taste.js";
 import { embedQuery } from "../src/core/embed.js";
 import { registerAgent } from "./agent.js";
-import { detail, facetField, occasions } from "./feed.js";
+import { detail, facetField, facetValues, occasions } from "./feed.js";
 import { createStore, snapshot, toCSV, toMarkdown } from "./store.js";
 import { createMap } from "./map.js";
 import { agentPanel, gate, heldPass, whatsInside } from "./access.js";
@@ -56,6 +56,9 @@ if (geo) $("#primary").prepend(el("a", { href: "#/map" }, "Map"));
 const intro = await fetch("./intro.html").then((r) => r.text())
     .then((t) => (/^\s*<!doctype/i.test(t) ? null : Object.assign(el("section", { className: "intro" }), { innerHTML: t }))).catch(() => null);
 
+// Questions to start from (app.json site.examples), on the front page.
+const examples = await fetch("./examples.json").then((r) => ((r.headers.get("content-type") ?? "").includes("json") ? r.json() : [])).catch(() => []);
+
 const input = $("#q input");
 input.disabled = false;
 const SLUG = NAME.toLowerCase().replace(/\W+/g, "-");
@@ -72,7 +75,7 @@ if (access && !pass) {
     const inside = await whatsInside(location.origin);
     const showGate = (...kids) => { $("#view").replaceChildren(...kids.flat().filter(Boolean)); window.scrollTo(0, 0); };
     const front = () => (location.hash.startsWith("#/agents") ? showGate(agents())
-        : gate({ el, show: showGate, origin: location.origin, name: NAME, description: card.description ?? "", slug: SLUG, access, inside,
+        : gate({ el, show: showGate, origin: location.origin, name: NAME, description: card.description ?? "", slug: SLUG, access, inside, examples,
                  wallet: async () => (await import("./wallet.js")).wallet(access) }));
     window.addEventListener("hashchange", front);
     front();
@@ -102,7 +105,7 @@ function reindex() {
     facet ??= facetField(ctx.rows, R);
     places = facet ? [...ctx.rows.reduce((m, r) => { const v = placeOf(r); if (v) m.set(v, (m.get(v) ?? 0) + 1); return m; }, new Map())].sort((a, b) => a[0].localeCompare(b[0])) : [];
     const n = ctx.rows.length.toLocaleString();
-    input.placeholder = loaded && !ctx.rows.length ? "No records yet" : loaded ? `Search ${n} records${places.length > 1 ? ` in ${places.length} places` : ""}…`
+    input.placeholder = loaded && !ctx.rows.length ? "No records yet" : loaded ? `Search ${n} records${places.length > 1 && /city|town|place|county|state|region|country/i.test(facet) ? ` in ${places.length} places` : ""}…`
         : `Loading ${n}${total ? ` of ${total.toLocaleString()}` : ""} records… (search what is here)`;
 }
 const placeOf = (r) => (facet ? values(r[facet] ?? "")[0] ?? "" : "");
@@ -288,9 +291,41 @@ function feed() {
         upcoming.length ? el("section", {}, el("h2", {}, "Upcoming meetings"), upcoming.slice(0, 6).map(occasionCard)) : null,
         mine.picks.length ? el("section", {}, el("h2", {}, "For you"), el("p", { className: "hint" }, `From the ${mine.taste.n} item${mine.taste.n > 1 ? "s" : ""} you liked. `, el("a", { href: "#/for-you" }, "Tune")),
             el("ul", { className: "list" }, mine.picks.map(({ row: r }) => row(r)))) : null,
-        !dec.list.length && !upcoming.length ? el("p", { className: "empty" }, !loaded ? "Loading records…"
-            : ctx.rows.length ? "No decisions have been published for this place yet. Use the search box above."
-            : "This app is being set up. Its records will appear here after they are published.") : null);
+        dec.list.length || upcoming.length ? null : ctx.rows.length ? explore()
+            : el("p", { className: "empty" }, !loaded ? "Loading records…" : "This app is being set up. Its records will appear here after they are published."));
+}
+
+// ── explore: the front page of an app whose rows are not meetings (nothing decided, nothing
+// coming up): questions to start from, what changed last, and each declared facet's values ──
+const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+const valueLabel = (f, v) => (/^\d/.test(v) ? `${cap(f)} ${v}` : cap(v));
+const browseHref = (f, v) => `#/browse/${encodeURIComponent(f)}/${encodeURIComponent(v)}`;
+function explore() {
+    const latest = R.temporal?.length ? ctx.rows.filter((r) => dateOf(r) && inPlace(r)).sort((a, b) => dateOf(b).localeCompare(dateOf(a))).slice(0, 8) : [];
+    const facets = (R.facets?.length ? R.facets : [facet]).filter(Boolean)
+        .map((f) => [f, facetValues(ctx.rows, R, f)]).filter(([, vs]) => vs.length > 1);
+    return [
+        examples.length ? el("section", {}, el("h2", {}, "Try asking"), el("div", { className: "chips" },
+            examples.map((q) => el("a", { href: `#/search/${encodeURIComponent(q)}`, className: "act" }, q)))) : null,
+        latest.length ? el("section", {}, el("h2", {}, "Recently updated"), el("ul", { className: "list" }, latest.map((r) => row(r)))) : null,
+        ...facets.map(([f, vs]) => el("section", {}, el("h2", {}, `By ${f.replace(/_/g, " ")}`), vs.length <= 12
+            ? el("div", { className: "chips" }, vs.map(({ value, n }) => el("a", { href: browseHref(f, value), className: "act" }, `${valueLabel(f, value)} (${n.toLocaleString()})`)))
+            : el("ul", { className: "list" }, vs.map(({ value, n, sub }) => el("li", { className: "row" }, el("div", { className: "main" },
+                el("a", { href: browseHref(f, value), className: "title" }, sub ? `${valueLabel(f, value)} · ${sub}` : valueLabel(f, value)),
+                el("small", {}, `${n.toLocaleString()} record${n === 1 ? "" : "s"}`))))))),
+    ];
+}
+
+// Every record with one value of a field, in title order (FAR 15.204 before FAR 15.21).
+let browseShown = 50;
+function browse(f, v) {
+    const list = ctx.rows.filter((r) => values(r[f] ?? "").includes(v)).sort((a, b) => titleText(a).localeCompare(titleText(b), undefined, { numeric: true }));
+    const sub = facetValues(list, R, f)[0]?.sub;
+    show(el("p", {}, el("a", { href: "#/" }, "← Home")),
+        el("h2", { className: "page" }, sub ? `${valueLabel(f, v)} · ${sub}` : valueLabel(f, v)),
+        el("p", { className: "hint" }, `${list.length.toLocaleString()} record${list.length === 1 ? "" : "s"}`),
+        list.length ? el("ul", { className: "list" }, list.slice(0, browseShown).map((r) => row(r))) : el("p", { className: "empty" }, loaded ? "Nothing here." : "Loading records…"),
+        list.length > browseShown ? el("button", { type: "button", className: "more", onclick: () => { browseShown += 50; browse(f, v); } }, "Show more") : null);
 }
 
 let sortBy = "relevance", seq = 0, mapView = null;
@@ -542,6 +577,7 @@ function route() {
     if (name !== "search") $("#q input").value = "";
     if (name === "search" && a) return results(a);
     if (name === "item" && a) return item(a);
+    if (name === "browse" && a) { browseShown = 50; return browse(...arg.split("/").map(decodeURIComponent)); }
     if (name === "signals" && R.thread) return signals();
     if (name === "saved") return saved();
     if (name === "for-you") return forYou();

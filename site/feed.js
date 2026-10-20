@@ -36,6 +36,18 @@ export function occasions(rows, roles, { facet = null, only = null, today = new 
     };
 }
 
+/** A field's values to browse by: `[{ value, n, sub }]` in natural order (Part 2 before Part 10),
+ *  `sub` the subtitle every row with that value shares (a part's title), else null. */
+export function facetValues(rows, roles, field) {
+    const m = new Map();
+    for (const r of rows) for (const v of values(r[field] ?? "")) {
+        const sub = subtitleOf(r, roles) ?? null, g = m.get(v);
+        if (!g) m.set(v, { value: v, n: 1, sub });
+        else { g.n++; if (g.sub !== sub) g.sub = null; }
+    }
+    return [...m.values()].sort((a, b) => a.value.localeCompare(b.value, undefined, { numeric: true }));
+}
+
 /** What a row says beyond its title: its text, less the title it opens with. */
 export function detail(r, roles) {
     const t = titleOf(r, roles), x = String(r.text ?? "");
@@ -58,5 +70,8 @@ if (typeof process !== "undefined" && process.argv[1]?.endsWith("/feed.js")) {
     eq(past.map((g) => `${g.place}${g.date}`), ["B2026-02-01", "A2026-01-01"], "past, latest first");
     eq(past[1].items.map((r) => detail(r, roles)), ["Approved 5-0.", ""], "one item per title, the one that says what happened");
     eq(occasions(rows, roles, { facet: "city", only: "B", today: "2026-02-15" }).past.length, 1, "narrowed to one place");
-    console.log("feed.js self-check ok — declared facet, upcoming vs past, one item per title keeping the decision, narrowed by place");
+    const parts = [{ part: "10", t: "Market Research" }, { part: "2", t: "Definitions" }, { part: "10", t: "Market Research" }, { part: "2", t: "Other" }];
+    eq(facetValues(parts, rolesFrom([{ role_map: { subtitle: "t" } }]), "part"), [{ value: "2", n: 2, sub: null }, { value: "10", n: 2, sub: "Market Research" }],
+       "natural order, counts, a subtitle only when every row shares it");
+    console.log("feed.js self-check ok — declared facet, upcoming vs past, one item per title keeping the decision, narrowed by place, facet values");
 }

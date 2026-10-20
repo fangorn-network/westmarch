@@ -84,6 +84,7 @@ const log = (s) => console.error(`[ship] ${s}`);
 //             "pages": "pages",   // optional: the app's own files, copied over the stock page
 //                                 //   (pages/intro.html, a fragment, replaces the description on the front page)
 //             "nav": [{ "href": "coverage.html", "label": "Coverage" }],   // optional: header links to them
+//             "examples": ["…"],  // optional: questions to start from, on the front page (and a private app's gate)
 //             "agent": "app/agent.js" },   // optional: the module whose registerAgent the card lists, when
 //                                          // `pages` replaces the stock index.html with a page of its own
 //   "types": { "<tag>": { "description": "…", "role_map": {…}, "presentation": {…} } },
@@ -507,6 +508,7 @@ export async function buildSite(cfg, base) {
     cpSync(STOCK, site, { recursive: true });
     if (cfg.site.pages) cpSync(resolve(base, cfg.site.pages), site, { recursive: true });
     writeFileSync(join(site, "nav.json"), JSON.stringify(cfg.site.nav ?? []));
+    writeFileSync(join(site, "examples.json"), JSON.stringify(cfg.site.examples ?? []));
     // The card lists the tools the page at `url` registers: the stock page's, or the app's own.
     const card = await import("../agent/agent-card.js");
     const { registerAgent } = await import(cfg.site.agent ? pathToFileURL(resolve(base, cfg.site.agent)).href : "../../site/agent.js");

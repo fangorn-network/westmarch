@@ -60,7 +60,7 @@ export function agentPanel({ el, origin, name, access, pass }) {
 }
 
 /** A private app's front page without a pass: what is inside, the price, and a way to buy. */
-export async function gate({ el, show, origin, name, description, slug, access, wallet, inside }) {
+export async function gate({ el, show, origin, name, description, slug, access, wallet, inside, examples = [] }) {
     const price = usd(access.pass, access.decimals, access.symbol);
     const status = el("p", { className: "hint", role: "status" });
     const buy = el("button", { type: "button", className: "buy" }, `Get a ${access.days}-day pass · ${price}`);
@@ -93,6 +93,7 @@ export async function gate({ el, show, origin, name, description, slug, access, 
                     inside.updated ? [" · updated ", el("time", { dateTime: inside.updated.toISOString() }, inside.updated.toLocaleDateString())] : null)
                 : el("p", { className: "hint" }, "The data is being indexed for the first time; check back in a few minutes."),
             ...(inside?.about ?? []).slice(0, 2).map((t) => el("p", { className: "hint" }, t)),
+            examples.length ? [el("h3", {}, "Ask it things like"), el("ul", { className: "asks" }, examples.map((q) => el("li", {}, q)))] : null,
             el("div", { className: "paid" },
                 el("h3", {}, "Search it here"),
                 el("p", { className: "detail" }, `A pass opens every record and the search by meaning on this page, and in your own agent, for ${access.days} days.`),

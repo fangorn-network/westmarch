@@ -9,7 +9,8 @@ browser and any agent can find, verify and query. By the end you have:
 - **your data** committed on chain under your namespace;
 - **a view** of it: your committed data embedded and sharded as static files, so people
   and agents can search it by meaning, updated with one command after each commit;
-- **a static site** with no server: the view, and a page for people;
+- **a site**: the view, a page for people, and an MCP endpoint for agents (one Cloudflare
+  Worker with `ship`, or static files by hand);
 - **an agent card** bound to the app on chain, and registered as an ERC-8004 agent;
 - **agents using it:** anyone running `fangorn-mcp` can `open-app` it by name.
 
@@ -61,8 +62,9 @@ update: each step checks the chain (or Cloudflare) first and acts only on a diff
       "presentation": { "facets": ["category"] } } },
   "relations": [],
   "sources": [{ "namespace": "things", "command": ["python", "-m", "my_source"] }],
+  "network": "baseSepolia",                  // required: where the app is (or will be) claimed
   "fangorn": "fangorn",                      // the CLI that signs
-  "paid": { "price": "0.01", "description": "the full record" }   // USDC on the app's network, x402 v2
+  "paid": { "price": "0.01", "description": "the full record" }   // optional: USDC on the app's network, x402 v2
 }
 ```
 
@@ -71,25 +73,30 @@ npx westmarch-ship app.json            # claim, join, schema, crawl + publish, v
 npx westmarch-ship app.json --dry-run  # every step, printed, none done
 npx westmarch-ship app.json --no-crawl # rebuild view, site and card from what is on chain
 npx westmarch-ship app.json --replace  # each source's crawl becomes its namespace's whole state
+npx westmarch-ship app.json --index    # build the deployed app's view once, on this machine
 ```
 
-What it does, in order (the long way, below, is the same steps by hand):
+The app is one Cloudflare Worker: a cron that indexes the chain into R2 (embedding with
+Workers AI), the view, `/mcp`, and the page. What `ship` does, in order:
 
 1. **claim** the app on the first run, and record the claim block (the card's `fromBlock`);
-2. **join** it as a publisher, if the wallet has not;
-3. **commit the schema** (`types`, `relations`) to `fangorn.schema`, if the chain's differs;
-4. **run each source**: a command that publishes into `--namespace` when given `--publish`.
+   the claimer is the app's first member;
+2. **commit the schema** (`types`, `relations`) to `fangorn.schema`, if the chain's differs;
+3. **run each source**: a command that publishes into `--namespace` when given `--publish`.
    Every quickbeam scraper Source does. A source with `"each": "rows.json"` is a template,
    one source per row (`{field}`, `{field|slug}`, `{args...}`), so adding a town, a feed or
    an account is adding a row;
-5. **westmarch-view**: the app's commits → `.ship/site/view`, embedding only what changed.
-   A removal rewrites the domain, so a retracted record's bytes stop being served;
-6. **the site**: the stock page (search, plus a feed of what is coming up and what just
-   happened, by the `temporal` role and the first `facets` field), the agent card and
-   `_headers`. With `paid`, also `_worker.js`, which sells each record over x402; only
-   records whose sha256 a live row carries are for sale;
-7. **deploy** to Cloudflare Pages (`wrangler`; the project is created if missing);
-8. **register** the ERC-8004 agent and bind the card, if the chain points elsewhere.
+4. **the site** in `.ship/site`: the stock page (search, plus a feed of what is coming up and
+   what just happened, by the `temporal` role and the first `facets` field; for rows that are
+   not meetings, an explore page: `site.examples` as searches to try, the latest records by
+   `temporal`, and each declared facet's values to browse), the agent card,
+   `/openapi.json` and `/.well-known/x402` when anything is for sale, and `_headers`;
+5. **deploy the Worker** (`wrangler deploy`): its R2 bucket (created if missing), Workers AI,
+   the cron (`site.cron`, default every 5 minutes) and its CONFIG. With `paid`, it sells each
+   record over x402; only records whose sha256 a live row carries are for sale. If the app
+   has no view yet, ship builds the first one here (`--index`) rather than wait for the cron;
+6. **register** the ERC-8004 agent and bind the card, if the chain points elsewhere. An
+   agent is minted once; later runs only rebind.
 
 State lives in `.ship/` next to `app.json`. In CI, cache `.ship/cache` and `.ship/stage`
 and commit `.ship/state.json`; Quorum's `.github/workflows/ship.yml` is a working example
@@ -98,7 +105,9 @@ and commit `.ship/state.json`; Quorum's `.github/workflows/ship.yml` is a workin
 **What was run:** all of it, for Quorum (`https://quorum-bua.pages.dev`, agent `421614:245`):
 five towns' meetings crawled, published, embedded and deployed by `westmarch-ship`, then
 searched and bought (x402, settled on Arbitrum Sepolia) from `fangorn-mcp` in a fresh
-session. Kingsfoil, the reference at the end, predates `ship` and was built by hand.
+session. FAR Desk (`https://far-desk.quickbeam.workers.dev`, agent `84532:10323`) is the
+private one: 3,113 sealed FAR sections on Base Sepolia, searched per call and with a pass.
+Kingsfoil, the reference at the end, predates `ship` and was built by hand.
 
 ## A private app: the data is the product
 
@@ -111,17 +120,25 @@ session. Kingsfoil, the reference at the end, predates `ship` and was built by h
   its CID and is not re-embedded. PAID_SECRET is `$PAID_SECRET` or made once in `.ship/secret`:
   **back it up**, it is the only way to open the rows.
 - **Index.** The Worker (which ship gives the secret on every deploy) opens rows in its cron and
-  builds the view in R2 as for any app.
+  builds the view in R2 as for any app. `--index` does the same once on your machine
+  (`wrangler dev` against the app's own R2 and Workers AI), for the first view or a catalog too
+  big for one cron run.
 - **Serving.** `/view/*` (but `cdn/catalog`) and every MCP tool but `describe` need access: a pass
   (`POST /pass`, x402 v2, a bearer token good for `days`) or one x402 payment per tool call over
   x402's MCP transport (`_meta["x402/payment"]`). A call that fails or misses is not charged.
   `fangorn-mcp` pays by itself with `FANGORN_MCP_WALLET_KEY`: a pass at or under
   `FANGORN_MCP_MAX_PASS`, else per call at or under `FANGORN_MCP_MAX_PRICE`.
-- **Discovery.** The card's Fangorn extension carries `access` (pass URL and prices); `/openapi.json`
-  and `/.well-known/x402` list `POST /pass` for x402scan; the facilitator's Bazaar lists `/pass` and
-  each tool (as `type: "mcp"`) after its first sale.
+- **Discovery.** The card's Fangorn extension carries `access` (pass URL and prices), and its
+  skills are tagged `x402`, so the ERC-8004 registration says `x402Support: true`.
+  `/openapi.json` and `/.well-known/x402` list `POST /pass` for x402scan; the facilitator's Bazaar
+  lists `/pass` and each tool (as `type: "mcp"`) after its first sale.
+- **The page.** Without a pass it shows what is inside (the free catalog and `describe`: how many
+  records, when they were updated), a "Get a pass" button (Privy sign-in, then x402; on a testnet
+  it links the faucet when the balance is short), and the lines to add the app to an agent
+  (`#/agents`). The pass is kept on the device and sent with every read, and the agent line
+  carries it too. Add the app's origin to Privy's allowed origins.
 
-Not yet: the stock page cannot buy or carry a pass, so a private app's page shows its catalog only.
+Not yet: memberships on a private app's page.
 
 ## Grading a change before it ships
 
@@ -184,7 +201,7 @@ What `ship` does, one step at a time: for understanding it, or for doing one ste
 
 - Node 22.
 - The Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.10.20-dev` (gives `fangorn`).
-- A wallet on the app's network (Arbitrum Sepolia or Base Sepolia) with a little ETH. **It owns the app forever**, so use the
+- A wallet on the app's network (Base Sepolia, or Arbitrum Sepolia for older apps) with a little ETH. **It owns the app forever**, so use the
   wallet that will publish the data.
 - A Pinata JWT. Registering the ERC-8004 agent (step 11) pins a file to IPFS.
 - A static host that serves `/.well-known/` and custom headers. Cloudflare Pages does
@@ -218,8 +235,8 @@ First, note the current block. It becomes the card's `fromBlock` (step 9), which
 readers start scanning the chain for your app:
 
 ```sh
-node -e 'const {createPublicClient,http}=require("viem");const {arbitrumSepolia}=require("viem/chains");
-createPublicClient({chain:arbitrumSepolia,transport:http()}).getBlockNumber().then(String).then(console.log)'   # baseSepolia on Base
+node -e 'const {createPublicClient,http}=require("viem");const {baseSepolia}=require("viem/chains");
+createPublicClient({chain:baseSepolia,transport:http()}).getBlockNumber().then(String).then(console.log)'   # arbitrumSepolia for older apps
 ```
 
 Then claim the name:
@@ -567,7 +584,7 @@ live before step 11, because the CLI fetches it.
 
 ```sh
 fangorn app agent https://my-app.pages.dev/.well-known/agent-card.json
-# Agent ID:  421614:…
+# Agent ID:  84532:…
 # Card:      https://my-app.pages.dev/.well-known/agent-card.json
 # Tx:        0x…
 ```
@@ -582,8 +599,16 @@ This does two things:
 2. **Fangorn.** It calls `setAppAgentUri(cardUrl)`, which emits `AppAgentChanged`. That log
    is the app directory: `list-apps` and `listApps` read it.
 
-`--skip-register` does only the second step, e.g. to move an already-registered card to a
-new URL.
+**Mint once.** Every run without flags mints a new agent. After the first:
+
+- `--update <agentId>` refreshes the existing agent's registration from the card as it is now
+  (name, description, skills, `x402Support`), re-pins it and sets its URI. It rebinds only if
+  the chain points elsewhere.
+- `--skip-register` does only the second step, e.g. to move a card to a new URL.
+
+The bind retries on a nonce race (`replacement transaction underpriced`), which load-balanced
+RPCs cause right after the mint. If a run failed after `Agent ID:` printed, the agent exists:
+finish with `--skip-register`, don't run it again.
 
 ## 12. Use it as an agent would
 
@@ -628,8 +653,9 @@ claude mcp add fangorn -- \
 ```
 
 Without `-p @huggingface/transformers`, the install is ~500 MB lighter and `search` ranks by
-words, not meaning. It lists the apps on Arbitrum Sepolia; add `-e FANGORN_NETWORK=baseSepolia`
-before `--` for those on Base Sepolia.
+words, not meaning. It lists the apps on Base Sepolia; add `-e FANGORN_NETWORK=arbitrumSepolia`
+before `--` for those still on Arbitrum Sepolia. For private apps, `-e FANGORN_MCP_WALLET_KEY=…`
+lets it pay (see [A private app](#a-private-app-the-data-is-the-product)).
 
 [docs/mcp.md](mcp.md) has the full setup: other MCP clients, every setting, running from
 source, and troubleshooting. A single-file binary (`bun build-bin.js`) exists but is not
@@ -753,6 +779,9 @@ const { contents } = await fangorn.readNamespace(timelines[0].owner, namespaces[
 | `listApps` takes forever | `fromBlock` is too early; the scan is 1000 blocks per RPC call |
 | `app agent`: "ERC-8004 registration pins the registration file to IPFS" | no Pinata JWT in `fangorn init` |
 | `app agent` signs as the wrong wallet | `~/.fangorn/config.json` beats `ETH_PRIVATE_KEY` |
+| `app agent`: "replacement transaction underpriced" | a nonce race after the mint; the agent exists, so rerun with `--skip-register` (step 11) |
+| the 8004 registration says `x402Support: false` | no card skill is tagged `x402`; rebuild the card, then `fangorn app agent <card> --update <agentId>` |
+| a private app's page says the data is still being indexed | the cron hasn't run yet; `westmarch-ship app.json --index` |
 | search on the page matches words, never meaning | the bundler pre-bundled westmarch; `optimizeDeps.exclude` it |
 | an agent's first call returns empty, later calls work | the tools registered before their data loaded (step 8) |
 | an agent opens the page and finds no tools | `card.url` is not the page that registers them |
