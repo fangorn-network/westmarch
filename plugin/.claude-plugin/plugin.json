@@ -1,6 +1,6 @@
 {
   "name": "fangorn-index",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "For people and agents using Fangorn apps. The fangorn-index skill ranks every publisher against a question and searches whichever wins, carrying a taste kernel on the filesystem; the fangorn MCP server lists the apps on chain, opens one and relays its tools, paying x402 prices from FANGORN_MCP_WALLET_KEY when it is set (up to FANGORN_MCP_MAX_PRICE a call).",
   "author": {
     "name": "Tony Riemer"

@@ -1,6 +1,6 @@
 {
   "name": "@fangorn-network/westmarch",
-  "version": "2026.10.20-dev",
+  "version": "2026.10.20.0-dev",
   "description": "The free tier for a Fangorn app: one Cloudflare Worker that indexes what the app presents, serves it as a view and an MCP server, and hosts its site",
   "license": "MIT",
   "type": "module",
