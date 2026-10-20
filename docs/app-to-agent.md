@@ -39,7 +39,9 @@ which anything can produce: a scraper, a database export, a converted spreadshee
   writes the same files, so moving an app to it means changing the `views` URL in its
   card.
 
-It runs on Arbitrum Sepolia.
+It runs on Arbitrum Sepolia (the default) or Base Sepolia: set `"network": "baseSepolia"` in
+`app.json`, `CHAIN_NAME=baseSepolia` for the CLI, and `FANGORN_NETWORK=baseSepolia` for
+`westmarch-view` and `fangorn-mcp`.
 
 ## The short way: one config, one command
 
@@ -157,8 +159,8 @@ What `ship` does, one step at a time: for understanding it, or for doing one ste
 ### What you need
 
 - Node 22.
-- The Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.9.22-dev` (gives `fangorn`).
-- A wallet on Arbitrum Sepolia with a little ETH. **It owns the app forever**, so use the
+- The Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.10.20-dev` (gives `fangorn`).
+- A wallet on the app's network (Arbitrum Sepolia or Base Sepolia) with a little ETH. **It owns the app forever**, so use the
   wallet that will publish the data.
 - A Pinata JWT. Registering the ERC-8004 agent (step 11) pins a file to IPFS.
 - A static host that serves `/.well-known/` and custom headers. Cloudflare Pages does
@@ -193,7 +195,7 @@ readers start scanning the chain for your app:
 
 ```sh
 node -e 'const {createPublicClient,http}=require("viem");const {arbitrumSepolia}=require("viem/chains");
-createPublicClient({chain:arbitrumSepolia,transport:http()}).getBlockNumber().then(String).then(console.log)'
+createPublicClient({chain:arbitrumSepolia,transport:http()}).getBlockNumber().then(String).then(console.log)'   # baseSepolia on Base
 ```
 
 Then claim the name:
@@ -597,13 +599,13 @@ can keep an app current: a cron job, a CI workflow, or an agent that just publis
 registration. Install it through npm (node ≥ 20):
 
 ```sh
-claude mcp add fangorn -e FANGORN_LOG_WINDOW=100000 -- \
+claude mcp add fangorn -- \
   npx -y -p @fangorn-network/westmarch -p @huggingface/transformers fangorn-mcp
 ```
 
 Without `-p @huggingface/transformers`, the install is ~500 MB lighter and `search` ranks by
-words, not meaning. Without `FANGORN_LOG_WINDOW`, `list-apps` scans the chain 1,000 blocks
-per call and takes minutes.
+words, not meaning. It lists the apps on Arbitrum Sepolia; add `-e FANGORN_NETWORK=baseSepolia`
+before `--` for those on Base Sepolia.
 
 [docs/mcp.md](mcp.md) has the full setup: other MCP clients, every setting, running from
 source, and troubleshooting. A single-file binary (`bun build-bin.js`) exists but is not

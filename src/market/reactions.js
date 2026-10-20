@@ -50,7 +50,7 @@
 // IS that reaction's vector under another name, which is the same leak wearing a
 // hat, and a reader with nine reactions is exactly who most needs this to hold.
 
-import { packVec } from "../core/embed.js";
+import { EMBED_MODEL, packVec } from "../core/embed.js";
 import { lineage } from "./terms.js";
 
 // 32, not 8: on Kingsfoil the top 3 of 23 views held 92% of the true top 10 with 32
@@ -216,7 +216,7 @@ export function reactionCorpus(events = [], {
         description: description ?? `${rows.length} reactions from one reader across ${byCorpus.size} corpora — what held their attention, and what did not.`,
         count: rows.length,
         dim: rows[0].vector.length,
-        model: "nomic-ai/nomic-embed-text-v1.5",
+        model: EMBED_MODEL,
         distance: "Cosine",
         role_map: {
             identity: "event", title: "label", subtitle: "corpus", temporal: "month",

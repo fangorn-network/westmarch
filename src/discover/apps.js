@@ -34,13 +34,14 @@ function safeView(url) {
 export const APP_EXTENSION = "https://fangorn.network/a2a/app/v1";
 
 /** A verified card → an app entry. `views` is westmarch's param; the SDK does not read it. */
-export function toApp({ card, appId, fromBlock, namespaces }, cardUrl) {
+export function toApp({ card, appId, fromBlock, repos }, cardUrl) {
     const ext = card.capabilities.extensions.find((e) => e.uri === APP_EXTENSION);
     const views = (Array.isArray(ext?.params?.views) ? ext.params.views : []).map(safeView).filter(Boolean);
     const p = ext?.params?.paid;
     const paid = p && /^https?:\/\//.test(p.url ?? "") && p.url.includes("{id}") && /^\d+$/.test(String(p.price)) ? p : null;
     return {
-        appId, card: cardUrl, fromBlock, namespaces, views, paid,
+        appId, card: cardUrl, fromBlock, repos, views, paid,
+        mcp: safeView(ext?.params?.mcp),
         name: card.name ?? appId,
         desc: card.description ?? "",
         url: safeView(card.url),
@@ -97,7 +98,7 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         discoverApp: async (uri) => {
             if (uri === "https://liar.test/card") throw new Error("not bound to app");
             const c = cards[uri];
-            return { card: c, appId: c.capabilities.extensions[1].params.appId, fromBlock: 7n, namespaces: ["n"] };
+            return { card: c, appId: c.capabilities.extensions[1].params.appId, fromBlock: 7n, repos: ["n"] };
         },
     };
     const { apps, rejected } = await listApps(fangorn, { fromBlock: 42 });

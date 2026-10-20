@@ -11,8 +11,8 @@
 // appears on the next build; there is no second list to drift.
 //
 // The Fangorn extension is what makes the card an APP rather than a web page.
-// It names the app, where its data starts on chain, and which namespaces and
-// views hold it. It only counts once the app owner binds the card's URL on
+// It names the app, where its data starts on chain, which repos and views hold
+// it, and the MCP endpoint that serves them, if any. It only counts once the app owner binds the card's URL on
 // chain (`setAppAgentUri`). `discoverApp` refuses a card whose app does not
 // point back at it, so writing someone else's appId here gets you nothing.
 
@@ -37,13 +37,15 @@ const HEX32 = /^0x[0-9a-fA-F]{64}$/;
  * The card.
  *
  * `fangorn` is optional: without it this is a plain A2A card for a page with
- * tools. With it, `{app, fromBlock, namespaces, views, config}`:
+ * tools. With it, `{app, fromBlock, repos, views, mcp, config}`:
  *   app        the app's name or its bytes32 id
  *   fromBlock  a block at or before the app's registration. The reader's log
  *              scan starts here; leave it at 0 and a reader makes one RPC call
  *              per 1000 blocks of chain history.
- *   views      view bases (quickbeam) holding the baked data. Read by
+ *   views      view bases (quickbeam layout) holding the baked data. Read by
  *              westmarch's directory; the SDK ignores it.
+ *   mcp        a remote MCP endpoint (streamable HTTP) serving the views as
+ *              tools, as the free tier's Worker does at /mcp.
  *   config     the deployment; defaults to the SDK's, so the addresses in the
  *              card cannot drift from the ones `discoverApp` checks.
  */
@@ -73,13 +75,13 @@ export function agentCard({ name, description, url, version = "0.0.0", tools = [
 
 /** The params `discoverApp` reads, validated the same way it validates them.
  *  A malformed card should fail the build, not the first reader. */
-export function fangornExtension({ app, fromBlock, namespaces = [], views = [], paid, config = FangornConfig }) {
+export function fangornExtension({ app, fromBlock, repos = [], views = [], mcp, paid, config = FangornConfig }) {
     if (!app) throw new Error("fangorn.app is required");
     const id = HEX32.test(app) ? app : hashAppId(app);
     const from = String(fromBlock ?? "");
     if (!/^\d+$/.test(from)) throw new Error(`fangorn.fromBlock must be a non-negative integer, got ${fromBlock}`);
-    if (!namespaces.every((n) => typeof n === "string")) throw new Error("fangorn.namespaces must be strings");
-    for (const v of views) {
+    if (!repos.every((n) => typeof n === "string")) throw new Error("fangorn.repos must be strings");
+    for (const v of [...views, ...(mcp ? [mcp] : [])]) {
         const u = new URL(v);   // throws on garbage
         if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error(`fangorn.views: not http(s): ${v}`);
     }
@@ -99,7 +101,7 @@ export function fangornExtension({ app, fromBlock, namespaces = [], views = [], 
             chainId: config.caip2,
             appRegistry: config.appRegistryContractAddress,
             dataRegistry: config.dataRegistryContractAddress,
-            appId: id, fromBlock: from, namespaces, views,
+            appId: id, fromBlock: from, repos, views, ...(mcp ? { mcp } : {}),
             ...(paid ? { paid: { url: paid.url, price: String(paid.price), asset: paid.asset, network: paid.network,
                                  symbol: paid.symbol ?? "USDC", decimals: paid.decimals ?? 6, description: paid.description ?? "" } } : {}),
         },
@@ -128,11 +130,12 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     eq(plain.skills.map((s) => [s.id, s.name, s.tags]), [["search-rows", "Search rows", ["x", "webmcp"]], ["get-row", "Get row", ["x", "webmcp"]]], "skills");
     if (plain.capabilities.extensions) throw new Error("no fangorn → no extension");
 
-    const card = agentCard({ name: "X", url: "https://x.test", tools, fangorn: { app: "kingsfoil", fromBlock: 5n, namespaces: ["kingsfoil"], views: ["https://x.test/v1"] } });
+    const card = agentCard({ name: "X", url: "https://x.test", tools, fangorn: { app: "kingsfoil", fromBlock: 5n, repos: ["kingsfoil"], views: ["https://x.test/v1"], mcp: "https://x.test/mcp" } });
     const [ext] = card.capabilities.extensions;
     eq(ext.uri, FANGORN_APP_EXTENSION, "extension uri");
     eq(ext.params.appId, hashAppId("kingsfoil"), "app name hashes to the id the registry uses");
     eq([ext.params.chainId, ext.params.appRegistry, ext.params.fromBlock], [FangornConfig.caip2, FangornConfig.appRegistryContractAddress, "5"], "deployment + fromBlock as a decimal string");
+    eq([ext.params.repos, ext.params.mcp], [["kingsfoil"], "https://x.test/mcp"], "repos and the MCP endpoint");
     eq(fangornExtension({ app: ext.params.appId, fromBlock: 0 }).params.appId, ext.params.appId, "a bytes32 id passes through");
 
     throws(() => fangornExtension({ app: "a", fromBlock: -1 }), /fromBlock/, "negative fromBlock");

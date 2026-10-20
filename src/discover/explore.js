@@ -8,9 +8,9 @@
 //   ERC-8004 identity `Registered`  the agent minted for the app
 //   ERC-8004 reputation             feedback count and average per agent
 //
-// Both registries are scanned from their first event in 10M-block windows, in
-// parallel, so the page and the MCP tool read the same chain the same way, and
-// a new app shows up on the next read.
+// Both registries are scanned from their first event in windows as wide as the
+// chain's RPC allows (`chainOf`), in parallel, so the page and the MCP tool read
+// the same chain the same way, and a new app shows up on the next read.
 //
 // `client` is a viem PublicClient (getLogs, readContract): passed in, so this
 // runs in a tab and in node, and the self-check needs no chain.
@@ -19,21 +19,38 @@
 // the logs somewhere if that ever gets slow.
 
 import { parseAbi, parseAbiItem } from "viem";
+// The config module alone (viem only), not the SDK's root: this runs in a tab too.
+import { FangornConfig } from "@fangorn-network/sdk/lib/config.js";
 import { APP_EXTENSION } from "./apps.js";
 import { survey, comparable } from "./directory.js";
 import { rankDomains, zFloor, lexScore } from "../core/rank.js";
 
-export const CHAIN = {
-    chainId: 421614,
-    appRegistry: "0x11d228c4774af3d9cae3b4b6874a12576a1a83ec",
-    identity: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
-    reputation: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
-    // Each registry's first event (2026-10-05): nothing to read before it.
-    // Scanning from 0 instead was 32 windows per registry, ~5s of a 7.7s load.
-    appRegistryFrom: 311_639_205n,
-    identityFrom: 241_557_787n,
-    scan: (agentId) => `https://8004scan.io/agents/arbitrum-sepolia/${agentId}`,
+// The ERC-8004 registries per chain id, where `fangorn app agent` mints (agent0-sdk's
+// defaults, and the CLI's override for Arbitrum Sepolia, which agent0-sdk lacks).
+const ERC8004 = {
+    421614: { identity: "0x8004A818BFB912233c491871b3d84c89A494BD9e", reputation: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
+              // The identity registry's first event (2026-10-05). Its public RPC takes 10M-block windows.
+              identityFrom: 241_557_787n, window: 10_000_000n, scan: "arbitrum-sepolia" },
+    // ponytail: identity read from the AppRegistry's deployment, since an app's agent is minted after it.
+    // An agent minted before then and rebound with --skip-register is missed; scan earlier if that happens.
+    84532: { identity: "0x8004A818BFB912233c491871b3d84c89A494BD9e", reputation: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
+             scan: "base-sepolia" },
 };
+
+/** What explore reads on one of the SDK's networks (`SupportedNetworks.baseSepolia`, …). */
+export function chainOf(net = FangornConfig) {
+    const e = ERC8004[net.caip2];
+    if (!e) throw new Error(`explore: no ERC-8004 registries known for chain ${net.caip2}`);
+    return {
+        chainId: net.caip2, appRegistry: net.appRegistryContractAddress, identity: e.identity, reputation: e.reputation,
+        // Nothing to read before the registry's deployment; from 0 a scan is mostly empty windows.
+        appRegistryFrom: net.appRegistryFromBlock, identityFrom: e.identityFrom ?? net.appRegistryFromBlock,
+        window: e.window ?? net.logWindow ?? 1000n,
+        scan: (agentId) => `https://8004scan.io/agents/${e.scan}/${agentId}`,
+    };
+}
+
+export const CHAIN = chainOf();
 
 const APP_AGENT_CHANGED = parseAbiItem("event AppAgentChanged(bytes32 indexed app_id, string agent_uri)");
 const REGISTERED = parseAbiItem("event Registered(uint256 indexed agentId, string agentURI, address indexed owner)");
@@ -105,15 +122,12 @@ async function reputation(client, agentId, chain) {
     }
 }
 
-// The public Arbitrum Sepolia RPC refuses an address+event getLogs spanning more
-// than 10M blocks (from 2026-10; one call from 0 worked before).
-const LOG_WINDOW = 10_000_000n;
-
-async function getLogsSince(client, start, filter) {
+// `window`: the most blocks one getLogs may span on the client's RPC (chainOf says, per chain).
+async function getLogsSince(client, start, filter, window) {
     const head = await client.getBlockNumber();
     const windows = [];
-    for (let from = start; from <= head; from += LOG_WINDOW) {
-        const to = from + LOG_WINDOW - 1n < head ? from + LOG_WINDOW - 1n : head;
+    for (let from = start; from <= head; from += window) {
+        const to = from + window - 1n < head ? from + window - 1n : head;
         windows.push(client.getLogs({ ...filter, fromBlock: from, toBlock: to }));
     }
     return (await Promise.all(windows)).flat();   // in window order: oldest first still holds
@@ -122,32 +136,37 @@ async function getLogsSince(client, start, filter) {
 /**
  * Every verified app, with its 8004 agent, reputation, and catalog.
  * Unverified apps are dropped, not listed; `dropped` says why, for debugging.
+ *
+ * `onUpdate({ apps, pending })`, if given, is called once the bindings are read
+ * and again as each app lands or drops, so a page can show apps as they arrive.
+ * `pending` counts the bound apps not yet settled.
  */
-export async function readDirectory(client, { chain = CHAIN } = {}) {
+export async function readDirectory(client, { chain = CHAIN, onUpdate = () => {} } = {}) {
     const [bindLogs, regLogs] = await Promise.all([
-        getLogsSince(client, chain.appRegistryFrom ?? 0n, { address: chain.appRegistry, event: APP_AGENT_CHANGED }),
-        getLogsSince(client, chain.identityFrom ?? 0n, { address: chain.identity, event: REGISTERED }),
+        getLogsSince(client, chain.appRegistryFrom ?? 0n, { address: chain.appRegistry, event: APP_AGENT_CHANGED }, chain.window ?? 1000n),
+        getLogsSince(client, chain.identityFrom ?? 0n, { address: chain.identity, event: REGISTERED }, chain.window ?? 1000n),
     ]);
     const registered = regLogs.map((l) => ({ agentId: l.args.agentId, owner: l.args.owner, block: l.blockNumber }));
     const latest = new Map();   // logs come oldest first: the last write wins
     for (const l of bindLogs) latest.set(l.args.app_id, { uri: l.args.agent_uri, block: l.blockNumber });
+    const bound = [...latest].filter(([, { uri }]) => uri);   // an empty uri is unbound on purpose
 
-    // Two passes: verify every card (small), then read catalogs (Quorum's is
-    // 1.7 MB, Kingsfoil has 23). Only a card failure drops an app; an owner or
-    // catalog that fails leaves it listed with less to say about it.
-    const dropped = [];
-    const verified = (await Promise.all([...latest].map(async ([appId, { uri, block }]) => {
-        if (!uri) return null;   // unbound on purpose
+    // One pipeline per app, so the quick ones need not wait on Quorum's 1.7 MB
+    // catalog. Only a card failure drops an app; an owner or catalog that fails
+    // leaves it listed with less to say about it.
+    const apps = [], dropped = [];
+    let pending = bound.length;
+    const settle = () => { pending--; apps.sort((a, b) => a.name.localeCompare(b.name)); onUpdate({ apps: [...apps], pending }); };
+    onUpdate({ apps: [], pending });
+    await Promise.all(bound.map(async ([appId, { uri, block }]) => {
+        let card;
         try {
             if (!/^https:\/\//.test(uri)) throw new Error("card is not https");
-            const card = await json(uri);
+            card = await json(uri);
             const why = verifyCard(card, appId, chain);
             if (why) throw new Error(why);
-            return { appId, uri, block, card };
-        } catch (e) { dropped.push({ card: uri, why: e?.message ?? String(e) }); return null; }
-    }))).filter(Boolean);
+        } catch (e) { dropped.push({ card: uri, why: e?.message ?? String(e) }); return settle(); }
 
-    const apps = await Promise.all(verified.map(async ({ appId, uri, block, card }) => {
         const p = card.capabilities.extensions.find((e) => e.uri === APP_EXTENSION).params;
         const [[owner, agentId, rep], { corpora, unreachable }] = await Promise.all([
             client.readContract({ address: chain.appRegistry, abi: APPS, functionName: "getAppOwner", args: [appId] }).catch(() => null)
@@ -158,7 +177,7 @@ export async function readDirectory(client, { chain = CHAIN } = {}) {
             survey((p.views ?? []).filter((v) => /^https:\/\//.test(v))),
         ]);
         const name = typeof card.name === "string" && card.name.trim() ? card.name.trim() : `App ${appId.slice(0, 10)}`;
-        return {
+        apps.push({
             app: slug(name), name, description: typeof card.description === "string" ? card.description : "",
             site: https(card.url), card: uri, appId, owner,
             boundAt: Number(block), fromBlock: Number(p.fromBlock),
@@ -169,9 +188,9 @@ export async function readDirectory(client, { chain = CHAIN } = {}) {
             rows: corpora.length ? corpora.reduce((n, c) => n + (c.rows || 0), 0) : null,
             unreachable: unreachable.length,
             domains: corpora.map((c) => ({ name: c.domain, description: c.description, rows: c.rows, coverage: c.coverage, model: c.model })),
-        };
+        });
+        settle();
     }));
-    apps.sort((a, b) => a.name.localeCompare(b.name));
     return { apps, dropped };
 }
 

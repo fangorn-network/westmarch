@@ -26,7 +26,10 @@
   h2.page, .record h2 { font: 600 1.3rem/1.3 var(--font-display); text-transform: none; letter-spacing: 0; color: var(--fg); margin: 4px 0 12px; }
   h3 { margin: 0; font-size: 1rem; }
   small, time, .hint, .empty, .about, #status, .resultsbar, .detail { color: var(--muted); }
-  small, time, .hint { font-size: .8rem; } .detail { margin: 0; font-size: .9rem; }
+  small, time, .hint { font-size: .8rem; }
+  .paid { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; margin: 12px 0; display: grid; gap: 6px; }
+  .paid h3 { margin: 0; font-size: 1rem; } .paid ul { margin: 0; padding-left: 18px; } .detail { margin: 0; font-size: .9rem; }
+  .forsale { color: var(--accent); font-weight: 600; }
   mark { background: var(--mark); color: inherit; }
 
   /* the bar: name, search, sections */
@@ -36,7 +39,9 @@
   #home { color: var(--fg); text-decoration: none; font: 600 1.1rem var(--font-display); white-space: nowrap; }
   #q { flex: 1 1 240px; }
   #q input { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: transparent; }
-  nav { display: flex; gap: 14px; font-size: .9rem; }
+  /* Where to go on the left; the reader's account and the app's own pages after a rule. */
+  nav { display: flex; gap: 14px; font-size: .9rem; } nav > span { display: flex; gap: inherit; }
+  #aside:not(:empty) { border-left: 1px solid var(--line); padding-left: 14px; }
   nav a { color: var(--muted); text-decoration: none; } nav a.on, nav a:hover { color: var(--fg); }
   main { padding-block: 16px 48px; }
 
@@ -48,9 +53,15 @@
   .resultsbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; font-size: .9rem; }
   .sort, .chips, .acts, .votes { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .chips { margin: 4px 0 16px; }
+  .picker { display: inline-flex; flex-direction: column; gap: 4px; margin: 4px 0 16px; font-size: .85rem; color: var(--muted); }
+  .picker select { font: inherit; font-size: 1rem; color: var(--fg); background: var(--bg); border: 1px solid var(--edge); border-radius: var(--radius); padding: 6px 10px; min-width: min(320px, 100%); }
+  details.about summary { cursor: pointer; color: var(--fg); font-size: 1.05rem; }
+  details.about p { color: var(--muted); margin: 6px 0 0; }
   .chip { font-size: .85rem; padding: 2px 10px; }
   .chip.on, .vote[aria-pressed="true"] { border-color: var(--accent); background: var(--mark); }
   .vote { padding: 2px 7px; line-height: 1.3; }
+  .star { font-size: 1.25rem; line-height: 1; padding: 4px 6px; border: 0; color: var(--muted); }
+  .star[aria-pressed="true"] { color: var(--accent); background: none; }
   .more, .linkish { border: 0; color: var(--accent); padding: 8px 0 0; font-size: .9rem; }
   .act { font-size: .88rem; text-decoration: none; color: var(--fg); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 10px; }
 
@@ -61,6 +72,11 @@
   .record dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; font-size: .88rem; margin: 12px 0; }
   .record dt { color: var(--muted); text-transform: capitalize; } .record dd { margin: 0; }
   .acts { margin: 12px 0 4px; }
+  .signal { padding: 14px 0 6px; } .signal h3 { margin: 4px 0 6px; font: 600 1.15rem/1.3 var(--font-display); }
+  .signal .meta { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: .78rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .stage { color: var(--accent); font-weight: 700; }
+  .steps { list-style: none; margin: 8px 0 0; padding: 0; } .steps li { display: grid; grid-template-columns: 7.5em 1fr; gap: 10px; padding: 5px 0; border-top: 1px solid var(--line); font-size: .9rem; }
+  .steps time { color: var(--muted); font-variant-numeric: tabular-nums; }
   .doc iframe { width: 100%; height: 80vh; border: 1px solid var(--line); margin-top: 12px; background: #fff; }
 
   /* For you: what the taste is built from, and the four knobs */
@@ -98,11 +114,11 @@
 <link rel="stylesheet" href="./theme.css">
 <header class="bar"><div>
   <a id="home" href="#/"><span id="name">Fangorn app</span></a>
-  <form id="q" role="search"><input type="search" disabled placeholder="Loading…" aria-label="Search"></form>
-  <nav><a href="#/for-you">For you</a><a href="#/saved">Liked<span id="nsaved"></span></a><a href="#/history">History</a></nav>
+  <form id="q" role="search"><input type="search" disabled placeholder="Loading…" aria-label="Search" list="recent" autocomplete="off"><datalist id="recent"></datalist></form>
+  <nav><span id="primary"><a href="#/saved">Saved<span id="nsaved"></span></a></span><span id="aside"><a href="#/account" id="accountlink" hidden>Account</a></span></nav>
 </div></header>
 <main id="view"><p id="status">Loading the data…</p></main>
-<footer>Search runs in your browser; your searches, likes and dislikes stay on this device unless you export them.
-  Documents are the publishers' own, shown as they published them. Agents: <a href="./.well-known/agent-card.json">agent card</a>.</footer>
+<footer>Searches run in your browser. Your searches and saved records stay on this device unless you export them.
+  Official documents are shown as their publishers posted them. For AI agents: <a href="./.well-known/agent-card.json">agent card</a>.</footer>
 <script type="module" src="./main.js"></script>
 </html>

@@ -18,7 +18,7 @@
 
 import { configure, loadShard, trimView } from "../core/shard.js";
 import { rolesFrom, textOf } from "../core/roles.js";
-import { browse, facet, getRow, neighbors, search } from "./tools.js";
+import { browse, facet, getRow, neighbors, search, threads } from "./tools.js";
 import { lexScore, rankDomains } from "../core/rank.js";
 import { existsSync } from "node:fs";
 import { EMBED_MODEL, embedQueryDirect, warmDirect } from "../core/embed.js";
@@ -69,9 +69,10 @@ const WHERE = { type: "object", description: 'Equality filters, e.g. {"phase":"P
  * The tools for one app, or null when its card names no views.
  * `app` is `{ name, desc, views }` from a verified card. `fetchCatalog(url)` may
  * answer from a stale copy: the survey only describes and routes, and loading a
- * view re-reads its catalog through shard.js either way.
+ * view re-reads its catalog through shard.js either way. `queryVector(q)` embeds a
+ * query (null to rank by words); a Worker passes its own encoder.
  */
-export function viewTools(app, { fetchCatalog = fetch } = {}) {
+export function viewTools(app, { fetchCatalog = fetch, queryVector: embedQ = queryVector } = {}) {
     if (!app.views?.length) return null;
     const names = new Map();   // view url → its name in every result
     const label = (url) => names.get(url) ?? url.split("/").pop();
@@ -115,7 +116,7 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
         }),
         search: async ({ query, limit = 10, views, where: w }) => {
             if (!query) throw new Error("query is required");
-            const qv = await queryVector(query);
+            const qv = await embedQ(query);
             const ranked = views?.length ? await pick(views) : (await route(query, qv)).slice(0, ROUTE_TOP);
             const others = views?.length ? [] : (await route(query, qv)).slice(ROUTE_TOP, ROUTE_TOP + 5).map((v) => v.name);
             const per = await Promise.all(ranked.map(async (v) =>
@@ -125,7 +126,9 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
                      next_views: others, hits };
         },
         get: async ({ id, view }) => {
-            if (view) for (const v of await pick([view])) await load(v);
+            // Nothing loaded (a fresh Worker isolate: each request may land on a new one): load every view.
+            // ponytail: downloads every view for an app with many; route by id when that shows.
+            for (const v of view ? await pick([view]) : loaded.size ? [] : await survey()) await load(v);
             for (const [v, rows] of loaded) { const r = getRow(rows, id, rolesOf(v)); if (r) return r; }
             return { error: `${id} is not in a loaded view. Search for it, or pass its view.`, loaded: [...loaded.keys()].map(label) };
         },
@@ -150,6 +153,10 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
             const [v] = await pick([view]);
             return { view: v.name, ...browse(await load(v), rolesOf(v.view), { limit, offset, sort, where: w }) };
         },
+        threads: async ({ view, id, limit = 20, offset = 0, where: w }) => {
+            const [v] = await pick([view]);
+            return { view: v.name, ...threads(await load(v), rolesOf(v.view), { id, limit, offset, where: w }) };
+        },
     };
 
     const n = app.name;
@@ -166,6 +173,8 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
           inputSchema: { type: "object", properties: { field: str("Field name, e.g. from get"), views: VIEWS, limit: num("Max values (default 20)"), where: WHERE }, required: ["field"] } },
         { name: "browse", description: `List one view of ${n} without a query, with filters, sorting and paging.`,
           inputSchema: { type: "object", properties: { view: str("View name from describe"), limit: num("default 20"), offset: num("default 0"), sort: str("Field to sort by"), where: WHERE }, required: ["view"] } },
+        { name: "threads", description: `One thing followed across records of a ${n} view (a matter from committee to council): steps in date order, the latest-moving first. Views that declare no thread say so.`,
+          inputSchema: { type: "object", properties: { view: str("View name from describe"), id: str("One thread, by a step's thread field"), limit: num("default 20"), offset: num("default 0"), where: WHERE }, required: ["view"] } },
     ];
     // Records the app sells over x402 (its card's `paid`). Paid from this server's wallet,
     // never above FANGORN_MCP_MAX_PRICE, and checked against the sha256 the app published
@@ -174,24 +183,59 @@ export function viewTools(app, { fetchCatalog = fetch } = {}) {
         const p = app.paid, dec = p.decimals ?? 6;
         const price = `${(Number(p.price) / 10 ** dec).toFixed(dec).replace(/0+$/, "").replace(/\.$/, "")} ${p.symbol ?? "USDC"}`;
         const cap = BigInt(Math.round(Number(process.env.FANGORN_MCP_MAX_PRICE ?? "0.10") * 10 ** dec));
-        run.buy = async ({ id }) => {
-            if (!id) throw new Error("id is required");
+        const resolve = (id) => {
             const hit = loadedRows().find(({ r, view }) => r.id === id || r[rolesOf(view).identity] === id);
-            const key = hit ? hit.r[rolesOf(hit.view).identity] ?? id : id;
-            const { payAndFetch } = await import("./x402.js");
-            const r = await payAndFetch(p.url.replace("{id}", encodeURIComponent(key)),
-                { privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap });
-            if (r.status !== 200) return { id: key, error: `HTTP ${r.status}: ${r.body.slice(0, 200)}` };
-            const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(r.body)))]
-                .map((b) => b.toString(16).padStart(2, "0")).join("");
-            const want = hit?.r.paid_sha256;
+            return { key: hit ? hit.r[rolesOf(hit.view).identity] ?? id : id, want: hit?.r.paid_sha256, ct: hit?.r.paid_ct };
+        };
+        run.buy = async ({ id, ids }) => {
+            const { buyBatch, withLock, readAsMember } = await import("./x402.js");
+            const rs = (ids?.length ? ids : id ? [id] : []).map(resolve);
+            const ct = Object.fromEntries(rs.filter((r) => r.ct).map((r) => [r.key, r.ct]));
+            const want = Object.fromEntries(rs.filter((r) => r.want).map((r) => [r.key, r.want]));
+            const verdict = (records) => { const bad = records.filter((x) => x.verified === false).map((x) => x.id);
+                return bad.length ? `MISMATCH for ${bad.join(", ")}` : "every record opened matches its published sha256"; };
+            // A membership the agent was named on (FANGORN_MCP_READER_KEY + FANGORN_MCP_MEMBERSHIP,
+            // the token id): read for free, nothing paid.
+            if (process.env.FANGORN_MCP_READER_KEY && process.env.FANGORN_MCP_MEMBERSHIP && p.membership) {
+                const { privateKeyToAccount } = await import("viem/accounts");
+                const r = await readAsMember(p, rs.map((r) => r.key).filter((k) => ct[k]), { reader: privateKeyToAccount(process.env.FANGORN_MCP_READER_KEY),
+                    tokenId: process.env.FANGORN_MCP_MEMBERSHIP, ct, want });
+                return { read: r.records.length, with: "membership", until: r.until, verified: verdict(r.records), records: r.records.map(({ id, record, error }) => ({ id, record, error })) };
+            }
+            if (ids?.length) {
+                // Many at once, one price: from the allowance file (FANGORN_MCP_VOUCHERS, vouchers the
+                // person's wallet signed) if there is one, else one payment from the wallet key.
+                const fs = await import("node:fs");
+                const vf = process.env.FANGORN_MCP_VOUCHERS;
+                const opts = { ct, want, privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap * BigInt(rs.length) };
+                // The file is read, spent from and saved under one lock, and saved even when the
+                // purchase fails: buyBatch drops the vouchers the seller settled or refused either way.
+                const r = vf
+                    ? await withLock(vf, async () => {
+                        const vouchers = JSON.parse(fs.readFileSync(vf, "utf8"));
+                        try { return await buyBatch(p, rs.map((r) => r.key), { ...opts, vouchers }); }
+                        finally { fs.writeFileSync(vf, JSON.stringify(vouchers)); }
+                    })
+                    : await buyBatch(p, rs.map((r) => r.key), opts);
+                return { bought: r.records.length, missing: r.missing, verified: verdict(r.records),
+                         ...(r.undelivered.length ? { not_bought: r.undelivered, why: r.error } : {}),
+                         manifest: r.manifest, records: r.records.map(({ id, record, error }) => ({ id, record, error })) };
+            }
+            if (!id) throw new Error("id or ids is required");
+            const { key, want: w, ct: c } = resolve(id);
+            if (!c) return { id: key, error: "search for the record first: its sealed copy (paid_ct) comes from the row, and nothing is bought without it" };
+            const { buyRecord } = await import("./x402.js");
+            const r = await buyRecord(p, key, { ct: c, want: w, privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap });
+            if (r.error) return r;
             return { id: key, paid: r.price ? price : "free", transaction: r.receipt?.transaction ?? null, network: r.receipt?.network ?? p.network,
-                     verified: want ? (want === digest ? "matches the published sha256" : `MISMATCH: published ${want}, got ${digest}`) : "not checked (search for the record first)",
-                     record: JSON.parse(r.body) };
+                     verified: w ? (r.verified ? "matches the published sha256" : `MISMATCH: published ${w}, got ${r.digest}`) : "not checked (the row has no paid_sha256)",
+                     record: r.record };
         };
         tools.push({ name: "buy", description: `Buy one ${n} record's paid detail for ${price} (x402 on ${p.network}): ${p.description || "the structured record"}. ` +
-                "Pass an id from search. Paid from this server's wallet (FANGORN_MCP_WALLET_KEY), never above FANGORN_MCP_MAX_PRICE.",
-            inputSchema: { type: "object", properties: { id: str("A record id from search or get") }, required: ["id"] } });
+                "Pass an id from search, or ids for up to 1000 at once (one price, one manifest of hashes and transactions). " +
+                "The record is already in the row, sealed; this buys its key and opens it. " +
+                "Read free with a membership the agent was named on (FANGORN_MCP_READER_KEY + FANGORN_MCP_MEMBERSHIP); otherwise paid from the allowance (FANGORN_MCP_VOUCHERS) or this server's wallet (FANGORN_MCP_WALLET_KEY), never above FANGORN_MCP_MAX_PRICE a record.",
+            inputSchema: { type: "object", properties: { id: str("A record id from search or get"), ids: { type: "array", items: { type: "string" }, description: "Several record ids, bought together" } } } });
     }
 
     return { tools, call: async (name, args = {}) => {

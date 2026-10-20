@@ -30,6 +30,7 @@
 // they like drama. Subtracting the corpus mean from both sides asks the only
 // question worth asking: of the ways this catalogue varies, which ones are you?
 import { values } from "../core/roles.js";
+import { EMBED_MODEL, EMBED_DIM } from "../core/embed.js";
 
 /** Below this a term's "meaning" is a handful of rows, and on a small enough
  *  handful it is one row wearing a word — which is both noise and, on a corpus
@@ -223,7 +224,7 @@ export function tasteDoc({ t = null, catalogues = [], instructions = "", now = n
         "it down is for: a taste you cannot read is a taste you cannot correct.", "",
         "## For an agent reading this", "",
         "- Rank candidates by cosine to `q`, minus 0.6 times the positive part of cosine to `no`.",
-        "- Every corpus on this network embeds with `nomic-embed-text-v1.5` truncated to 256",
+        `- Every corpus on this network embeds with \`${EMBED_MODEL}\` truncated to ${EMBED_DIM}`,
         "  dimensions, so `q` is comparable against a catalogue this reader has never opened.",
         "- Diversify the result (MMR, lambda 0.7). Six episodes of one series is not a recommendation.",
         "- Do not re-recommend anything under *What I named*.",
@@ -313,7 +314,7 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     if (!md.startsWith("# taste.md")) throw new Error("it is a document, and it says so first");
     if (md.indexOf("No trailers. Ever.") > md.indexOf("What I am drawn to")) throw new Error("what the person wrote comes before what the machine inferred");
     if (!md.includes("**silent**") || md.includes("**newsreel**")) throw new Error("the prose must follow the vectors");
-    if (!md.includes("nomic-embed-text-v1.5")) throw new Error("an agent reading this must be told what space q lives in");
+    if (!md.includes(EMBED_MODEL)) throw new Error("an agent reading this must be told what space q lives in");
     for (const h of ["## Standing instructions", "## What I am drawn to", "## What I pass on", "## Where I am heading", "## What I named", "## For an agent reading this"]) {
         if (!md.includes(h)) throw new Error(`missing section: ${h}`);
     }

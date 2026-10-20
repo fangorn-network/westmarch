@@ -1,6 +1,6 @@
 // The stock page's tools for agents in a browser: the same verbs as fangorn-mcp's data
 // tools, over the rows this page loaded. `ctx` holds them; ship's card captures these.
-import { describe, facet, getRow, search } from "../src/agent/tools.js";
+import { describe, facet, getRow, search, threads } from "../src/agent/tools.js";
 import { KNOBS, discover } from "../src/taste/taste.js";
 
 const ok = (o) => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
@@ -34,6 +34,12 @@ export function registerAgent(ctx) {
         inputSchema: obj({ field: { type: "string" }, where: { type: "object" }, limit: { type: "number" } }, ["field"]),
         execute: async ({ field, where, limit = 20 }) => ok(facet(ctx.rows, field, { where, limit })),
     });
+    mc.registerTool({
+        name: "threads",
+        description: "One thing followed across records (a matter from committee to council): each thread's steps in date order, the latest-moving first, with the head record when there is one. `id` for one thread (a step's thread field); `where` narrows the steps.",
+        inputSchema: obj({ id: { type: "string" }, where: { type: "object" }, limit: { type: "number" }, offset: { type: "number" } }),
+        execute: async ({ id, where, limit = 20, offset = 0 }) => ok(threads(ctx.rows, ctx.roles, { id, where, limit, offset })),
+    });
     // What the person using this page has done: saved, passed on, searched, and the taste
     // that makes. Theirs, in their browser; an agent in the same browser can act on it.
     mc.registerTool({
@@ -42,7 +48,7 @@ export function registerAgent(ctx) {
         inputSchema: obj({}),
         execute: async () => ok(ctx.session?.() ?? { saved: [], searches: [], taste: null }),
     });
-    // Like / dislike and "For you": the same calls the page's 👍 👎 and knobs make (ctx.rate,
+    // Like / dislike and "For you": the same calls the page's save star and knobs make (ctx.rate,
     // ctx.votes, set by main.js), so what an agent records shows on the page.
     mc.registerTool({
         name: "rate",

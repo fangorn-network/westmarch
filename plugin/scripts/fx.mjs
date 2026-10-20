@@ -92,16 +92,14 @@ const sources = async () => {
     return chainSources();
 };
 
-// Every app bound on chain, the scan fangorn-mcp's list-apps runs. From the
-// current AppRegistry's first event on Arbitrum Sepolia; --from-block overrides.
+// Every app bound on chain, the scan fangorn-mcp's list-apps runs, on FANGORN_NETWORK
+// (default arbitrumSepolia). From its AppRegistry's deployment; --from-block overrides.
 async function chainSources() {
-    // The SDK scans 1,000 blocks per log request by default, which on the public
-    // RPC takes minutes; fangorn-mcp's install line sets the same window.
-    process.env.FANGORN_LOG_WINDOW ??= "100000";
-    const [{ Fangorn, FangornConfig }, { generatePrivateKey }] = await Promise.all([
-        import("@fangorn-network/sdk"), import("viem/accounts")]);
-    const fangorn = Fangorn.create({ privateKey: generatePrivateKey(), config: FangornConfig });   // reads only
-    const { sources } = await sourcesFromChain(fangorn, { fromBlock: BigInt(flag("from-block", "311637349")) });
+    const [{ Fangorn }, { generatePrivateKey }, { network }] = await Promise.all([
+        import("@fangorn-network/sdk"), import("viem/accounts"), import("../../src/publish/view.js")]);
+    const config = await network();
+    const fangorn = Fangorn.create({ privateKey: generatePrivateKey(), config });   // reads only
+    const { sources } = await sourcesFromChain(fangorn, { fromBlock: BigInt(flag("from-block", String(config.appRegistryFromBlock))) });
     return sources;
 }
 

@@ -71,7 +71,7 @@ export function rolesFrom(manifests = [], sample = []) {
     let launch = null, refers = null;
     const entityTypes = [];
     const gates = [];
-    let identity = null;
+    let identity = null, thread = null;
 
     const push = (into, v) => { for (const x of arr(v)) if (x && !into.includes(x)) into.push(x); };
 
@@ -80,6 +80,10 @@ export function rolesFrom(manifests = [], sample = []) {
         push(title, rm.title); push(subtitle, rm.subtitle); push(tags, rm.tags);
         push(text, rm.text); push(measures, rm.measures); push(spatial, rm.spatial); push(media, rm.media); push(temporal, rm.temporal);
         identity ??= rm.identity ?? null;
+        // The relation that follows one thing across rows: an agenda item's `part_of` names
+        // its matter, so the items taken up at a committee and then the council are one thread.
+        // view.js writes the target's identity onto the row; a reader groups by it.
+        thread ??= rm.thread ?? null;
         // Where a row in THIS corpus points, in someone else's.
         //
         // The 21,131 subtitle rows in the archive bundle each carry the `path`
@@ -137,7 +141,7 @@ export function rolesFrom(manifests = [], sample = []) {
     guess(text, GUESS.text);
 
     return {
-        title, subtitle, tags, text, measures, spatial, media, temporal, facets, identity,
+        title, subtitle, tags, text, measures, spatial, media, temporal, facets, identity, thread,
         labels, types, fieldLabels, externalUrl, actions, launch, refers, entityTypes,
         // What this view sells, if anything. A list because a fused view can pull
         // domains from several publishers and they price independently.
@@ -393,6 +397,7 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     if (!r.declared) throw new Error("a manifest with a role_map is declared, not sniffed");
     if (titleOf(row, r) !== "Cira's Red, White & Brew Bar") throw new Error("declared title lost");
     if (subtitleOf(row, r) !== "Bar & Grill") throw new Error("declared subtitle lost");
+    if (r.thread !== null || rolesFrom([{ role_map: { thread: "part_of" } }, places]).thread !== "part_of") throw new Error("thread is declared, never guessed");
     if (textOf(row, r) !== "Bar & Grill in Saint Germain, WI.") throw new Error("empty declared text fields must be skipped, not joined as blanks");
     // A declared reference into another publisher's corpus. All three parts or
     // none: a half-written join would silently point at nothing, and the caller

@@ -29,7 +29,7 @@
 //   no — the kernel's pass centroid                    (where you are NOT going)
 
 import { emptyKernel, onLike, onPass, queryVector } from "@fangorn-network/markov";
-import { packVec, unpackVec } from "../core/embed.js";
+import { SPACE, packVec, unpackVec } from "../core/embed.js";
 import { cosine, diversify, norm } from "../core/rank.js";
 
 const unit = (v) => { if (!v) return null; const n = norm(v); const o = new Float32Array(v.length); for (let i = 0; i < v.length; i++) o[i] = v[i] / n; return o; };
@@ -188,7 +188,7 @@ export function discover(rows, likes = [], dislikes = [], { limit = 20, seed = 1
  * rather than a profile held about them.
  */
 export const exportTaste = (t) => t && ({
-    v: 1, model: "nomic-256", drift: t.drift, n: t.n,
+    v: 1, model: SPACE, drift: t.drift, n: t.n,
     q: packVec(Array.from(t.q)),
     mu: packVec(Array.from(t.mu)),
     // The heading, not just the position. `q` is `mu + drift·v`, so an export
