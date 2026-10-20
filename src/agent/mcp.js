@@ -88,7 +88,7 @@ export async function remoteTools(url, fetcher = fetch, { access = null, wallet 
         if (!asked) return r;
         if (!wallet) return { ...r, content: [...r.content, { type: "text", text: "This server has no wallet (FANGORN_MCP_WALLET_KEY), so nothing was paid: tell the person the price." }] };
         const x = await import("./x402.js");
-        const account = (await import("viem/accounts")).privateKeyToAccount(wallet);
+        const account = (await import("viem/accounts")).privateKeyToAccount(`0x${wallet.trim().replace(/^0x/i, "")}`);   // a key file may lack 0x
         if (access && maxPass != null && BigInt(access.pass) <= usdc(maxPass)) {
             bearer = (await x.buyPass(access, { account, fetchImpl: fetcher })).token;
             return rpc("tools/call", params);

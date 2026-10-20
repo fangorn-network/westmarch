@@ -1,7 +1,7 @@
 {
   "name": "fangorn-index",
   "version": "0.1.0",
-  "description": "Three skills. fangorn-index: discover the apps registered on Fangorn and read their corpora — rank every publisher against a question without downloading any of them, search the one that wins, hand off to the app that owns it, carrying a taste kernel that lives on the filesystem. westmarch-app: build one — records to graph, schema, commit, westmarch-view, page, agent card, on-chain binding. fangorn-improve: improve a live app one gated pull request at a time — work its observations, close coverage gaps, lift its weakest goal — never publishing, deploying or merging.",
+  "description": "For people and agents using Fangorn apps. The fangorn-index skill ranks every publisher against a question and searches whichever wins, carrying a taste kernel on the filesystem; the fangorn MCP server lists the apps on chain, opens one and relays its tools, paying x402 prices from FANGORN_MCP_WALLET_KEY when it is set (up to FANGORN_MCP_MAX_PRICE a call).",
   "author": {
     "name": "Tony Riemer"
   }

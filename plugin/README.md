@@ -35,7 +35,8 @@ publisher should have to host a server to be findable. Every verb is a function
 
 ```sh
 /plugin marketplace add fangorn-network/westmarch
-/plugin install fangorn-index@fangorn-index
+/plugin install fangorn-index@fangorn     # consumers: skill + MCP
+/plugin install fangorn-builder@fangorn   # app owners and publishers
 ```
 
 It finds every app bound on chain by itself. To search only some publishers, pin

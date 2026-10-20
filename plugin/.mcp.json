@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "fangorn": {
+      "command": "npx",
+      "args": ["-y", "-p", "@fangorn-network/westmarch", "fangorn-mcp"],
+      "env": {
+        "FANGORN_MCP_WALLET_KEY": "${FANGORN_MCP_WALLET_KEY:-}",
+        "FANGORN_MCP_MAX_PRICE": "${FANGORN_MCP_MAX_PRICE:-0.10}",
+        "FANGORN_NETWORK": "${FANGORN_NETWORK:-}"
+      }
+    }
+  }
+}

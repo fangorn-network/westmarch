@@ -1,0 +1,6 @@
+{
+  "name": "fangorn-builder",
+  "version": "0.1.0",
+  "description": "For app owners and publishers. fangorn-app: build, ship and register a Fangorn app (sources graded locally, a Worker with a page, /mcp and x402, an agent card bound on chain). fangorn-improve: improve a live app one gated pull request at a time, never publishing, deploying or merging.",
+  "author": { "name": "Tony Riemer" }
+}

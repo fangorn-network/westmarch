@@ -1,6 +1,6 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "fangorn-index",
+  "name": "fangorn",
   "description": "The web hub for agents: find the app, use the app, keep the taste.",
   "owner": {
     "name": "Tony Riemer"
@@ -11,6 +11,12 @@
       "description": "Rank every Fangorn publisher against a question without downloading a corpus, search whichever wins, and hand off to the app that owns the row. The taste kernel is a file, so it survives the tab, the app and the origin.",
       "source": "./plugin",
       "category": "productivity"
+    },
+    {
+      "name": "fangorn-builder",
+      "description": "Build, ship, register and improve a Fangorn app: the owner's skills.",
+      "source": "./plugin-builder",
+      "category": "development"
     }
   ]
 }
