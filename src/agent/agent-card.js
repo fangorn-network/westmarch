@@ -16,7 +16,7 @@
 // chain (`setAppAgentUri`). `discoverApp` refuses a card whose app does not
 // point back at it, so writing someone else's appId here gets you nothing.
 
-import { FANGORN_APP_EXTENSION, FangornConfig, appId as hashAppId } from "@fangorn-network/sdk";
+import { FANGORN_APP_EXTENSION, BaseSepoliaConfig, appId as hashAppId } from "@fangorn-network/sdk";
 
 /** Run `register` against a recording `document.modelContext`; return what it
  *  registered. `register` is whatever the page calls at load. */
@@ -75,7 +75,7 @@ export function agentCard({ name, description, url, version = "0.0.0", tools = [
 
 /** The params `discoverApp` reads, validated the same way it validates them.
  *  A malformed card should fail the build, not the first reader. */
-export function fangornExtension({ app, fromBlock, repos = [], views = [], mcp, paid, config = FangornConfig }) {
+export function fangornExtension({ app, fromBlock, repos = [], views = [], mcp, paid, access, config = BaseSepoliaConfig }) {
     if (!app) throw new Error("fangorn.app is required");
     const id = HEX32.test(app) ? app : hashAppId(app);
     const from = String(fromBlock ?? "");
@@ -92,7 +92,12 @@ export function fangornExtension({ app, fromBlock, repos = [], views = [], mcp, 
         if (!/^https?:$/.test(u.protocol) || !paid.url.includes("{id}")) throw new Error(`fangorn.paid.url must be http(s) with {id}: ${paid.url}`);
         if (!/^\d+$/.test(String(paid.price))) throw new Error(`fangorn.paid.price must be base units, got ${paid.price}`);
         if (!/^0x[0-9a-fA-F]{40}$/.test(paid.asset ?? "")) throw new Error(`fangorn.paid.asset must be a token address`);
+        if (!/^eip155:\d+$/.test(paid.network ?? "")) throw new Error(`fangorn.paid.network must be an x402 v2 (CAIP-2) network, got ${paid.network}`);
     }
+    // `access`: a private app. Its view and tools need a pass (`pass_url`, `pass` in base units, for
+    // `days`) or one x402 payment of `call` per tool call; describe and the catalog are free.
+    if (access && !(/^https?:\/\//.test(access.pass_url ?? "") && /^\d+$/.test(String(access.pass)) && /^\d+$/.test(String(access.call))))
+        throw new Error(`fangorn.access needs pass_url, and pass and call in base units: ${JSON.stringify(access)}`);
     return {
         uri: FANGORN_APP_EXTENSION,
         description: "The Fangorn app this agent fronts.",
@@ -104,6 +109,7 @@ export function fangornExtension({ app, fromBlock, repos = [], views = [], mcp, 
             appId: id, fromBlock: from, repos, views, ...(mcp ? { mcp } : {}),
             ...(paid ? { paid: { url: paid.url, price: String(paid.price), asset: paid.asset, network: paid.network,
                                  symbol: paid.symbol ?? "USDC", decimals: paid.decimals ?? 6, description: paid.description ?? "" } } : {}),
+            ...(access ? { access } : {}),
         },
     };
 }
@@ -134,7 +140,7 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     const [ext] = card.capabilities.extensions;
     eq(ext.uri, FANGORN_APP_EXTENSION, "extension uri");
     eq(ext.params.appId, hashAppId("kingsfoil"), "app name hashes to the id the registry uses");
-    eq([ext.params.chainId, ext.params.appRegistry, ext.params.fromBlock], [FangornConfig.caip2, FangornConfig.appRegistryContractAddress, "5"], "deployment + fromBlock as a decimal string");
+    eq([ext.params.chainId, ext.params.appRegistry, ext.params.fromBlock], [BaseSepoliaConfig.caip2, BaseSepoliaConfig.appRegistryContractAddress, "5"], "deployment + fromBlock as a decimal string");
     eq([ext.params.repos, ext.params.mcp], [["kingsfoil"], "https://x.test/mcp"], "repos and the MCP endpoint");
     eq(fangornExtension({ app: ext.params.appId, fromBlock: 0 }).params.appId, ext.params.appId, "a bytes32 id passes through");
 

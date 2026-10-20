@@ -9,12 +9,13 @@
 // VITE_PRIVY_APP_ID is set at build time (site/.env). The Privy app must list every app's
 // domain under allowed origins.
 import { arbitrum, arbitrumSepolia, base, baseSepolia } from "viem/chains";
-import { buyRecord, readAsMember } from "../src/agent/x402.js";
+import { buyPass, buyRecord, readAsMember } from "../src/agent/x402.js";
 
 const APP_ID = import.meta.env.VITE_PRIVY_APP_ID;
-const CHAINS = { "arbitrum-sepolia": arbitrumSepolia, arbitrum, "base-sepolia": baseSepolia, base };
+// By x402 network (CAIP-2), as the card names it.
+const CHAINS = Object.fromEntries([baseSepolia, base, arbitrumSepolia, arbitrum].map((c) => [`eip155:${c.id}`, c]));
 // Card onramps sell real USDC only, so a testnet app sends readers to a faucet instead.
-const FAUCET = { "arbitrum-sepolia": "https://faucet.circle.com/", "base-sepolia": "https://faucet.circle.com/" };
+const FAUCET = Object.fromEntries([baseSepolia, arbitrumSepolia].map((c) => [`eip155:${c.id}`, "https://faucet.circle.com/"]));
 
 let booted = null;
 /** The wallet, once Privy is ready. `paid` is the agent card's paid params (network, asset, …). */
@@ -62,6 +63,11 @@ async function boot(paid) {
         async buy(key, want, ct) {
             await api.signIn();
             return buyRecord(paid, key, { want, ct, account: api.account() });
+        },
+        /** A private app's pass (`paid` is then the card's `access`): one payment, a bearer token. */
+        async buyPass() {
+            await api.signIn();
+            return buyPass(paid, { account: api.account() });
         },
         /** Add funds: on a testnet, free test USDC from Barliman (or the faucet page); on a mainnet, the card onramp. */
         async addFunds() {

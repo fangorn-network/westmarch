@@ -13,9 +13,12 @@
 //                         show it inline. Source sites forbid framing and send no CORS, so the
 //                         page cannot fetch or frame them itself. Only hosts the app's own
 //                         records link to (each domain's `link_hosts`), only PDFs, cached a day.
-//   GET /paid/<item id>   with CONFIG.paid: 402 + the price; with a valid X-PAYMENT header, the
-//                         facilitator verifies and settles it, then the record's KEY is returned
-//   POST /paid {ids}      many keys for one price, paid by one payment or several (vouchers)
+//   GET /paid/<item id>   with CONFIG.paid: 402 + the price (x402 v2); with a valid
+//                         PAYMENT-SIGNATURE header, the facilitator verifies and settles it, then
+//                         the record's KEY is returned
+//   POST /paid {ids}      many keys for one price, paid by one payment or several (vouchers).
+//                         Its 402 carries the Bazaar extension, so the facilitator lists it on
+//                         the first sale; /openapi.json and /.well-known/x402 name it for x402scan
 //   POST /key {ids, tokenId, issuedAt, signature}
 //                         keys for a member: Barliman checks the signed request against the
 //                         MembershipRegistry (`canRead`), and nothing is paid here
@@ -102,9 +105,12 @@ export async function index(env, { log = console.log } = {}) {
     try {
         const state = (await (await env.VIEW.get(STATE))?.json()) ?? { block: null, repos: {} };
         const r = reader(env);
+        // Imported here: x402.js's self-check imports this module, and a cycle at load would deadlock it.
+        const { openRow } = await import("../src/agent/x402.js");
         const report = await publishView({
             fangorn: r.fangorn, app: CONFIG.app, repos: CONFIG.repos, store: r2Store(env.VIEW),
             presented: await presented(r, state), embedBatch: encode(env, DOCUMENT), embedder: await embedderOf(env), log,
+            ...(CONFIG.private ? { open: (p) => openRow(env.PAID_SECRET, p) } : {}),
         });
         await env.VIEW.put(STATE, JSON.stringify(state));
         log(`index: through block ${state.block}, ${Object.keys(report).length} domain(s) changed`);
@@ -153,7 +159,7 @@ async function tools(env, origin) {
     return mcp.tools;
 }
 
-export async function mcpCall(env, origin, msg) {
+export async function mcpCall(env, origin, msg, request = null) {
     const ok = (result) => ({ jsonrpc: "2.0", id: msg.id, result });
     switch (msg.method) {
         case "initialize": return ok({
@@ -164,13 +170,20 @@ export async function mcpCall(env, origin, msg) {
         });
         case "ping": return ok({});
         case "tools/list": {
-            const t = await tools(env, origin);
-            return ok({ tools: t ? t.tools : [] });
+            const t = await tools(env, origin), X = CONFIG.private;
+            const price = X && `${Number(X.call) / 10 ** (X.decimals ?? 6)} ${X.symbol ?? "USDC"}`;
+            return ok({ tools: (t ? t.tools : []).map((d) => !X || FREE_TOOLS.has(d.name) ? d
+                : { ...d, description: `${d.description} Paid: ${price} a call over x402, or a pass from POST ${origin}/pass.` }) });
         }
         case "tools/call": {
-            const t = await tools(env, origin);
-            try { return ok(await t.call(msg.params?.name, msg.params?.arguments ?? {})); }
-            catch (e) { return ok({ isError: true, content: [{ type: "text", text: e?.message ?? String(e) }] }); }
+            const t = await tools(env, origin), name = msg.params?.name;
+            const run = async () => {
+                try { return await t.call(name, msg.params?.arguments ?? {}); }
+                catch (e) { return { isError: true, content: [{ type: "text", text: e?.message ?? String(e) }] }; }
+            };
+            const tool = t.tools.find((d) => d.name === name);
+            if (!CONFIG.private || !tool || FREE_TOOLS.has(name) || (request && await passOf(env, request))) return ok(await run());
+            return ok(await paidCall(origin, tool, msg.params?._meta?.["x402/payment"], run));
         }
         default: return { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: `unknown method ${msg.method}` } };
     }
@@ -182,10 +195,11 @@ async function serveMcp(request, env, url) {
     try { msg = await request.json(); } catch { return json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "not JSON" } }, 400); }
     if (Array.isArray(msg)) return json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "one message per request" } }, 400);
     if (msg.id === undefined) return new Response(null, { status: 202, headers: CORS });   // a notification
-    return json(await mcpCall(env, url.origin, msg));
+    return json(await mcpCall(env, url.origin, msg, request));
 }
 
-const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "X-PAYMENT, content-type", "access-control-expose-headers": "X-PAYMENT-RESPONSE" };
+const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "PAYMENT-SIGNATURE, authorization, content-type",
+               "access-control-expose-headers": "PAYMENT-REQUIRED, PAYMENT-RESPONSE" };
 const json = (o, status = 200, headers = {}) =>
     new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json", ...CORS, ...headers } });
 const note = (msg, status) => new Response(`<!doctype html><meta charset="utf-8"><body style="font:15px system-ui;padding:24px;color:#555">${msg}</body>`,
@@ -221,61 +235,133 @@ async function keyFor(env, id) {
 }
 const keysFor = async (env, ids) => Object.fromEntries(await Promise.all(ids.map(async (id) => [id, await keyFor(env, id)])));
 
-async function facilitator(path, payment, requirements) {
+// ── x402 v2 ───────────────────────────────────────────────────────────────────
+// Over HTTP the 402's PaymentRequired is in the PAYMENT-REQUIRED header (base64 JSON) and in the
+// body, the buyer pays in PAYMENT-SIGNATURE, the settlement comes back in PAYMENT-RESPONSE. Over
+// MCP (a private app's tools) the same objects ride in the tool result and `_meta`.
+// Only a payment's `payload` (the signed EIP-3009 authorization) is taken from the buyer: what
+// goes to the facilitator is rebuilt here around it, so `accepted`, `resource` and the Bazaar
+// extension are always this worker's, including on vouchers signed weeks ago.
+//
+// A sale is what one route sells: its terms `P` (CONFIG.paid or CONFIG.private: network, asset,
+// payTo, facilitator, the token's EIP-712 name and version), what a catalog says it is
+// (`resource`), and its Bazaar entry, if the facilitator should list it.
+
+const MAX_BATCH = 1000, MAX_PAYMENTS = 10;
+const b64json = (o) => btoa(JSON.stringify(o));
+const requirement = (P, amount) => ({ scheme: "exact", network: P.network, amount: String(amount), asset: P.asset,
+    payTo: P.payTo, maxTimeoutSeconds: 120, extra: { name: P.name, version: P.version } });
+const resource = (url, description) => ({ url, mimeType: "application/json", serviceName: CONFIG.name, description });
+const lead = (P) => (P.description ? `${P.description}. ` : "");
+
+const SCHEMA = "https://json-schema.org/draft/2020-12/schema";
+const OUTPUT = { type: "object", required: ["type"], properties: { type: { type: "string" }, example: { type: "object" } } };
+/** A Bazaar entry for a POST route taking JSON. */
+const httpBazaar = (body, bodySchema, example) => ({
+    info: { input: { type: "http", method: "POST", bodyType: "json", body }, output: { type: "json", example } },
+    schema: { $schema: SCHEMA, type: "object", required: ["input"], properties: {
+        input: { type: "object", required: ["type", "method", "bodyType", "body"], additionalProperties: false, properties: {
+            type: { type: "string", const: "http" }, method: { type: "string", enum: ["POST"] }, bodyType: { type: "string", enum: ["json"] }, body: bodySchema } },
+        output: OUTPUT } },
+});
+/** A Bazaar entry for one MCP tool: listed by (the server's URL, its name). */
+const mcpBazaar = (tool) => ({
+    info: { input: { type: "mcp", toolName: tool.name, description: tool.description, inputSchema: tool.inputSchema, transport: "streamable-http" } },
+    schema: { $schema: SCHEMA, type: "object", required: ["input"], properties: {
+        input: { type: "object", required: ["type", "toolName", "inputSchema"], additionalProperties: false, properties: {
+            type: { type: "string", const: "mcp" }, toolName: { type: "string" }, description: { type: "string" },
+            transport: { type: "string", enum: ["streamable-http", "sse"] }, inputSchema: { type: "object" }, example: { type: "object" } } },
+        output: OUTPUT } },
+});
+
+// The keys to sealed records. Only POST /paid is listed: GET /paid/<id>'s URL differs per record,
+// and each would be listed apart.
+const KEYS_BAZAAR = httpBazaar({ ids: ["<record id>"] },
+    { type: "object", required: ["ids"], properties: { ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: MAX_BATCH } } },
+    { keys: { "<record id>": "<hex key>" }, missing: [], receipts: [], paid: [] });
+const keySale = (url, listed) => ({ P: CONFIG.paid, bazaar: listed ? KEYS_BAZAAR : null,
+    resource: resource(url.href, `${lead(CONFIG.paid)}Sells the keys to ${CONFIG.name}'s sealed records (AES-256-GCM, in its rows as `
+        + `paid_ct). Find records and their ids with the MCP server at ${url.origin}/mcp.`) });
+
+// A private app's pass, and its tools one call at a time.
+const PASS_BAZAAR = httpBazaar({}, { type: "object" }, { token: "<pass>", expires: 1900000000 });
+const days = (s) => Math.round(s / 86400);
+const passSale = (url) => ({ P: CONFIG.private, bazaar: PASS_BAZAAR,
+    resource: resource(url.href, `${lead(CONFIG.private)}A ${days(CONFIG.private.pass.seconds)}-day pass to ${CONFIG.name}: every tool of its MCP server `
+        + `at ${url.origin}/mcp and its view, with Authorization: Bearer <token>.`) });
+const callSale = (origin, tool) => ({ P: CONFIG.private, bazaar: mcpBazaar(tool),
+    resource: resource(`${origin}/mcp`, `${lead(CONFIG.private)}${CONFIG.name}'s ${tool.name} tool, one call. A pass (POST ${origin}/pass) covers every call.`) });
+
+const paymentRequired = (sale, amount, error) => ({ x402Version: 2, error, resource: sale.resource, accepts: [requirement(sale.P, amount)],
+    ...(sale.bazaar ? { extensions: { bazaar: sale.bazaar } } : {}) });
+
+/** 402 with the price of `amount`; `more` rides in the body only. */
+function quote(sale, amount, error, more = {}) {
+    const required = paymentRequired(sale, amount, error);
+    return json({ ...required, ...more }, 402, { "payment-required": b64json(required) });
+}
+
+/** The PaymentPayload the facilitator sees: the buyer's signed `payload`, the rest ours. */
+const payloadOf = (sale, p, amount) => ({ x402Version: 2, resource: sale.resource, accepted: requirement(sale.P, amount),
+    payload: p?.payload, ...(sale.bazaar ? { extensions: { bazaar: sale.bazaar } } : {}) });
+
+async function facilitator(P, path, paymentPayload) {
     // A network failure is an answer too: thrown, it would turn a half-settled batch into a 500.
     let r;
     try {
-        r = await fetch(`${CONFIG.paid.facilitator}/${path}`, {
+        r = await fetch(`${P.facilitator}/${path}`, {
             method: "POST", headers: { "content-type": "application/json" },
-            body: JSON.stringify({ x402Version: 1, paymentPayload: payment, paymentRequirements: requirements }),
+            body: JSON.stringify({ x402Version: 2, paymentPayload, paymentRequirements: paymentPayload.accepted }),
         });
     } catch (e) { return { error: `facilitator ${path}: ${e.message}` }; }
     const text = await r.text();
     try { return JSON.parse(text); } catch { return { error: `facilitator ${path}: HTTP ${r.status} ${text.slice(0, 200)}` }; }
 }
 
-async function sell(request, env, url) {
-    const P = CONFIG.paid;
-    const id = decodeURIComponent(url.pathname.slice("/paid/".length));
-    if (!id) return json({ error: "no id" }, 400);
-    const requirements = {
-        scheme: "exact", network: P.network, maxAmountRequired: P.price, resource: url.href,
-        description: P.description, mimeType: "application/json", payTo: P.payTo,
-        maxTimeoutSeconds: 120, asset: P.asset, extra: { name: P.name, version: P.version },
-    };
-    const refuse = (error) => json({ x402Version: 1, error, accepts: [requirements] }, 402);
-    const header = request.headers.get("X-PAYMENT");
-    if (!header) return refuse("X-PAYMENT header is required");
-    let payment;
-    try { payment = JSON.parse(atob(header)); } catch { return refuse("X-PAYMENT is not base64 JSON"); }
-    const verified = await facilitator("verify", payment, requirements);
-    if (!verified.isValid) return refuse(verified.invalidReason ?? verified.error ?? "payment did not verify");
-    const settled = await facilitator("settle", payment, requirements);
-    if (!settled.success) return refuse(settled.errorReason ?? settled.error ?? "settlement failed");
-    return json({ id, key: await keyFor(env, id) }, 200, { "x-payment-response": btoa(JSON.stringify(settled)) });
+const signatures = (request) => {
+    const header = request.headers.get("PAYMENT-SIGNATURE");
+    if (!header) return { error: "PAYMENT-SIGNATURE header is required" };
+    try { return { payments: [JSON.parse(atob(header))].flat() }; } catch { return { error: "PAYMENT-SIGNATURE is not base64 JSON" }; }
+};
+
+/** One payment for `amount`, verified and settled: `{settled, payer}`, or `{refused}`, the 402 to answer with. */
+async function payOnce(request, sale, amount) {
+    const { payments, error } = signatures(request);
+    if (error) return { refused: quote(sale, amount, error) };
+    if (payments.length !== 1) return { refused: quote(sale, amount, "one payment, not several") };
+    const payment = payloadOf(sale, payments[0], amount);
+    const verified = await facilitator(sale.P, "verify", payment);
+    if (!verified.isValid) return { refused: quote(sale, amount, verified.invalidReason ?? verified.error ?? "payment did not verify") };
+    const settled = await facilitator(sale.P, "settle", payment);
+    if (!settled.success) return { refused: quote(sale, amount, settled.errorReason ?? settled.error ?? "settlement failed") };
+    return { settled, payer: settled.payer ?? payment.payload?.authorization?.from };
 }
 
-// POST /paid {ids}: many keys, one price. 402 with the total; then X-PAYMENT may be one payment
-// or a JSON array of them (an agent's vouchers) that add up to it. The only subrequests are the
-// facilitator's (2 per payment, 50 on the free plan), hence MAX_PAYMENTS; keys cost nothing.
-const MAX_BATCH = 1000, MAX_PAYMENTS = 10;
+async function sell(request, env, url) {
+    const id = decodeURIComponent(url.pathname.slice("/paid/".length));
+    if (!id) return json({ error: "no id" }, 400);
+    const { settled, refused } = await payOnce(request, keySale(url, false), CONFIG.paid.price);
+    if (refused) return refused;
+    return json({ id, key: await keyFor(env, id) }, 200, { "payment-response": b64json(settled) });
+}
+
+// POST /paid {ids}: many keys, one price. 402 with the total; then PAYMENT-SIGNATURE may be one
+// payment or a JSON array of them (an agent's vouchers) that add up to it. The only subrequests
+// are the facilitator's (2 per payment, 50 on the free plan), hence MAX_PAYMENTS; keys cost nothing.
 async function sellBatch(request, env, url) {
-    const P = CONFIG.paid;
+    const P = CONFIG.paid, sale = keySale(url, true);
+    const { payments, error } = signatures(request);
     let ids;
-    try { ids = [...new Set((await request.json()).ids)].filter((x) => typeof x === "string"); } catch { return json({ error: "body must be {\"ids\": [...]}" }, 400); }
-    if (!ids.length || ids.length > MAX_BATCH) return json({ error: `between 1 and ${MAX_BATCH} ids per purchase` }, 400);
+    try { ids = [...new Set((await request.json()).ids)].filter((x) => typeof x === "string"); } catch { ids = null; }
+    if (!ids?.length || ids.length > MAX_BATCH) {
+        // A probe (x402scan, a Bazaar crawler) posts no body: it gets the price of one record.
+        if (error) return quote(sale, P.price, `${error}; the body is {"ids": [...]}, ${P.price} per id`);
+        return json({ error: `body must be {"ids": [...]}, between 1 and ${MAX_BATCH} ids per purchase` }, 400);
+    }
     const found = ids, missing = [];
     const total = BigInt(P.price) * BigInt(found.length);
-    const requirements = (amount) => ({
-        scheme: "exact", network: P.network, maxAmountRequired: String(amount), resource: url.href,
-        description: P.description, mimeType: "application/json", payTo: P.payTo,
-        maxTimeoutSeconds: 120, asset: P.asset, extra: { name: P.name, version: P.version },
-    });
-    const refuse = (error, more = {}) => json({ x402Version: 1, error, accepts: [requirements(total)], found, missing, ...more }, 402);
-    const header = request.headers.get("X-PAYMENT");
-    if (!header) return refuse("X-PAYMENT header is required");
-    let payments;
-    try { payments = [JSON.parse(atob(header))].flat(); } catch { return refuse("X-PAYMENT is not base64 JSON"); }
+    const refuse = (error, more = {}) => quote(sale, total, error, { found, missing, ...more });
+    if (error) return refuse(error);
     if (payments.length > MAX_PAYMENTS) return refuse(`at most ${MAX_PAYMENTS} payments per purchase`);
     const auths = payments.map((p) => p?.payload?.authorization ?? {});
     if (new Set(auths.map((a) => a.nonce)).size !== auths.length) return refuse("a payment is repeated");
@@ -283,8 +369,9 @@ async function sellBatch(request, env, url) {
     let sum = 0n;
     try { for (const a of auths) sum += BigInt(a.value); } catch { return refuse("a payment has no amount"); }
     if (sum !== total) return refuse(`payments add up to ${sum}, the price is ${total}`);
-    for (const [i, p] of payments.entries()) {
-        const v = await facilitator("verify", p, requirements(auths[i].value));
+    const signed = payments.map((p, i) => payloadOf(sale, p, auths[i].value));
+    for (const [i, p] of signed.entries()) {
+        const v = await facilitator(P, "verify", p);
         if (!v.isValid) return refuse(`payment ${i + 1}: ${v.invalidReason ?? v.error ?? "did not verify"}`);
     }
     // Settle one by one. A spent voucher (or one the wallet can no longer cover) passes verify
@@ -294,8 +381,8 @@ async function sellBatch(request, env, url) {
     // the buyer's stack can drop them either way.
     const receipts = [];
     let settled = 0n;
-    for (const [i, p] of payments.entries()) {
-        const s = await facilitator("settle", p, requirements(auths[i].value));
+    for (const [i, p] of signed.entries()) {
+        const s = await facilitator(P, "settle", p);
         if (!s.success) {
             const error = `payment ${i + 1}: ${s.errorReason ?? s.error ?? "settlement failed"}`;
             if (!receipts.length) return refuse(error, { rejected: [auths[i].nonce] });
@@ -329,13 +416,81 @@ async function member(request, env) {
     return json({ keys: await keysFor(env, ids), reader: check.reader, until: check.until });
 }
 
+// ── a private app ─────────────────────────────────────────────────────────────
+// CONFIG.private: the rows are sealed on chain (x402.js's sealRow), opened by the cron with
+// PAID_SECRET, and the view is served only with access: a pass bought at POST /pass (one x402
+// payment, a token good for `pass.seconds`), or, on /mcp, one x402 payment per tool call. What a
+// stranger needs to decide whether to pay stays free: the card, the catalog (views, counts) and
+// the describe tool.
+// ponytail: a pass is a signed token, not a record: it cannot be revoked before it expires, and
+// changing PAID_SECRET voids every pass (and every key). A list of revoked payers in R2 if that matters.
+
+const FREE_VIEW = new Set(["cdn/catalog"]), FREE_TOOLS = new Set(["describe"]);
+const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const unb64url = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+const passKey = (env) => crypto.subtle.importKey("raw", new TextEncoder().encode(`${env.PAID_SECRET}:pass`), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+
+async function issuePass(env, payer, exp) {
+    const claims = b64url(new TextEncoder().encode(JSON.stringify({ app: CONFIG.app, sub: payer, exp })));
+    return `${claims}.${b64url(new Uint8Array(await crypto.subtle.sign("HMAC", await passKey(env), new TextEncoder().encode(claims))))}`;
+}
+
+/** The pass a request carries (Authorization: Bearer), if it is this app's and unexpired. */
+async function passOf(env, request) {
+    const m = /^Bearer ([\w-]+)\.([\w-]+)$/.exec(request.headers.get("authorization") ?? "");
+    if (!m || !env.PAID_SECRET) return null;
+    try {
+        if (!await crypto.subtle.verify("HMAC", await passKey(env), unb64url(m[2]), new TextEncoder().encode(m[1]))) return null;
+        const c = JSON.parse(new TextDecoder().decode(unb64url(m[1])));
+        return c.app === CONFIG.app && c.exp > Date.now() / 1000 ? c : null;
+    } catch { return null; }
+}
+
+// POST /pass: one payment, a pass. A probe posts nothing and gets the price.
+async function sellPass(request, env, url) {
+    const X = CONFIG.private;
+    const { settled, payer, refused } = await payOnce(request, passSale(url), X.pass.price);
+    if (refused) return refused;
+    const expires = Math.floor(Date.now() / 1000) + X.pass.seconds;
+    return json({ token: await issuePass(env, payer, expires), expires,
+        use: `Authorization: Bearer <token> on ${url.origin}/mcp and ${url.origin}/view/…` }, 200, { "payment-response": b64json(settled) });
+}
+
+/** A paid tool call over x402's MCP transport: verify, run, settle. A call that fails is not
+ *  charged (its payment is never settled), and a settlement that fails returns no content. */
+async function paidCall(origin, tool, payment, run) {
+    const X = CONFIG.private, sale = callSale(origin, tool);
+    const required = (error) => {
+        const pr = paymentRequired(sale, X.call, error);
+        return { isError: true, structuredContent: pr, content: [{ type: "text", text: JSON.stringify(pr) }] };
+    };
+    if (!payment) return required(`${tool.name} is paid: one x402 payment per call in _meta["x402/payment"], or a pass from POST ${origin}/pass`);
+    const p = payloadOf(sale, payment, X.call);
+    const verified = await facilitator(X, "verify", p);
+    if (!verified.isValid) return required(verified.invalidReason ?? verified.error ?? "payment did not verify");
+    const result = await run();
+    // view-tools answers a miss ("not in a loaded view") with {error} in the text, not isError.
+    let missed = false;
+    try { missed = !!JSON.parse(result.content?.[0]?.text ?? "{}").error; } catch { /* not JSON: an answer */ }
+    if (result.isError || missed) return result;
+    const settled = await facilitator(X, "settle", p);
+    if (!settled.success) return required(settled.errorReason ?? settled.error ?? "settlement failed");
+    return { ...result, _meta: { ...result._meta, "x402/payment-response": settled } };
+}
+
 const worker = {
     async fetch(request, env) {
         CONFIG = env.CONFIG ?? CONFIG;
         const url = new URL(request.url);
         const p = url.pathname;
         if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
-        if (p.startsWith("/view/")) return viewFile(env, p.slice("/view/".length));
+        if (p.startsWith("/view/")) {
+            const path = p.slice("/view/".length);
+            if (CONFIG.private && !FREE_VIEW.has(path) && !await passOf(env, request))
+                return json({ error: `${CONFIG.name}'s data is private: send Authorization: Bearer <pass>, from POST ${url.origin}/pass (x402)` }, 401);
+            return viewFile(env, path);
+        }
+        if (p === "/pass" && request.method === "POST") return CONFIG.private ? sellPass(request, env, url) : json({ error: "nothing is sold here" }, 404);
         if (p === "/mcp") return serveMcp(request, env, url);
         if (p === "/doc") return doc(request, env, url);
         if (p === "/paid" && request.method === "POST") return CONFIG.paid ? sellBatch(request, env, url) : json({ error: "nothing is sold here" }, 404);
@@ -412,6 +567,59 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     eq([cat.status, cat.headers.get("access-control-allow-origin"), (await cat.json()).domains[0].link_hosts], [200, "*", ["docs.example"]], "the view is served from R2, with the hosts its records link to");
     eq((await worker.fetch(new Request("https://shop.test/doc?u=https://evil.example/x.pdf"), env)).status, 403, "/doc refuses a host no record links to");
     eq((await worker.fetch(new Request("https://shop.test/view/cdn/nope"), env)).status, 404, "a missing file is a 404");
+
+    // A private app: its rows sealed on chain, opened by the indexer, served only with a pass or a paid call.
+    const { sealRow, openRow } = await import("../src/agent/x402.js");
+    const SECRET = "s3cret";
+    chain[`${PUB}/vault`] = { records: [rec("v1", TAG, await sealRow(SECRET, { sku: "v1", name: "Velvet chair", about: "a green velvet armchair" }))] };
+    const sealedAgain = await sealRow(SECRET, { sku: "v1", name: "Velvet chair", about: "a green velvet armchair" });
+    eq(sealedAgain, chain[`${PUB}/vault`].records[0].payload, "an unchanged row seals to the same bytes (the same CID: not embedded again)");
+    if (JSON.stringify(sealedAgain).includes("Velvet")) throw new Error("a sealed row must not carry its plaintext");
+    await publishView({ fangorn, app: APP, store: r2Store(VIEW), embedBatch: encode(env, DOCUMENT), embedder: WORKER_EMBEDDER, log: () => {},
+        open: (p) => openRow(SECRET, p) });
+    env.PAID_SECRET = SECRET;
+    CONFIG = env.CONFIG = { ...env.CONFIG, private: { network: "eip155:84532", asset: `0x${"aa".repeat(20)}`, payTo: `0x${"5e".repeat(20)}`,
+        facilitator: "https://fac", name: "USDC", version: "2", pass: { price: "1000000", seconds: 86400 }, call: "10000" } };
+    const settles = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (u, init) => {
+        const { paymentPayload: p } = JSON.parse(init.body);
+        if (u === "https://fac/verify") return new Response(JSON.stringify({ isValid: true, payer: p.payload.authorization.from }));
+        settles.push(p);
+        return new Response(JSON.stringify({ success: true, transaction: `0x${settles.length}`, network: "eip155:84532", payer: p.payload.authorization.from }));
+    };
+    try {
+        const payment = { x402Version: 2, payload: { signature: "0x", authorization: { from: "0xbuyer", to: CONFIG.private.payTo, value: "1", nonce: "0x1" } } };
+        const shard = [...objs.keys()].find((k) => k.startsWith("view/cdn/domains/") && k.endsWith("/manifest")).slice("view/".length);
+        const get = (path, headers = {}) => worker.fetch(new Request(`https://shop.test/${path}`, { headers }), env);
+        eq([(await get("view/cdn/catalog")).status, (await get(`view/${shard}`)).status], [200, 401], "the catalog is free, the rest of the view is not");
+        const asMcp = async (params, headers = {}) => (await (await worker.fetch(new Request("https://shop.test/mcp", { method: "POST", headers,
+            body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params }) }), env)).json()).result;
+        const search = { name: "search", arguments: { query: "velvet armchair", limit: 1 } };
+        const ask = await asMcp(search);
+        eq([ask.isError, ask.structuredContent.accepts[0].amount, ask.structuredContent.extensions.bazaar.info.input.toolName, JSON.parse(ask.content[0].text).x402Version],
+            [true, "10000", "search", 2], "a paid tool without payment answers with x402's PaymentRequired, listed as an MCP tool");
+        eq(JSON.parse((await asMcp({ name: "describe", arguments: {} })).content[0].text).views[0].rows, 3, "describe stays free, and counts the sealed row");
+        if (!(await call("tools/list")).result.tools.find((t) => t.name === "search").description.includes("Paid: 0.01 USDC")) throw new Error("tools/list names the price");
+
+        const quote402 = await worker.fetch(new Request("https://shop.test/pass", { method: "POST" }), env);
+        const pr = JSON.parse(atob(quote402.headers.get("payment-required")));
+        eq([quote402.status, pr.accepts[0].amount, pr.extensions.bazaar.info.input.method], [402, "1000000", "POST"], "a pass is quoted over x402, Bazaar entry and all");
+        const bought = await (await worker.fetch(new Request("https://shop.test/pass", { method: "POST", headers: { "PAYMENT-SIGNATURE": btoa(JSON.stringify(payment)) } }), env)).json();
+        const auth = { authorization: `Bearer ${bought.token}` };
+        eq([(await get(`view/${shard}`, auth)).status, settles.length], [200, 1], "a pass opens the view, paid once");
+        const withPass = JSON.parse((await asMcp(search, auth)).content[0].text);
+        eq([withPass.hits[0].title, settles.length], ["Velvet chair", 1], "a pass covers tool calls, and the sealed row was opened and embedded");
+        const forged = `${bought.token.split(".")[0]}.${"A".repeat(43)}`;
+        eq((await get(`view/${shard}`, { authorization: `Bearer ${forged}` })).status, 401, "a forged pass is refused");
+
+        const paidOnce = await asMcp({ ...search, _meta: { "x402/payment": payment } });
+        eq([JSON.parse(paidOnce.content[0].text).hits[0].title, paidOnce._meta["x402/payment-response"].transaction, settles.at(-1).resource.url],
+            ["Velvet chair", "0x2", "https://shop.test/mcp"], "one call, one payment, settled after it ran");
+        const failed = await asMcp({ name: "get", arguments: { id: "no-such-row" }, _meta: { "x402/payment": payment } });
+        eq([!!JSON.parse(failed.content[0].text).error, !!failed._meta, settles.length], [true, false, 2], "a call that misses is not charged");
+    } finally { globalThis.fetch = realFetch; }
+    CONFIG = env.CONFIG = { ...env.CONFIG, private: null };
 
     // The incremental scan: only updates since the last run, membership and exclusions applied every run.
     const STRANGER = "0x" + "9".repeat(40);

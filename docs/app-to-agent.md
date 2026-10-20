@@ -39,9 +39,10 @@ which anything can produce: a scraper, a database export, a converted spreadshee
   writes the same files, so moving an app to it means changing the `views` URL in its
   card.
 
-It runs on Arbitrum Sepolia (the default) or Base Sepolia: set `"network": "baseSepolia"` in
-`app.json`, `CHAIN_NAME=baseSepolia` for the CLI, and `FANGORN_NETWORK=baseSepolia` for
-`westmarch-view` and `fangorn-mcp`.
+It runs on Base Sepolia (new apps) or Arbitrum Sepolia (apps claimed there before the move).
+`"network"` in `app.json` is required: `"baseSepolia"`, or the network the app was claimed on.
+`westmarch-view` and `fangorn-mcp` read Base Sepolia unless `FANGORN_NETWORK=arbitrumSepolia`;
+the CLI signs on `CHAIN_NAME`.
 
 ## The short way: one config, one command
 
@@ -61,7 +62,7 @@ update: each step checks the chain (or Cloudflare) first and acts only on a diff
   "relations": [],
   "sources": [{ "namespace": "things", "command": ["python", "-m", "my_source"] }],
   "fangorn": "fangorn",                      // the CLI that signs
-  "paid": { "price": "0.01", "network": "arbitrum-sepolia", "description": "the full record" }
+  "paid": { "price": "0.01", "description": "the full record" }   // USDC on the app's network, x402 v2
 }
 ```
 
@@ -98,6 +99,29 @@ and commit `.ship/state.json`; Quorum's `.github/workflows/ship.yml` is a workin
 five towns' meetings crawled, published, embedded and deployed by `westmarch-ship`, then
 searched and bought (x402, settled on Arbitrum Sepolia) from `fangorn-mcp` in a fresh
 session. Kingsfoil, the reference at the end, predates `ship` and was built by hand.
+
+## A private app: the data is the product
+
+`"private": { "pass": { "price": "5", "days": 30 }, "call": "0.01" }` in `app.json`, settled like
+`paid` (`network`, `payTo`, `asset`, `facilitator`). What changes:
+
+- **Storage.** Each source stages its records (it needs `--output-dir`); ship seals every row whole,
+  `{sealed: base64(nonce ‖ AES-256-GCM(rowKey, row))}` with rowKey = HMAC-SHA256(PAID_SECRET,
+  "fangorn.row.v1"), and commits that. The nonce is derived from the row, so an unchanged row keeps
+  its CID and is not re-embedded. PAID_SECRET is `$PAID_SECRET` or made once in `.ship/secret`:
+  **back it up**, it is the only way to open the rows.
+- **Index.** The Worker (which ship gives the secret on every deploy) opens rows in its cron and
+  builds the view in R2 as for any app.
+- **Serving.** `/view/*` (but `cdn/catalog`) and every MCP tool but `describe` need access: a pass
+  (`POST /pass`, x402 v2, a bearer token good for `days`) or one x402 payment per tool call over
+  x402's MCP transport (`_meta["x402/payment"]`). A call that fails or misses is not charged.
+  `fangorn-mcp` pays by itself with `FANGORN_MCP_WALLET_KEY`: a pass at or under
+  `FANGORN_MCP_MAX_PASS`, else per call at or under `FANGORN_MCP_MAX_PRICE`.
+- **Discovery.** The card's Fangorn extension carries `access` (pass URL and prices); `/openapi.json`
+  and `/.well-known/x402` list `POST /pass` for x402scan; the facilitator's Bazaar lists `/pass` and
+  each tool (as `type: "mcp"`) after its first sale.
+
+Not yet: the stock page cannot buy or carry a pass, so a private app's page shows its catalog only.
 
 ## Grading a change before it ships
 

@@ -149,7 +149,7 @@ export function linkRelations(rows, schema) {
 // ── a client that only reads ──────────────────────────────────────────────────
 
 /** The SDK's deployment for a network name ("baseSepolia"): FANGORN_NETWORK, else its default. */
-export async function network(name = process.env.FANGORN_NETWORK || "arbitrumSepolia") {
+export async function network(name = process.env.FANGORN_NETWORK || "baseSepolia") {
     const { SupportedNetworks } = await import("@fangorn-network/sdk");
     if (!SupportedNetworks[name]) throw new Error(`network ${name}: the SDK knows ${Object.keys(SupportedNetworks).join(", ")}`);
     return SupportedNetworks[name];
@@ -292,7 +292,7 @@ const sha256 = (s) => createHash("sha256").update(s).digest("hex");
  */
 export async function publishView({ fangorn, app, repos, out, store = fsStore(out), fromBlock, presented, rebake = false,
                                     embed = embedDocumentDirect, embedBatch = (ts) => Promise.all(ts.map(embed)),
-                                    embedder = EMBEDDER, log = console.log, shardRows = 20000, concurrency = 4 }) {
+                                    embedder = EMBEDDER, log = console.log, shardRows = 20000, concurrency = 4, open = (p) => p }) {
     fangorn.setAppId(app);
     const appId = fangorn.getAppId();
     const owner = (await fangorn.getAppRegistry().getAppOwner()).toLowerCase();
@@ -323,7 +323,7 @@ export async function publishView({ fangorn, app, repos, out, store = fsStore(ou
             // One repo failing (unreadable, the encoder out for the day) keeps its last view and
             // does not stop the others; the next run tries it again.
             const r = await publishDomain({ fangorn, store, schema, schemaHash, publisher: t.owner, repo: t.repo, head: t.root, domain,
-                dir: `cdn/domains/${domain}`, rebake, embedBatch, embedder, log, shardRows })
+                dir: `cdn/domains/${domain}`, rebake, embedBatch, embedder, log, shardRows, open })
                 .catch((e) => { log(`${domain}: ✗ ${e.message}; left as it was`); return { added: 0, removed: 0, error: e.message }; });
             if (r) report[domain] = r;
         }
@@ -354,15 +354,16 @@ async function retry(f, tries = 6) {
     }
 }
 
-async function publishDomain({ fangorn, store, schema, schemaHash, publisher, repo, head, domain, dir, rebake, embedBatch, embedder, log, shardRows }) {
+async function publishDomain({ fangorn, store, schema, schemaHash, publisher, repo, head, domain, dir, rebake, embedBatch, embedder, log, shardRows, open }) {
     // The head the domain was built from, and the schema it was built under: neither moved,
     // nothing to read. This is what keeps a cron run with nothing new to one read per repo.
     const was = rebake ? null : await readJson(store, `${dir}/manifest`, null);
     if (was && was.head === head && was.schema_hash === schemaHash) return null;
 
     const { contents } = await retry(() => fangorn.readRepo(publisher, repo));
-    const records = new Map(contents.records.filter((r) => r.payload && typeof r.payload === "object")
-        .map((r) => [r.cid, { id: r.id, fields: { ...r.payload, entityType: r.type } }]));
+    // `open`: a private app's rows are sealed on chain (x402.js's sealRow); the Worker opens them here.
+    const records = new Map(await Promise.all(contents.records.filter((r) => r.payload && typeof r.payload === "object")
+        .map(async (r) => [r.cid, { id: r.id, fields: { ...(await open(r.payload)), entityType: r.type } }])));
     linkRelations(records, schema);
     const fieldsOf = (cid) => records.get(cid).fields;
 

@@ -20,7 +20,7 @@
 
 import { parseAbi, parseAbiItem } from "viem";
 // The config module alone (viem only), not the SDK's root: this runs in a tab too.
-import { FangornConfig } from "@fangorn-network/sdk/lib/config.js";
+import { BaseSepoliaConfig } from "@fangorn-network/sdk/lib/config.js";
 import { APP_EXTENSION } from "./apps.js";
 import { survey, comparable } from "./directory.js";
 import { rankDomains, zFloor, lexScore } from "../core/rank.js";
@@ -38,7 +38,7 @@ const ERC8004 = {
 };
 
 /** What explore reads on one of the SDK's networks (`SupportedNetworks.baseSepolia`, …). */
-export function chainOf(net = FangornConfig) {
+export function chainOf(net = BaseSepoliaConfig) {
     const e = ERC8004[net.caip2];
     if (!e) throw new Error(`explore: no ERC-8004 registries known for chain ${net.caip2}`);
     return {

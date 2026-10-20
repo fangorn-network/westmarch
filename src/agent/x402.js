@@ -1,65 +1,82 @@
-// Paying for a resource over x402 (v1, "exact" scheme): the buyer's half.
+// Paying for a resource over x402 (v2, "exact" scheme on an EVM chain): the buyer's half.
 //
 //   const { body, receipt, price } = await payAndFetch(url, { privateKey, maxPrice: 50000n });
 //
-// 1. GET url → 402 with `accepts`: what it costs, in which token, on which chain, to whom.
+// 1. GET url → 402 with its PaymentRequired in the PAYMENT-REQUIRED header (base64 JSON):
+//    `accepts` says what it costs, in which token, on which chain ("eip155:84532"), to whom.
 // 2. Sign an EIP-3009 transferWithAuthorization for exactly that (EIP-712, the token's own
-//    domain). Nothing is sent on chain by the buyer: the seller's facilitator submits it.
-// 3. GET url again with X-PAYMENT: the seller verifies, settles, and returns the resource,
-//    with the settlement (the tx hash) in X-PAYMENT-RESPONSE.
+//    domain, named in `extra`). Nothing is sent on chain by the buyer: the seller's facilitator
+//    submits it.
+// 3. GET url again with PAYMENT-SIGNATURE: the seller verifies, settles, and returns the
+//    resource, with the settlement (the tx hash) in PAYMENT-RESPONSE.
 //
 // `maxPrice` (token base units) is checked BEFORE signing: a seller cannot ask for more
 // than the caller agreed to, whatever its 402 says.
 
-const CHAIN_IDS = { "arbitrum-sepolia": 421614, arbitrum: 42161, "base-sepolia": 84532, base: 8453 };
 const b64 = (s) => (typeof btoa === "function" ? btoa(s) : Buffer.from(s, "utf8").toString("base64"));
 const unb64 = (s) => (typeof atob === "function" ? atob(s) : Buffer.from(s, "base64").toString("utf8"));
+const EVM = /^eip155:(\d+)$/;
 
-/** The one requirement we can pay: exact scheme, a chain we know, within `maxPrice`. */
-export function choose(accepts = [], { maxPrice, networks = Object.keys(CHAIN_IDS) } = {}) {
-    const ok = accepts.filter((a) => a.scheme === "exact" && networks.includes(a.network));
+/** The one requirement we can pay: exact scheme, an EVM chain, within `maxPrice`. */
+export function choose(accepts = [], { maxPrice } = {}) {
+    const ok = accepts.filter((a) => a.scheme === "exact" && EVM.test(a.network));
     if (!ok.length) throw new Error(`no payable option: ${JSON.stringify(accepts.map((a) => `${a.scheme}/${a.network}`))}`);
-    const cheapest = ok.sort((a, b) => (BigInt(a.maxAmountRequired) < BigInt(b.maxAmountRequired) ? -1 : 1))[0];
-    if (maxPrice != null && BigInt(cheapest.maxAmountRequired) > BigInt(maxPrice))
-        throw new Error(`price ${cheapest.maxAmountRequired} exceeds the cap ${maxPrice} (token base units)`);
+    const cheapest = ok.sort((a, b) => (BigInt(a.amount) < BigInt(b.amount) ? -1 : 1))[0];
+    if (maxPrice != null && BigInt(cheapest.amount) > BigInt(maxPrice))
+        throw new Error(`price ${cheapest.amount} exceeds the cap ${maxPrice} (token base units)`);
     return cheapest;
 }
 
-/** The X-PAYMENT header value for requirement `req`, signed by `account` (a viem account). */
-export async function paymentHeader(req, account, { now = Math.floor(Date.now() / 1000) } = {}) {
-    const chainId = CHAIN_IDS[req.network];
-    if (!chainId) throw new Error(`unknown network ${req.network}`);
+/** A 402's PaymentRequired, from its PAYMENT-REQUIRED header. */
+export function paymentRequired(res) {
+    const h = res.headers.get("PAYMENT-REQUIRED");
+    if (!h) throw new Error(`HTTP ${res.status} has no PAYMENT-REQUIRED header (not x402 v2)`);
+    return JSON.parse(unb64(h));
+}
+
+/** The PAYMENT-SIGNATURE header value for requirement `req`, signed by `account` (a viem account). */
+export async function paymentHeader(req, account, opts) {
+    return b64(JSON.stringify(await signPayment(req, account, opts)));
+}
+
+/** A PaymentPayload for `req` (one of a 402's `accepts`), for the 402's `resource`. */
+export async function signPayment(req, account, { resource, now = Math.floor(Date.now() / 1000) } = {}) {
+    const chainId = Number((EVM.exec(req.network) ?? [])[1]);
+    if (!chainId) throw new Error(`not an EVM network: ${req.network}`);
     const nonce = `0x${[...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
     const authorization = {
-        from: account.address, to: req.payTo, value: String(req.maxAmountRequired),
+        from: account.address, to: req.payTo, value: String(req.amount),
         validAfter: String(now - 600), validBefore: String(now + (req.maxTimeoutSeconds ?? 120)), nonce,
     };
+    // The token's EIP-712 name differs by chain (Base Sepolia's USDC is "USDC", Base's "USD
+    // Coin"), so a seller that names none is refused rather than guessed at.
+    if (!req.extra?.name || !req.extra?.version) throw new Error(`${req.network}: the seller names no EIP-712 domain for ${req.asset} (extra.name, extra.version)`);
     const signature = await account.signTypedData({
-        domain: { name: req.extra?.name ?? "USD Coin", version: req.extra?.version ?? "2", chainId, verifyingContract: req.asset },
+        domain: { name: req.extra.name, version: req.extra.version, chainId, verifyingContract: req.asset },
         types: { TransferWithAuthorization: [
             { name: "from", type: "address" }, { name: "to", type: "address" }, { name: "value", type: "uint256" },
             { name: "validAfter", type: "uint256" }, { name: "validBefore", type: "uint256" }, { name: "nonce", type: "bytes32" }] },
         primaryType: "TransferWithAuthorization",
         message: { ...authorization, value: BigInt(authorization.value), validAfter: BigInt(authorization.validAfter), validBefore: BigInt(authorization.validBefore) },
     });
-    return b64(JSON.stringify({ x402Version: 1, scheme: "exact", network: req.network, payload: { signature, authorization } }));
+    return { x402Version: 2, ...(resource ? { resource } : {}), accepted: req, payload: { signature, authorization } };
 }
 
-/** GET `url`, paying once if it answers 402. Returns { status, body, price, receipt }. */
-export async function payAndFetch(url, { privateKey, account, maxPrice, fetchImpl = fetch } = {}) {
-    const first = await fetchImpl(url);
+/** GET `url` (or `method` it), paying once if it answers 402. Returns { status, body, price, receipt }. */
+export async function payAndFetch(url, { privateKey, account, maxPrice, fetchImpl = fetch, method = "GET" } = {}) {
+    const first = await fetchImpl(url, { method });
     if (first.status !== 402) return { status: first.status, body: await first.text(), price: null, receipt: null };
-    const offer = await first.json();
+    const offer = paymentRequired(first);
     const req = choose(offer.accepts, { maxPrice });
     if (!account) {
-        if (!privateKey) throw new Error(`${url} costs ${req.maxAmountRequired} (base units of ${req.asset} on ${req.network}); no wallet configured to pay`);
+        if (!privateKey) throw new Error(`${url} costs ${req.amount} (base units of ${req.asset} on ${req.network}); no wallet configured to pay`);
         account = (await import("viem/accounts")).privateKeyToAccount(privateKey);
     }
-    const paid = await fetchImpl(url, { headers: { "X-PAYMENT": await paymentHeader(req, account) } });
-    const receiptHeader = paid.headers.get("X-PAYMENT-RESPONSE");
+    const paid = await fetchImpl(url, { method, headers: { "PAYMENT-SIGNATURE": await paymentHeader(req, account, { resource: offer.resource }) } });
+    const receiptHeader = paid.headers.get("PAYMENT-RESPONSE");
     const body = await paid.text();
-    if (paid.status === 402) throw new Error(`payment refused: ${JSON.parse(body).error ?? body}`);
-    return { status: paid.status, body, price: req.maxAmountRequired, receipt: receiptHeader ? JSON.parse(unb64(receiptHeader)) : null };
+    if (paid.status === 402) throw new Error(`payment refused: ${paymentRequired(paid).error ?? body}`);
+    return { status: paid.status, body, price: req.amount, receipt: receiptHeader ? JSON.parse(unb64(receiptHeader)) : null };
 }
 
 // ── Sealed records ────────────────────────────────────────────────────────────────────────
@@ -83,8 +100,7 @@ export async function paidKey(secret, id) {
 }
 
 /** Seal `text` under `keyHex`: what a source writes as `paid_ct`. */
-export async function sealPaid(keyHex, text) {
-    const nonce = crypto.getRandomValues(new Uint8Array(12));
+export async function sealPaid(keyHex, text, nonce = crypto.getRandomValues(new Uint8Array(12))) {
     const k = await crypto.subtle.importKey("raw", unhex(keyHex), "AES-GCM", false, ["encrypt"]);
     const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, k, new TextEncoder().encode(text)));
     const out = new Uint8Array(12 + ct.length);
@@ -99,6 +115,39 @@ export async function openPaid(ct, keyHex, want) {
     const plain = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.slice(0, 12) }, k, bytes.slice(12)));
     const sha = await sha256(plain);
     return { sha256: sha, verified: want ? want === sha : null, record: JSON.parse(new TextDecoder().decode(plain)) };
+}
+
+/** A private app's pass (its card's `access`): one payment at POST `pass_url`, a bearer token back. */
+export async function buyPass(access, { account, privateKey, maxPrice = access.pass, fetchImpl } = {}) {
+    const r = await payAndFetch(access.pass_url, { method: "POST", account, privateKey, maxPrice, fetchImpl });
+    if (r.status !== 200) throw new Error(`no pass: HTTP ${r.status} ${r.body.slice(0, 200)}`);
+    return { ...JSON.parse(r.body), price: r.price, receipt: r.receipt };
+}
+
+// ── Private apps ──────────────────────────────────────────────────────────────────────────
+// A private app's rows are sealed whole before they reach IPFS: the payload on chain is
+// `{sealed}`, base64(nonce[12] ‖ AES-256-GCM(rowKey, JSON(payload))), with rowKey =
+// HMAC-SHA256(PAID_SECRET, "fangorn.row.v1"). The app's Worker holds the secret, opens the rows
+// in its cron and serves the view only to those who pay. The nonce is the first 12 bytes of
+// HMAC(rowKey, plaintext): an unchanged row seals to the same bytes, so the same CID, and is not
+// embedded again; two different rows never share a nonce. (Equal rows look equal: that is all.)
+
+const ROW = "fangorn.row.v1";
+async function rowNonce(keyHex, text) {
+    const k = await crypto.subtle.importKey("raw", unhex(keyHex), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    return new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(text))).slice(0, 12);
+}
+
+/** The payload a private app commits for `payload`. */
+export async function sealRow(secret, payload) {
+    const key = await paidKey(secret, ROW), text = JSON.stringify(payload);
+    return { sealed: await sealPaid(key, text, await rowNonce(key, text)) };
+}
+
+/** A row as committed, opened; a payload that is not sealed comes back as it is. */
+export async function openRow(secret, payload) {
+    if (typeof payload?.sealed !== "string") return payload;
+    return (await openPaid(payload.sealed, await paidKey(secret, ROW))).record;
 }
 
 /** Open every record a seller sent a key for. `ct[id]` is the row's paid_ct, `want[id]` its paid_sha256. */
@@ -147,7 +196,7 @@ export async function readAsMember(paid, ids, { reader, tokenId, ct = {}, want =
 }
 
 // ── Batches and vouchers ──────────────────────────────────────────────────────────────────
-// `POST <app>/paid {ids}` answers 402 with one price for every record it has; X-PAYMENT may then
+// `POST <app>/paid {ids}` answers 402 with one price for every record it has; PAYMENT-SIGNATURE may then
 // carry several payments (a JSON array) that add up to exactly that price. A payment signs
 // payee, amount and expiry but not the resource (checked against the PayAI facilitator,
 // 2026-10-07), so a person's wallet can sign a stack of them ahead of time ("vouchers") and an
@@ -166,7 +215,7 @@ export async function signVouchers(req, account, { total, denominations, days = 
             n = (left - (left - (keep < n ? keep : n) * ds[i]) / ds[i + 1] * ds[i + 1]) / ds[i];
         }
         for (let k = 0n; k < n; k++)
-            out.push(JSON.parse(unb64(await paymentHeader({ ...req, maxAmountRequired: String(ds[i]), maxTimeoutSeconds: days * 86400 }, account))));
+            out.push(await signPayment({ ...req, amount: String(ds[i]), maxTimeoutSeconds: days * 86400 }, account));
         left -= n * ds[i];
     }
     return out;
@@ -214,19 +263,20 @@ export async function buyBatch(paid, allIds, { ct = {}, want = {}, vouchers, acc
     if (!ids.length) throw new Error(`none of these rows carries a sealed record (paid_ct): ${unsealed.join(", ")}`);
     const post = (headers = {}) => fetchImpl(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ ids }) });
     const first = await post();
-    const offer = await first.json();
-    if (first.status !== 402) throw new Error(`expected a price, got HTTP ${first.status}: ${JSON.stringify(offer).slice(0, 200)}`);
+    const body0 = await first.json();
+    if (first.status !== 402) throw new Error(`expected a price, got HTTP ${first.status}: ${JSON.stringify(body0).slice(0, 200)}`);
+    const offer = { ...body0, ...paymentRequired(first) };
     const req = choose(offer.accepts, { maxPrice });
     let payments;
     if (vouchers) {
-        payments = pick(vouchers, req.maxAmountRequired);
-        if (!payments) throw new Error(`the allowance cannot pay exactly ${req.maxAmountRequired} (base units); add funds or buy fewer records`);
+        payments = pick(vouchers, req.amount);
+        if (!payments) throw new Error(`the allowance cannot pay exactly ${req.amount} (base units); add funds or buy fewer records`);
     } else {
         account ??= privateKey ? (await import("viem/accounts")).privateKeyToAccount(privateKey) : null;
-        if (!account) throw new Error(`${offer.found.length} record(s) cost ${req.maxAmountRequired} (base units); no wallet or allowance to pay`);
-        payments = [JSON.parse(unb64(await paymentHeader(req, account)))];
+        if (!account) throw new Error(`${offer.found.length} record(s) cost ${req.amount} (base units); no wallet or allowance to pay`);
+        payments = [await signPayment(req, account, { resource: offer.resource })];
     }
-    const res = await post({ "X-PAYMENT": b64(JSON.stringify(payments)) });
+    const res = await post({ "PAYMENT-SIGNATURE": b64(JSON.stringify(payments)) });
     const body = await res.json();
     // Drop every voucher the seller says it settled (`paid`) or could not (`rejected`: spent, or
     // the wallet cannot cover it), on success, partial delivery and refusal alike, so a dead
@@ -252,23 +302,24 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     const { privateKeyToAccount, generatePrivateKey } = await import("viem/accounts");
     const { verifyTypedData } = await import("viem");
     const buyer = privateKeyToAccount(generatePrivateKey());
-    const USDC = "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d", SELLER = `0x${"5e".repeat(20)}`;
-    const req = { scheme: "exact", network: "arbitrum-sepolia", maxAmountRequired: "10000", resource: "https://x/paid/1",
-                  payTo: SELLER, asset: USDC, maxTimeoutSeconds: 120, extra: { name: "USD Coin", version: "2" } };
+    // Base Sepolia's USDC, whose EIP-712 name is "USDC" (Base's is "USD Coin").
+    const USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e", SELLER = `0x${"5e".repeat(20)}`, CHAIN = 84532, DOMAIN = { name: "USDC", version: "2" };
+    const req = { scheme: "exact", network: `eip155:${CHAIN}`, amount: "10000", payTo: SELLER, asset: USDC, maxTimeoutSeconds: 120, extra: DOMAIN };
     let settled = null;
     const seller = async (url, init = {}) => {
-        const h = init.headers?.["X-PAYMENT"];
-        if (!h) return new Response(JSON.stringify({ x402Version: 1, accepts: [req] }), { status: 402 });
-        const p = JSON.parse(unb64(h)).payload, a = p.authorization;
+        const h = init.headers?.["PAYMENT-SIGNATURE"];
+        if (!h) return new Response("{}", { status: 402, headers: { "PAYMENT-REQUIRED": b64(JSON.stringify({ x402Version: 2, resource: { url }, accepts: [req] })) } });
+        const sent = JSON.parse(unb64(h)), p = sent.payload, a = p.authorization;
+        if (sent.x402Version !== 2 || sent.resource?.url !== url || sent.accepted?.amount !== "10000") return new Response("{}", { status: 400 });
         const ok = await verifyTypedData({ address: a.from, signature: p.signature,
-            domain: { name: "USD Coin", version: "2", chainId: 421614, verifyingContract: USDC },
+            domain: { ...DOMAIN, chainId: CHAIN, verifyingContract: USDC },
             types: { TransferWithAuthorization: [{ name: "from", type: "address" }, { name: "to", type: "address" }, { name: "value", type: "uint256" },
                 { name: "validAfter", type: "uint256" }, { name: "validBefore", type: "uint256" }, { name: "nonce", type: "bytes32" }] },
             primaryType: "TransferWithAuthorization",
             message: { ...a, value: BigInt(a.value), validAfter: BigInt(a.validAfter), validBefore: BigInt(a.validBefore) } });
-        if (!ok || a.to !== SELLER || a.value !== "10000") return new Response(JSON.stringify({ error: "bad payment" }), { status: 402 });
+        if (!ok || a.to !== SELLER || a.value !== "10000") return new Response("{}", { status: 402, headers: { "PAYMENT-REQUIRED": b64(JSON.stringify({ x402Version: 2, error: "bad payment", accepts: [req] })) } });
         settled = a;
-        return new Response('{"secret":42}', { status: 200, headers: { "X-PAYMENT-RESPONSE": b64(JSON.stringify({ success: true, transaction: "0xabc" })) } });
+        return new Response('{"secret":42}', { status: 200, headers: { "PAYMENT-RESPONSE": b64(JSON.stringify({ success: true, transaction: "0xabc" })) } });
     };
     const r = await payAndFetch("https://x/paid/1", { account: buyer, maxPrice: 10000n, fetchImpl: seller });
     if (r.body !== '{"secret":42}' || r.receipt.transaction !== "0xabc" || settled.from !== buyer.address) throw new Error(`paid fetch: ${JSON.stringify(r)}`);
@@ -280,9 +331,11 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     // that checks signatures and refuses a nonce settled twice, and vouchers signed ahead.
     const { mkdtempSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
-    const membership = { registry: `0x${"12".repeat(20)}`, barliman: "https://barliman", chainId: 421614, appId: `0x${"ab".repeat(32)}` };
-    const sale = { price: "100000", network: "arbitrum-sepolia", asset: USDC, payTo: SELLER, facilitator: "https://fac", name: "USD Coin", version: "2", description: "", membership };
-    const worker = (await import("../../site/worker.js")).default;
+    const membership = { registry: `0x${"12".repeat(20)}`, barliman: "https://barliman", chainId: CHAIN, appId: `0x${"ab".repeat(32)}` };
+    const sale = { price: "100000", network: `eip155:${CHAIN}`, asset: USDC, payTo: SELLER, facilitator: "https://fac", ...DOMAIN, description: "", membership };
+    // Not a literal: the page bundles this module, and a bundler would follow it into the Worker.
+    const WORKER = "../../site/worker.js";
+    const worker = (await import(/* @vite-ignore */ WORKER)).default;
     // The rows as a buyer reads them: each record sealed under its key, with the plaintext's sha256.
     const SECRET = "s3cret", ct = {}, want = {};
     for (const id of ["a", "b", "c"]) {
@@ -290,27 +343,29 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         ct[id] = await sealPaid(await paidKey(SECRET, id), plain);
         want[id] = await sha256(new TextEncoder().encode(plain));
     }
-    const env = { PAID_SECRET: SECRET, CONFIG: { paid: sale } };
+    const env = { PAID_SECRET: SECRET, CONFIG: { name: "Test", paid: sale } };
     const member = privateKeyToAccount(generatePrivateKey()), memberToken = "77";
-    const spent = new Set();
+    const spent = new Set(), facilitated = [];
     const realFetch = globalThis.fetch;
     const { recoverTypedDataAddress } = await import("viem");
     globalThis.fetch = async (u, init) => {
         if (u === "https://barliman/check") {   // a stand-in Barliman: the member's token reads, nobody else's
             const b = JSON.parse(init.body);
-            const reader = await recoverTypedDataAddress({ ...readTypedData({ registry: membership.registry, chainId: 421614, ...b }), signature: b.signature });
+            const reader = await recoverTypedDataAddress({ ...readTypedData({ registry: membership.registry, chainId: CHAIN, ...b }), signature: b.signature });
             const ok = reader === member.address && b.tokenId === memberToken && b.appId === membership.appId;
             return new Response(JSON.stringify({ ok, reader, until: ok ? "1900000000" : "0" }));
         }
-        const { paymentPayload: p, paymentRequirements: q } = JSON.parse(init.body), a = p.payload.authorization;
+        const { x402Version, paymentPayload: p, paymentRequirements: q } = JSON.parse(init.body), a = p.payload.authorization;
+        if (x402Version !== 2 || p.x402Version !== 2) throw new Error("the facilitator is spoken to in v2");
+        facilitated.push(p);
         if (u.endsWith("/verify")) {
             const ok = await verifyTypedData({ address: a.from, signature: p.payload.signature,
-                domain: { name: "USD Coin", version: "2", chainId: 421614, verifyingContract: USDC },
+                domain: { ...DOMAIN, chainId: CHAIN, verifyingContract: USDC },
                 types: { TransferWithAuthorization: [{ name: "from", type: "address" }, { name: "to", type: "address" }, { name: "value", type: "uint256" },
                     { name: "validAfter", type: "uint256" }, { name: "validBefore", type: "uint256" }, { name: "nonce", type: "bytes32" }] },
                 primaryType: "TransferWithAuthorization",
                 message: { ...a, value: BigInt(a.value), validAfter: BigInt(a.validAfter), validBefore: BigInt(a.validBefore) } });
-            return new Response(JSON.stringify({ isValid: ok && a.value === q.maxAmountRequired, invalidReason: "bad" }));
+            return new Response(JSON.stringify({ isValid: ok && a.value === q.amount, invalidReason: "bad" }));
         }
         if (spent.has(a.nonce)) return new Response(JSON.stringify({ success: false, errorReason: "nonce used" }));
         spent.add(a.nonce);
@@ -322,13 +377,23 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         // One record, one payment: the key opens the row's sealed record, which matches its hash.
         const single = await buyRecord(paidCard, "a", { ct: ct.a, want: want.a, account: buyer, maxPrice: 100000n, fetchImpl: viaWorker });
         if (single.verified !== true || single.record.id !== "a") throw new Error(`single key: ${JSON.stringify(single)}`);
+        if (facilitated.some((p) => p.extensions)) throw new Error("GET /paid/<id> must not ask to be listed: its URL differs per record");
+        // A probe with no body (x402scan, a Bazaar crawler) gets a 402 for one record, Bazaar extension and all.
+        const probe = await viaWorker("https://x/paid", { method: "POST" });
+        const asked = paymentRequired(probe);
+        if (probe.status !== 402 || asked.accepts[0].amount !== sale.price || asked.extensions?.bazaar?.info?.input?.method !== "POST")
+            throw new Error(`probe: ${probe.status} ${JSON.stringify(asked)}`);
         // One exact payment from a wallet: 2 of 3 ids are sealed in the rows, 2 × $0.10, the
         // third is never quoted (no ciphertext in hand, nothing to pay for).
         const one = await buyBatch(paidCard, ["a", "b", "zz"], { account: buyer, maxPrice: 200000n, ct, want, fetchImpl: viaWorker });
         if (one.records.length !== 2 || one.missing[0] !== "zz" || one.manifest.price !== "200000" || !one.records.every((r) => r.verified === true))
             throw new Error(`batch with a wallet: ${JSON.stringify(one)}`);
+        // The facilitator lists what it settles with the Bazaar extension: every batch payment carries it.
+        const batchSent = facilitated.slice(-2);   // its one payment: verify, settle
+        if (!batchSent.every((p) => p.extensions?.bazaar && p.resource.url === "https://x/paid" && p.accepted.amount === "200000"))
+            throw new Error(`batch payloads: ${JSON.stringify(batchSent.map((p) => [p.resource?.url, p.accepted?.amount, !!p.extensions]))}`);
         // $2 of vouchers in $0.10 / $1, 30 days: any multiple of $0.10 can be paid exactly.
-        const vs = await signVouchers({ ...paidCard, scheme: "exact", network: sale.network, payTo: SELLER, asset: USDC, extra: { name: "USD Coin", version: "2" } },
+        const vs = await signVouchers({ ...paidCard, scheme: "exact", network: sale.network, payTo: SELLER, asset: USDC, extra: DOMAIN },
             buyer, { total: 2000000n, denominations: [100000n, 1000000n] });
         if (vs.length !== 11 || pick(vs, 1700000n).length !== 8 || pick(vs, 2100000n) !== null) throw new Error(`vouchers: ${vs.length}`);
         const before = [...vs];
@@ -337,9 +402,9 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         // A spent $0.10 voucher riding along with a fresh one: both verify, settle refuses, nothing sent.
         const usedOne = before.find((v) => !vs.includes(v) && v.payload.authorization.value === "100000");
         const fresh = vs.find((v) => v.payload.authorization.value === "100000");
-        const replay = await viaWorker("https://x/paid", { method: "POST", body: JSON.stringify({ ids: ["a", "b"] }), headers: { "X-PAYMENT": b64(JSON.stringify([usedOne, fresh])) } });
+        const replay = await viaWorker("https://x/paid", { method: "POST", body: JSON.stringify({ ids: ["a", "b"] }), headers: { "PAYMENT-SIGNATURE": b64(JSON.stringify([usedOne, fresh])) } });
         if (replay.status !== 402 || (await replay.json()).keys) throw new Error("a spent voucher must not buy anything");
-        const short = await viaWorker("https://x/paid", { method: "POST", body: JSON.stringify({ ids: ["a", "b"] }), headers: { "X-PAYMENT": b64(JSON.stringify([fresh])) } });
+        const short = await viaWorker("https://x/paid", { method: "POST", body: JSON.stringify({ ids: ["a", "b"] }), headers: { "PAYMENT-SIGNATURE": b64(JSON.stringify([fresh])) } });
         if (short.status !== 402) throw new Error("payments short of the price must be refused");
         // A spent voucher still in the stack, behind a fresh one (a crash before the file was
         // saved): the fresh one settles and buys one record, the spent one is refused, and both

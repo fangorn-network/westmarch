@@ -17,6 +17,7 @@ import { registerAgent } from "./agent.js";
 import { detail, facetField, occasions } from "./feed.js";
 import { createStore, snapshot, toCSV, toMarkdown } from "./store.js";
 import { createMap } from "./map.js";
+import { agentPanel, gate, heldPass, whatsInside } from "./access.js";
 
 const $ = (s) => document.querySelector(s);
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat(Infinity).filter((k) => k != null && k !== false)); return e; };
@@ -33,6 +34,9 @@ const card = await fetch("./.well-known/agent-card.json").then((r) => r.json()).
 // whose network can't reach pages.dev (or the card's host) still can.
 const offer = (card.capabilities?.extensions ?? []).map((x) => x.params?.paid).find(Boolean) ?? null;
 const paid = offer && { ...offer, url: offer.url.replace(/^https?:\/\/[^/]+/, location.origin) };
+// A private app (the card's `access`): its view and tools need a pass, bought at POST /pass.
+const access0 = (card.capabilities?.extensions ?? []).map((x) => x.params?.access).find(Boolean) ?? null;
+const access = access0 && { ...access0, pass_url: access0.pass_url.replace(/^https?:\/\/[^/]+/, location.origin) };
 // A dollar stablecoin is priced in dollars: readers see "$0.01", never the token.
 const money = (n) => (/^USDC?$/i.test(paid?.symbol ?? "USDC") ? `$${n.toFixed(2)}` : `${n} ${paid.symbol}`);
 const PRICE_N = paid ? Number(paid.price) / 10 ** (paid.decimals ?? 6) : 0, PRICE = paid ? money(PRICE_N) : "";
@@ -57,6 +61,25 @@ input.disabled = false;
 const SLUG = NAME.toLowerCase().replace(/\W+/g, "-");
 const store = createStore({ local: globalThis.localStorage, session: globalThis.sessionStorage, app: SLUG });
 ctx.session = () => store.bundle({ name: NAME, url: location.origin });
+// A private app: with a pass, every read of the view carries it; without one, the front page
+// says what is inside, what a pass costs and how to reach it from an agent, and nothing below runs.
+const pass = access ? heldPass(SLUG) : null;
+if (pass) configure({ fetch: (url, init = {}) => fetch(url, { ...init, headers: { ...init.headers, authorization: `Bearer ${pass.token}` } }) });
+const agents = () => agentPanel({ el, origin: location.origin, name: NAME, access, pass });
+if (access && !pass) {
+    input.disabled = true;
+    input.placeholder = "Get a pass to search";
+    const inside = await whatsInside(location.origin);
+    const showGate = (...kids) => { $("#view").replaceChildren(...kids.flat().filter(Boolean)); window.scrollTo(0, 0); };
+    const front = () => (location.hash.startsWith("#/agents") ? showGate(agents())
+        : gate({ el, show: showGate, origin: location.origin, name: NAME, description: card.description ?? "", slug: SLUG, access, inside,
+                 wallet: async () => (await import("./wallet.js")).wallet(access) }));
+    window.addEventListener("hashchange", front);
+    front();
+    // ponytail: the rest of this module is the page over the data, and without a pass there is
+    // none to draw; it waits here for good. The pass reloads the page.
+    await new Promise(() => {});
+}
 // The page draws as the shards arrive (a view can be tens of MB), rather than after the last.
 const VIEW = new URL("view", location.href).href;
 const total = await fetch(`${VIEW}/cdn/catalog`).then((r) => r.json()).then((c) => c.domains.reduce((n, d) => n + (d.count ?? 0), 0)).catch(() => 0);
@@ -523,6 +546,7 @@ function route() {
     if (name === "saved") return saved();
     if (name === "for-you") return forYou();
     if ((name === "account" || name === "wallet") && paid) return accountView();
+    if (name === "agents") return show(agents());
     if (name === "map" && geo) return (mapView ??= createMap(geo, { el, show, row, placeOf, ctx })).render(...arg.split("/").map(decodeURIComponent));
     return feed();
 }

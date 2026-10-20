@@ -27,7 +27,7 @@ claude mcp add --transport http my-app https://my-app.example/mcp
     npx -y -p @fangorn-network/westmarch -p @huggingface/transformers fangorn-mcp
 ```
 
-For the apps on Base Sepolia instead of Arbitrum Sepolia, add `-e FANGORN_NETWORK=baseSepolia`
+For the apps still on Arbitrum Sepolia instead of Base Sepolia, add `-e FANGORN_NETWORK=arbitrumSepolia`
 before `--`. One server reads one network.
 
 Then run `/mcp` in Claude Code and check that `fangorn` shows as connected.
@@ -44,7 +44,7 @@ Then run `/mcp` in Claude Code and check that `fangorn` shows as connected.
     "fangorn": {
       "command": "npx",
       "args": ["-y", "-p", "@fangorn-network/westmarch", "-p", "@huggingface/transformers", "fangorn-mcp"],
-      "env": { "FANGORN_NETWORK": "arbitrumSepolia" }
+      "env": { "FANGORN_NETWORK": "baseSepolia" }
     }
   }
 }
@@ -81,7 +81,7 @@ Here is an example of what you can ask:
 
 | Env var / flag | Default | What it does |
 |---|---|---|
-| `FANGORN_NETWORK` | `arbitrumSepolia` | The network whose apps to list and open: `arbitrumSepolia` or `baseSepolia`. |
+| `FANGORN_NETWORK` | `baseSepolia` | The network whose apps to list and open: `baseSepolia` or `arbitrumSepolia`. |
 | `FANGORN_LOG_WINDOW` | the network's | Blocks read per chain request. Only for a private RPC that takes wider ranges than the public one. |
 | `--from-block <n>` | registry deploy block | Block to start the app scan from, for other deployments. |
 | `FANGORN_MCP_TRACE=1` | off | Print step timings to stderr. |

@@ -6,7 +6,7 @@ description: Build, publish and register a Fangorn app with @fangorn-network/wes
 # Building a Fangorn app with westmarch
 
 A Fangorn app is a database with no server. Its records are committed to the owner's
-namespace on Arbitrum Sepolia or Base Sepolia (`"network"` in `app.json`); a view of them (content-addressed shards with embeddings)
+namespace on Base Sepolia (`"network": "baseSepolia"` in `app.json`, required; older apps stay on Arbitrum Sepolia); a view of them (content-addressed shards with embeddings)
 is hosted as static files on Cloudflare Pages; a page searches them in the reader's tab;
 an agent card bound on chain lets any agent find, verify and drive it. It improves by a
 loop the owner runs: new records always ship, and a change to *how* records are made
@@ -165,10 +165,13 @@ the site just before *Register the app*, what each type costs just before *Go li
     detail is written off chain, next to the stage, and served only through the site's
     worker; the public record carries its `paid_sha256`. Paid content must never also be
     in a public field, or anyone can read it from the view for free.
-  - **private** (only named people can read): **not built yet.** Nothing in this
-    pipeline encrypts — a committed payload and a view shard are readable by anyone.
-    Do not publish private data; tell the person and stop for those records. If step 1
-    of the conversation already surfaced private data, say so then, not here.
+  - **private** (the data is the product, read by paying): `private` in `app.json`
+    (`{"pass": {"price": "5", "days": 30}, "call": "0.01"}`). Ship seals every row whole
+    before it is committed, so IPFS holds ciphertext; the app's Worker opens rows in its
+    cron and serves the view and MCP tools only with a pass (`POST /pass`, x402) or one
+    x402 payment per tool call. The card, catalog and `describe` stay free. Publish
+    counts and timing stay visible on chain. Sources must stage (`--output-dir`). Not
+    for data only *named* people may read: anyone who pays reads it.
 - **Where the site will live.** The card's `url` is permanent once bound. The default is
   Cloudflare Pages at `<project>.pages.dev`; otherwise a domain they own.
   `fangorn.network` is not available to app builders — never offer or assume a hostname
@@ -652,14 +655,17 @@ for (const k of new Set([...Object.keys(a),...Object.keys(b)])) if (!["skills","
 
 - **Never change** `url`, `fromBlock`, `name` (`fangorn-mcp` derives the app's tool prefix
   from it; `Audius Search` → `audius-search__…`), `namespaces`, `views` or the extension.
-- **Do not rerun `fangorn app agent`.** It always mints a *new* agent (the CLI has no update
-  path), so rerunning leaves two agents for one app. The ERC-8004 registration file is a
-  snapshot of the card at mint time: name, description, card URL, `a2aSkills` (the union
-  of the skills' **tags**, not tool names), and `x402Support` (whether any skill is tagged
-  `x402`). New tools that reuse the existing tags leave it accurate. A new tool that adds a
-  tag makes `a2aSkills` stale, and a first `x402` tag makes `x402Support` wrong. Tell the
-  person before shipping either one; updating the existing agent's file means a
-  `setAgentURI` from the owner wallet (agent0-sdk), which the CLI does not do.
+- **Do not rerun `fangorn app agent` without `--update`.** Bare, it always mints a *new*
+  agent, so rerunning leaves two agents for one app. The ERC-8004 registration file is a
+  snapshot of the card: name, description, card URL, `a2aSkills` (the union of the skills'
+  **tags**, not tool names), and `x402Support` (whether any skill is tagged `x402`). New
+  tools that reuse the existing tags leave it accurate. A new tool that adds a tag makes
+  `a2aSkills` stale, and a first `x402` tag makes `x402Support` wrong. After deploying such a
+  card, refresh the existing agent from it, with the person's go-ahead (a pin and one
+  transaction from the owner wallet, nothing minted):
+  `fangorn app agent <card url> --update <agentId>` (the id is in `.ship/state.json`).
+  If a bind fails on "replacement transaction underpriced" after a mint, the agent exists:
+  rebind with `--skip-register`, never rerun the mint.
 - `find site -size +25M` is still empty. Then deploy, with the person's go-ahead.
 
 Then repeat *Before saying it is done* against the deployed site, and add:

@@ -15,7 +15,10 @@
 // An app's tools are its own MCP server's (the card's `mcp`, the app's Worker at
 // /mcp), relayed. The Worker alone reads the app's lens from R2, so nothing is
 // downloaded here and access is the app's to gate.
-// ponytail: no paid or encrypted records yet; an app is one publisher behind its Worker.
+// A private app's paid tools answer with x402's PaymentRequired. With FANGORN_MCP_WALLET_KEY set,
+// this server pays: a pass when the card sells one at or under FANGORN_MCP_MAX_PASS (USDC; unset,
+// never), else that one call at or under FANGORN_MCP_MAX_PRICE (default 0.10). Without a wallet the
+// price is handed back to the agent, to say to the person.
 
 import net from "node:net";
 import { homedir } from "node:os";
@@ -60,11 +63,13 @@ async function resolveCard(cardUrl) {
 /** An app's own MCP server over streamable HTTP → `{ tools, call }`.
  *  The app's Worker is stateless (one JSON body per POST); a session id or an SSE
  *  reply from any other server is followed too. */
-export async function remoteTools(url, fetcher = fetch) {
-    let id = 0, session;
+export async function remoteTools(url, fetcher = fetch, { access = null, wallet = process.env.FANGORN_MCP_WALLET_KEY,
+                                                         maxCall = process.env.FANGORN_MCP_MAX_PRICE ?? "0.10", maxPass = process.env.FANGORN_MCP_MAX_PASS } = {}) {
+    let id = 0, session, bearer;
     const rpc = async (method, params) => {
         const r = await fetcher(url, { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
-            headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(session && { "mcp-session-id": session }) } });
+            headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(session && { "mcp-session-id": session }),
+                       ...(bearer && { authorization: `Bearer ${bearer}` }) } });
         session ??= r.headers.get("mcp-session-id") ?? undefined;
         let body = await r.text();
         if (!r.ok) throw new Error(`${url}: HTTP ${r.status} ${body.slice(0, 200)}`);
@@ -75,7 +80,23 @@ export async function remoteTools(url, fetcher = fetch) {
     };
     await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fangorn-mcp", version: "0.1.0" } });
     const { tools } = await rpc("tools/list", {});
-    return { tools, call: (name, args) => rpc("tools/call", { name, arguments: args ?? {} }) };
+    const usdc = (n) => BigInt(Math.round(Number(n) * 10 ** (access?.decimals ?? 6)));
+    const call = async (name, args) => {
+        const params = { name, arguments: args ?? {} };
+        const r = await rpc("tools/call", params);
+        const asked = r?.isError && r.structuredContent?.x402Version === 2 ? r.structuredContent : null;
+        if (!asked) return r;
+        if (!wallet) return { ...r, content: [...r.content, { type: "text", text: "This server has no wallet (FANGORN_MCP_WALLET_KEY), so nothing was paid: tell the person the price." }] };
+        const x = await import("./x402.js");
+        const account = (await import("viem/accounts")).privateKeyToAccount(wallet);
+        if (access && maxPass != null && BigInt(access.pass) <= usdc(maxPass)) {
+            bearer = (await x.buyPass(access, { account, fetchImpl: fetcher })).token;
+            return rpc("tools/call", params);
+        }
+        const payment = await x.signPayment(x.choose(asked.accepts, { maxPrice: usdc(maxCall) }), account, { resource: asked.resource });
+        return rpc("tools/call", { ...params, _meta: { "x402/payment": payment } });
+    };
+    return { tools, call };
 }
 
 // ── the network ─────────────────────────────────────────────────────────────
@@ -171,7 +192,8 @@ export function handlers(deps) {
         if (!mcp) throw new Error(`${card.name ?? cardUrl} has no MCP server (its card has no \`mcp\`)`);
         let s = slug(card.name ?? app);
         while (open.has(s)) s += "-";
-        const o = { slug: s, name: card.name, card: cardUrl, appId, ...await deps.remoteTools(mcp) };
+        const access = card.capabilities?.extensions?.find((e) => e.uri === APP_EXTENSION)?.params?.access ?? null;
+        const o = { slug: s, name: card.name, card: cardUrl, appId, ...await deps.remoteTools(mcp, { access }) };
         trace(`open ${app}: ready`);
         open.set(o.slug, o);
         deps.notify?.("notifications/tools/list_changed");
@@ -286,7 +308,34 @@ if (process.argv[2] === "--selfcheck") {
     assert(res(10).result.isError && res(11).result.isError, "failures are tool errors");
     assert(res(13).result.isError && /no MCP server/.test(res(13).result.content[0].text), "an app without `mcp` cannot open");
     assert(res(12).error.code === -32601, "unknown method");
-    console.log("mcp.js self-check ok — one server, apps opened on demand, calls relayed to each app's own MCP server");
+    // A private app: a paid tool answers with PaymentRequired; with a wallet this server pays the
+    // call (under FANGORN_MCP_MAX_PRICE), or buys a pass when the card sells one under FANGORN_MCP_MAX_PASS.
+    const { generatePrivateKey } = await import("viem/accounts");
+    const req = { scheme: "exact", network: "eip155:84532", amount: "10000", asset: `0x${"aa".repeat(20)}`, payTo: `0x${"5e".repeat(20)}`,
+                  maxTimeoutSeconds: 120, extra: { name: "USDC", version: "2" } };
+    const asked = { x402Version: 2, error: "paid", resource: { url: "https://p.test/mcp" }, accepts: [req] };
+    const seen = [];
+    const paidServer = async (url, init) => {
+        if (url === "https://p.test/pass") {
+            if (!init.headers?.["PAYMENT-SIGNATURE"]) return new Response("{}", { status: 402, headers: { "PAYMENT-REQUIRED": btoa(JSON.stringify({ ...asked, accepts: [{ ...req, amount: "2000000" }] })) } });
+            return new Response(JSON.stringify({ token: "pass.tok", expires: 9e9 }));
+        }
+        const m = JSON.parse(init.body);
+        const paid = m.params?._meta?.["x402/payment"], pass = init.headers.authorization === "Bearer pass.tok";
+        if (m.method === "tools/call") seen.push(pass ? "pass" : paid ? `paid ${paid.accepted.amount}` : "asked");
+        const result = m.method === "tools/list" ? { tools: [{ name: "search" }] } : m.method !== "tools/call" ? {}
+            : paid || pass ? text({ hits: [1] }) : { isError: true, structuredContent: asked, content: [{ type: "text", text: JSON.stringify(asked) }] };
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: m.id, result }), { headers: { "content-type": "application/json" } });
+    };
+    const broke = await remoteTools("https://p.test/mcp", paidServer, { wallet: undefined });
+    if (!(await broke.call("search", {})).content.at(-1).text.includes("no wallet")) throw new Error("no wallet: the price goes back to the agent");
+    const access = { pass_url: "https://p.test/pass", pass: "2000000", call: "10000", decimals: 6 };
+    const perCall = await remoteTools("https://p.test/mcp", paidServer, { access, wallet: generatePrivateKey(), maxCall: "0.05" });
+    if (JSON.parse((await perCall.call("search", {})).content[0].text).hits[0] !== 1) throw new Error("a paid call");
+    const passer = await remoteTools("https://p.test/mcp", paidServer, { access, wallet: generatePrivateKey(), maxPass: "5" });
+    await passer.call("search", {}); await passer.call("search", {});
+    if (seen.join() !== "asked,asked,paid 10000,asked,pass,pass") throw new Error(`payments: ${seen}`);
+    console.log("mcp.js self-check ok — one server, apps opened on demand, calls relayed to each app's own MCP server; a private app's tools paid per call or with a pass bought once, and with no wallet the price is handed back");
     process.exit(0);
 }
 
@@ -333,7 +382,7 @@ const deps = {
         return null;
     },
     resolveCard,
-    remoteTools: (url) => remoteTools(url),
+    remoteTools: (url, opts) => remoteTools(url, fetch, opts),
 };
 const h = handlers(deps);
 // The client starts this server with the session, long before an agent opens an
