@@ -19,9 +19,6 @@
 //   POST /paid {ids}      many keys for one price, paid by one payment or several (vouchers).
 //                         Its 402 carries the Bazaar extension, so the facilitator lists it on
 //                         the first sale; /openapi.json and /.well-known/x402 name it for x402scan
-//   POST /key {ids, tokenId, issuedAt, signature}
-//                         keys for a member: Barliman checks the signed request against the
-//                         MembershipRegistry (`canRead`), and nothing is paid here
 //   anything else         the static site (the stock page, the card)
 //
 // The paid records are not here. Each is already in the app's committed rows on IPFS,
@@ -396,26 +393,6 @@ async function sellBatch(request, env, url) {
     return json({ keys: await keysFor(env, found), missing, receipts, paid: auths.map((a) => a.nonce) });
 }
 
-// POST /key: keys for a member. Barliman recovers who signed the request and asks the
-// MembershipRegistry whether that address may read this app now; this worker trusts its answer.
-// ponytail: one Barliman call per request; cache {tokenId, reader} → until if it gets busy.
-async function member(request, env) {
-    const M = CONFIG.paid.membership;
-    if (!M) return json({ error: "this app sells no memberships" }, 404);
-    let b;
-    try { b = await request.json(); } catch { return json({ error: "body must be JSON" }, 400); }
-    const ids = [...new Set(b?.ids ?? [])].filter((x) => typeof x === "string");
-    if (!ids.length || ids.length > MAX_BATCH) return json({ error: `between 1 and ${MAX_BATCH} ids` }, 400);
-    let check;
-    try {
-        const r = await fetch(`${M.barliman}/check`, { method: "POST", headers: { "content-type": "application/json" },
-            body: JSON.stringify({ appId: M.appId, tokenId: String(b.tokenId), ids, issuedAt: b.issuedAt, signature: b.signature }) });
-        check = await r.json();
-    } catch (e) { return json({ error: `could not check the membership: ${e.message}` }, 502); }
-    if (!check.ok) return json({ error: check.error ?? "this membership cannot read this app now", until: check.until ?? null }, 403);
-    return json({ keys: await keysFor(env, ids), reader: check.reader, until: check.until });
-}
-
 // ── a private app ─────────────────────────────────────────────────────────────
 // CONFIG.private: the rows are sealed on chain (x402.js's sealRow), opened by the cron with
 // PAID_SECRET, and the view is served only with access: a pass bought at POST /pass (one x402
@@ -495,7 +472,6 @@ const worker = {
         if (p === "/doc") return doc(request, env, url);
         if (p === "/paid" && request.method === "POST") return CONFIG.paid ? sellBatch(request, env, url) : json({ error: "nothing is sold here" }, 404);
         if (p.startsWith("/paid/")) return CONFIG.paid ? sell(request, env, url) : json({ error: "nothing is sold here" }, 404);
-        if (p === "/key" && request.method === "POST") return CONFIG.paid ? member(request, env) : json({ error: "nothing is sold here" }, 404);
 
         const res = await env.ASSETS.fetch(request);
         const out = new Response(res.body, res);

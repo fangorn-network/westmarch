@@ -335,12 +335,8 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     const sale = (u) => {
         if (!cfg.paid) return { paid: null, sale: null };
         const T = terms(cfg.paid), price = units(cfg.paid.price, T.decimals), description = cfg.paid.description ?? "";
-        // A membership (MembershipRegistry, joined and claimed through Barliman) reads for free.
-        const membership = cfg.paid.membership ? { registry: cfg.paid.membership.registry, barliman: cfg.paid.membership.barliman.replace(/\/$/, ""),
-                                                   chainId: cfg.paid.membership.chainId ?? FangornConfig.caip2, appId } : null;
-        const paid = { url: `${u}/paid/{id}`, key_url: `${u}/key`, price, asset: T.asset, network: T.network, decimals: T.decimals, symbol: T.symbol,
-                       description, ...(membership ? { membership } : {}) };
-        return { paid, sale: { ...T, price, description, ...(membership ? { membership } : {}) } };
+        const paid = { url: `${u}/paid/{id}`, price, asset: T.asset, network: T.network, decimals: T.decimals, symbol: T.symbol, description };
+        return { paid, sale: { ...T, price, description } };
     };
     const access = (u) => {
         const X = cfg.private;

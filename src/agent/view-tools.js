@@ -11,7 +11,7 @@
 //   - a search goes to the 3 views whose coverage sketch best matches the query,
 //     not to all of them (Kingsfoil: ~3 of 23 views, ~92% of the true top 10 with
 //     a 32-vector sketch). The result names what was searched and what was not.
-//   - `warm()` starts the embedder the moment an app is opened, and a search
+//   - `warm()` starts the embedder before the first query (fangorn-mcp: on find-apps), and a search
 //     never waits on a first-time model download.
 //
 // `get`/`similar`/`count` answer over what is loaded, and say so.
@@ -188,20 +188,12 @@ export function viewTools(app, { fetchCatalog = fetch, queryVector: embedQ = que
             return { key: hit ? hit.r[rolesOf(hit.view).identity] ?? id : id, want: hit?.r.paid_sha256, ct: hit?.r.paid_ct };
         };
         run.buy = async ({ id, ids }) => {
-            const { buyBatch, withLock, readAsMember } = await import("./x402.js");
+            const { buyBatch, withLock } = await import("./x402.js");
             const rs = (ids?.length ? ids : id ? [id] : []).map(resolve);
             const ct = Object.fromEntries(rs.filter((r) => r.ct).map((r) => [r.key, r.ct]));
             const want = Object.fromEntries(rs.filter((r) => r.want).map((r) => [r.key, r.want]));
             const verdict = (records) => { const bad = records.filter((x) => x.verified === false).map((x) => x.id);
                 return bad.length ? `MISMATCH for ${bad.join(", ")}` : "every record opened matches its published sha256"; };
-            // A membership the agent was named on (FANGORN_MCP_READER_KEY + FANGORN_MCP_MEMBERSHIP,
-            // the token id): read for free, nothing paid.
-            if (process.env.FANGORN_MCP_READER_KEY && process.env.FANGORN_MCP_MEMBERSHIP && p.membership) {
-                const { privateKeyToAccount } = await import("viem/accounts");
-                const r = await readAsMember(p, rs.map((r) => r.key).filter((k) => ct[k]), { reader: privateKeyToAccount(process.env.FANGORN_MCP_READER_KEY),
-                    tokenId: process.env.FANGORN_MCP_MEMBERSHIP, ct, want });
-                return { read: r.records.length, with: "membership", until: r.until, verified: verdict(r.records), records: r.records.map(({ id, record, error }) => ({ id, record, error })) };
-            }
             if (ids?.length) {
                 // Many at once, one price: from the allowance file (FANGORN_MCP_VOUCHERS, vouchers the
                 // person's wallet signed) if there is one, else one payment from the wallet key.
@@ -234,7 +226,7 @@ export function viewTools(app, { fetchCatalog = fetch, queryVector: embedQ = que
         tools.push({ name: "buy", description: `Buy one ${n} record's paid detail for ${price} (x402 on ${p.network}): ${p.description || "the structured record"}. ` +
                 "Pass an id from search, or ids for up to 1000 at once (one price, one manifest of hashes and transactions). " +
                 "The record is already in the row, sealed; this buys its key and opens it. " +
-                "Read free with a membership the agent was named on (FANGORN_MCP_READER_KEY + FANGORN_MCP_MEMBERSHIP); otherwise paid from the allowance (FANGORN_MCP_VOUCHERS) or this server's wallet (FANGORN_MCP_WALLET_KEY), never above FANGORN_MCP_MAX_PRICE a record.",
+                "Paid from the allowance (FANGORN_MCP_VOUCHERS) or this server's wallet (FANGORN_MCP_WALLET_KEY), never above FANGORN_MCP_MAX_PRICE a record.",
             inputSchema: { type: "object", properties: { id: str("A record id from search or get"), ids: { type: "array", items: { type: "string" }, description: "Several record ids, bought together" } } } });
     }
 

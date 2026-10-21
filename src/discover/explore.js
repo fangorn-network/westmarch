@@ -15,13 +15,13 @@
 // `client` is a viem PublicClient (getLogs, readContract): passed in, so this
 // runs in a tab and in node, and the self-check needs no chain.
 //
-// ponytail: windows grow with the chain (1 + 8 at block 316M, ~0.2s). Index
-// the logs somewhere if that ever gets slow.
+// Windows grow with the chain. Pass `store` (apps.js cachedLogs) and only the
+// blocks since the last read are scanned; the page passes none.
 
 import { parseAbi, parseAbiItem } from "viem";
 // The config module alone (viem only), not the SDK's root: this runs in a tab too.
 import { BaseSepoliaConfig } from "@fangorn-network/sdk/lib/config.js";
-import { APP_EXTENSION } from "./apps.js";
+import { APP_EXTENSION, cachedLogs } from "./apps.js";
 import { survey, comparable } from "./directory.js";
 import { rankDomains, zFloor, lexScore } from "../core/rank.js";
 
@@ -123,14 +123,18 @@ async function reputation(client, agentId, chain) {
 }
 
 // `window`: the most blocks one getLogs may span on the client's RPC (chainOf says, per chain).
-async function getLogsSince(client, start, filter, window) {
+async function getLogsSince(client, start, filter, window, store) {
     const head = await client.getBlockNumber();
-    const windows = [];
-    for (let from = start; from <= head; from += window) {
-        const to = from + window - 1n < head ? from + window - 1n : head;
-        windows.push(client.getLogs({ ...filter, fromBlock: from, toBlock: to }));
-    }
-    return (await Promise.all(windows)).flat();   // in window order: oldest first still holds
+    const read = async (start, head) => {
+        const windows = [];
+        for (let from = start; from <= head; from += window) {
+            const to = from + window - 1n < head ? from + window - 1n : head;
+            windows.push(client.getLogs({ ...filter, fromBlock: from, toBlock: to }));
+        }
+        // In window order: oldest first still holds. Only what readDirectory reads, so a store stays small.
+        return (await Promise.all(windows)).flat().map(({ args, blockNumber }) => ({ args, blockNumber }));
+    };
+    return store ? cachedLogs(store, `${filter.address}:${filter.event.name}:${start}`, start, head, read) : read(start, head);
 }
 
 /**
@@ -140,11 +144,13 @@ async function getLogsSince(client, start, filter, window) {
  * `onUpdate({ apps, pending })`, if given, is called once the bindings are read
  * and again as each app lands or drops, so a page can show apps as they arrive.
  * `pending` counts the bound apps not yet settled.
+ * `store`, if given, keeps the logs read (apps.js cachedLogs), so the next read
+ * scans only the blocks since.
  */
-export async function readDirectory(client, { chain = CHAIN, onUpdate = () => {} } = {}) {
+export async function readDirectory(client, { chain = CHAIN, onUpdate = () => {}, store } = {}) {
     const [bindLogs, regLogs] = await Promise.all([
-        getLogsSince(client, chain.appRegistryFrom ?? 0n, { address: chain.appRegistry, event: APP_AGENT_CHANGED }, chain.window ?? 1000n),
-        getLogsSince(client, chain.identityFrom ?? 0n, { address: chain.identity, event: REGISTERED }, chain.window ?? 1000n),
+        getLogsSince(client, chain.appRegistryFrom ?? 0n, { address: chain.appRegistry, event: APP_AGENT_CHANGED }, chain.window ?? 1000n, store),
+        getLogsSince(client, chain.identityFrom ?? 0n, { address: chain.identity, event: REGISTERED }, chain.window ?? 1000n, store),
     ]);
     const registered = regLogs.map((l) => ({ agentId: l.args.agentId, owner: l.args.owner, block: l.blockNumber }));
     const latest = new Map();   // logs come oldest first: the last write wins

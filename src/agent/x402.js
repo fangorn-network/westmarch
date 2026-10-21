@@ -171,30 +171,6 @@ export async function buyRecord(paid, key, { ct, want, account, privateKey, maxP
     return { id: key, price: r.price, receipt: r.receipt, digest: opened.sha256, verified: opened.verified, record: opened.record };
 }
 
-/** The typed data a reader signs to read with a membership: a copy of @fangorn-network/barliman's
- *  src/read.js, which its /check verifies. ponytail: import it once barliman is on npm. */
-export const readTypedData = ({ registry, chainId, appId, tokenId, ids, issuedAt }) => ({
-    domain: { name: "Fangorn Read", version: "1", chainId: Number(chainId), verifyingContract: registry },
-    types: { Read: [{ name: "app", type: "bytes32" }, { name: "tokenId", type: "uint256" }, { name: "ids", type: "string[]" }, { name: "issuedAt", type: "uint256" }] },
-    primaryType: "Read",
-    message: { app: appId, tokenId: BigInt(tokenId), ids, issuedAt: BigInt(issuedAt) },
-});
-
-/** Read records with a membership: `reader` (the holder, or the agent it named) signs the
- *  request, the app's worker has Barliman check it, and the keys come back. Nothing is paid. */
-export async function readAsMember(paid, ids, { reader, tokenId, ct = {}, want = {}, fetchImpl = fetch } = {}) {
-    const m = paid.membership;
-    if (!m) throw new Error("this app sells no memberships");
-    const issuedAt = Math.floor(Date.now() / 1000);
-    const signature = await reader.signTypedData(readTypedData({ registry: m.registry, chainId: m.chainId, appId: m.appId, tokenId, ids, issuedAt }));
-    const url = paid.key_url ?? paid.url.replace(/\/paid\/\{id\}$/, "/key");
-    const res = await fetchImpl(url, { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ids, tokenId: String(tokenId), issuedAt, signature }) });
-    const body = await res.json();
-    if (res.status !== 200) throw new Error(`membership refused: ${body.error ?? res.status}`);
-    return { records: await openAll(body.keys, ct, want), until: body.until };
-}
-
 // ── Batches and vouchers ──────────────────────────────────────────────────────────────────
 // `POST <app>/paid {ids}` answers 402 with one price for every record it has; PAYMENT-SIGNATURE may then
 // carry several payments (a JSON array) that add up to exactly that price. A payment signs
@@ -331,8 +307,7 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     // that checks signatures and refuses a nonce settled twice, and vouchers signed ahead.
     const { mkdtempSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
-    const membership = { registry: `0x${"12".repeat(20)}`, barliman: "https://barliman", chainId: CHAIN, appId: `0x${"ab".repeat(32)}` };
-    const sale = { price: "100000", network: `eip155:${CHAIN}`, asset: USDC, payTo: SELLER, facilitator: "https://fac", ...DOMAIN, description: "", membership };
+    const sale = { price: "100000", network: `eip155:${CHAIN}`, asset: USDC, payTo: SELLER, facilitator: "https://fac", ...DOMAIN, description: "" };
     // Not a literal: the page bundles this module, and a bundler would follow it into the Worker.
     const WORKER = "../../site/worker.js";
     const worker = (await import(/* @vite-ignore */ WORKER)).default;
@@ -344,17 +319,9 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         want[id] = await sha256(new TextEncoder().encode(plain));
     }
     const env = { PAID_SECRET: SECRET, CONFIG: { name: "Test", paid: sale } };
-    const member = privateKeyToAccount(generatePrivateKey()), memberToken = "77";
     const spent = new Set(), facilitated = [];
     const realFetch = globalThis.fetch;
-    const { recoverTypedDataAddress } = await import("viem");
     globalThis.fetch = async (u, init) => {
-        if (u === "https://barliman/check") {   // a stand-in Barliman: the member's token reads, nobody else's
-            const b = JSON.parse(init.body);
-            const reader = await recoverTypedDataAddress({ ...readTypedData({ registry: membership.registry, chainId: CHAIN, ...b }), signature: b.signature });
-            const ok = reader === member.address && b.tokenId === memberToken && b.appId === membership.appId;
-            return new Response(JSON.stringify({ ok, reader, until: ok ? "1900000000" : "0" }));
-        }
         const { x402Version, paymentPayload: p, paymentRequirements: q } = JSON.parse(init.body), a = p.payload.authorization;
         if (x402Version !== 2 || p.x402Version !== 2) throw new Error("the facilitator is spoken to in v2");
         facilitated.push(p);
@@ -372,7 +339,7 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         return new Response(JSON.stringify({ success: true, transaction: `0x${spent.size}` }));
     };
     const viaWorker = (u, init) => worker.fetch(new Request(u, init), env);
-    const paidCard = { url: "https://x/paid/{id}", key_url: "https://x/key", price: sale.price, membership };
+    const paidCard = { url: "https://x/paid/{id}", price: sale.price };
     try {
         // One record, one payment: the key opens the row's sealed record, which matches its hash.
         const single = await buyRecord(paidCard, "a", { ct: ct.a, want: want.a, account: buyer, maxPrice: 100000n, fetchImpl: viaWorker });
@@ -419,12 +386,6 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         let threw = false;
         try { await buyBatch(paidCard, ["a", "b"], { vouchers: stack2, ct, want, fetchImpl: viaWorker }); } catch { threw = true; }
         if (!threw || stack2.length !== 1 || stack2[0] !== fresh) throw new Error(`refused batch must drop only the spent voucher: ${stack2.length}`);
-        // A member reads for free: the signed request names the token; a stranger's is refused.
-        const read = await readAsMember(paidCard, ["a", "c"], { reader: member, tokenId: memberToken, ct, want, fetchImpl: viaWorker });
-        if (read.records.length !== 2 || !read.records.every((r) => r.verified === true)) throw new Error(`member read: ${JSON.stringify(read)}`);
-        let stranger = false;
-        try { await readAsMember(paidCard, ["a"], { reader: buyer, tokenId: memberToken, ct, want, fetchImpl: viaWorker }); } catch { stranger = true; }
-        if (!stranger) throw new Error("a reader the membership does not name must be refused");
         // The allowance lock: two purchases at once take turns; a crashed one's lock is taken over.
         const vfile = `${mkdtempSync(`${tmpdir()}/wm-`)}/vouchers.json`, order = [];
         const turn = (name) => withLock(vfile, async () => { order.push(`${name}+`); await new Promise((ok) => setTimeout(ok, 50)); order.push(`${name}-`); });
@@ -435,6 +396,6 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         utimesSync(`${vfile}.lock`, new Date(Date.now() - 300_000), new Date(Date.now() - 300_000));
         if (await withLock(vfile, async () => 7) !== 7 || existsSync(`${vfile}.lock`)) throw new Error("a stale lock must be taken over and released");
     } finally { globalThis.fetch = realFetch; }
-    console.log("x402.js batch self-check ok — keys, not records: each opens the row's sealed record and matches its hash; a member reads free and a stranger is refused; one price for the ids sealed in the rows, paid by one signature or by vouchers signed ahead, spent vouchers removed and refused if replayed, short payment refused, a half-settled batch delivers what was paid and drops spent vouchers, the allowance file is locked per purchase");
+    console.log("x402.js batch self-check ok — keys, not records: each opens the row's sealed record and matches its hash; one price for the ids sealed in the rows, paid by one signature or by vouchers signed ahead, spent vouchers removed and refused if replayed, short payment refused, a half-settled batch delivers what was paid and drops spent vouchers, the allowance file is locked per purchase");
     console.log("x402.js self-check ok — a signed EIP-3009 authorization the seller can verify, exactly the asked amount to the asked payee, the receipt read back, and a price over the cap refused before signing");
 }

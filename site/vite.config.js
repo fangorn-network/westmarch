@@ -8,8 +8,6 @@ export default {
     base: "./",
     build: { outDir: "dist", emptyOutDir: true },
     plugins: [noWasm()],
-    // @fangorn-network/barliman is linked from ../barliman, which has no viem of its own.
-    resolve: { dedupe: ["viem"] },
     // embed.js finds its worker by `new URL(…, import.meta.url)`; keep it a real file.
     worker: { format: "es", plugins: () => [noWasm()] },
 };

@@ -148,8 +148,6 @@ Kingsfoil, the reference at the end, predates `ship` and was built by hand.
   (`#/agents`). The pass is kept on the device and sent with every read, and the agent line
   carries it too. Add the app's origin to Privy's allowed origins.
 
-Not yet: memberships on a private app's page.
-
 ## Grading a change before it ships
 
 New records are facts, and they always ship. What can make an app worse is its

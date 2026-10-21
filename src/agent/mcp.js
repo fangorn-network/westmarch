@@ -21,6 +21,7 @@
 // price is handed back to the agent, to say to the person.
 
 import net from "node:net";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline";
 import { APP_EXTENSION, listApps, toApp } from "../discover/apps.js";
@@ -102,7 +103,7 @@ export async function remoteTools(url, fetcher = fetch, { access = null, wallet 
 // ── the network ─────────────────────────────────────────────────────────────
 // Catalogs, manifests and cards change on a rebake: held for a minute, so one
 // search (or resolving then verifying a card) does not fetch each twice.
-const CACHE = `${homedir()}/.cache/fangorn-mcp`;   // the embedding model, for find-apps
+const CACHE = `${homedir()}/.cache/fangorn-mcp`;   // the embedding model (find-apps) and the chain logs read
 function cachingFetch(real = globalThis.fetch) {
     const memo = new Map();
     return async (input, init) => {
@@ -123,6 +124,27 @@ function cachingFetch(real = globalThis.fetch) {
             return new Response(body, { headers: r.headers });
         }
         return real(input, init);
+    };
+}
+
+/**
+ * The chain logs a scan has read, on disk, so a new session reads only the
+ * blocks since (apps.js cachedLogs). Logs carry bigints; JSON does not.
+ * ponytail: two servers writing at once can tear the file. A torn file reads
+ * as empty and the next scan starts over; write-then-rename if that ever bites.
+ */
+function fileStore(path) {
+    const big = (_, v) => (typeof v === "bigint" ? { $n: String(v) } : v);
+    const unbig = (_, v) => (v?.$n !== undefined ? BigInt(v.$n) : v);
+    let data;
+    try { data = JSON.parse(readFileSync(path, "utf8"), unbig); } catch { data = {}; }
+    return {
+        get: (k) => data[k],
+        set: (k, v) => {
+            data[k] = v;
+            try { mkdirSync(CACHE, { recursive: true }); writeFileSync(path, JSON.stringify(data, big)); }
+            catch (e) { log(`log cache not saved: ${e.message}`); }
+        },
     };
 }
 
@@ -348,12 +370,25 @@ const vt = await import("./view-tools.js");
 const fb = argv.indexOf("--from-block");
 // The SDK's deployment by default: pass --from-block for another one.
 const fromBlock = fb >= 0 ? BigInt(argv[fb + 1]) : (await network()).appRegistryFromBlock;
-let found, foundAt = 0, explored, exploredAt = 0;
+let found, foundAt = 0, explored, exploredAt = 0, pub, warming;
+const chainClient = async () => {
+    if (!pub) {
+        const [{ createPublicClient, http }, net] = await Promise.all([import("viem"), network()]);
+        pub = createPublicClient({ chain: net.chain, transport: http(net.rpcUrl) });
+    }
+    return pub;
+};
+const store = fileStore(`${CACHE}/logs-${(await network()).chain.id}.json`);
+// The embedder is for find-apps' ranking alone. Loading it blocks the thread for
+// seconds, so not at startup, where it would hold up list-apps.
+const warmEmbedder = () => (warming ??= vt.warm({ cacheDir: `${CACHE}/models` }).then((ok) => ok ? trace("embedder ready")
+    : log(`embedder unavailable, searching by words: ${vt.warmError}`)));
 const deps = {
-    // ponytail: cached for a minute. The scan is a few RPC calls plus a fetch per card.
+    // ponytail: cached for a minute. The logs since the last scan, plus a fetch per card.
     findApps: async () => {
         if (!found || Date.now() - foundAt > 60_000) {
-            const { apps, rejected } = await listApps(await fangorn(), { fromBlock });
+            const [f, head] = await Promise.all([fangorn(), chainClient().then((c) => c.getBlockNumber())]);
+            const { apps, rejected } = await listApps(f, { fromBlock, toBlock: head, store });
             found = { apps, rejected };
             foundAt = Date.now();
         }
@@ -361,9 +396,10 @@ const deps = {
     },
     // ponytail: cached for a minute, like findApps. Two getLogs, a card and catalog per app.
     exploreApps: async (query) => {
+        if (query?.trim()) warmEmbedder();   // loads behind the directory read; a first download ranks by words
         if (!explored || Date.now() - exploredAt > 60_000) {
-            const [ex, { createPublicClient, http }, net] = await Promise.all([import("../discover/explore.js"), import("viem"), network()]);
-            explored = { ex, dir: await ex.readDirectory(createPublicClient({ chain: net.chain, transport: http(net.rpcUrl) }), { chain: ex.chainOf(net) }) };
+            const [ex, client, net] = await Promise.all([import("../discover/explore.js"), chainClient(), network()]);
+            explored = { ex, dir: await ex.readDirectory(client, { chain: ex.chainOf(net), store }) };
             exploredAt = Date.now();
         }
         const { ex, dir } = explored;
@@ -386,16 +422,12 @@ const deps = {
 };
 const h = handlers(deps);
 // The client starts this server with the session, long before an agent opens an
-// app: load the SDK and the embedding model then, behind the agent's first
-// thought. After the initialize reply, not before: both block the thread while
-// they load, and the client is waiting on that reply.
+// app: load the SDK then, behind the agent's first thought. After the initialize
+// reply, not before: it blocks the thread while it loads, and the client is
+// waiting on that reply.
 const reply = h.initialize;
 h.initialize = async (p) => {
-    setImmediate(() => {
-        fangorn().then(() => trace("sdk ready"), () => {});
-        vt.warm({ cacheDir: `${CACHE}/models` }).then((ok) => ok ? trace("embedder ready")
-            : log(`embedder unavailable, searching by words: ${vt.warmError}`));
-    });
+    setImmediate(() => fangorn().then(() => trace("sdk ready"), () => {}));
     return reply(p);
 };
 deps.notify = serve(h);

@@ -62,7 +62,15 @@ Then run `/mcp` in Claude Code and check that `fangorn` shows as connected.
 }
 ```
 
-The first start downloads the packages, so it can take a minute. Later starts use npm's cache.
+The first start downloads about 130 MB of packages, about 10 seconds on a fast link (an SDK
+from before it dropped agent0-sdk pulls about 500 MB and takes over a minute, longer than
+Claude Code waits for a server to connect). If `fangorn` shows as failed the first time,
+reconnect it once the download finishes (`/mcp` → reconnect). Later starts use npm's cache and
+are ready in under a second.
+
+`~/.cache/fangorn-mcp` keeps the chain logs the server has read, so each start reads only the
+blocks since the last one, and `find-apps`' embedding model, which loads the first time
+`find-apps` gets a query. Deleting it is safe: the next call reads the chain from the start again.
 
 ## Use it
 
@@ -115,6 +123,11 @@ claude mcp add fangorn -- node "$PWD/src/agent/mcp.js"
 No build step is needed. The server runs `src/agent/mcp.js` directly. After you pull
 changes or upgrade `@fangorn-network/sdk`, reconnect the server (`/mcp` → reconnect).
 A server that was already running keeps the old code.
+
+The plugin's `npx -p @fangorn-network/westmarch` command does not work from inside this
+checkout: npx resolves the package to the checkout itself and can reuse a stale link from an
+older layout (`fangorn-mcp: not found`). Use the `node` command above here, and delete the
+stale `~/.npm/_npx/<hash>` whose `package.json` points at `file:` this repo.
 
 ## Single-file binary (maintainers)
 

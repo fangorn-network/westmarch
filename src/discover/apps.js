@@ -48,16 +48,39 @@ export function toApp({ card, appId, fromBlock, repos }, cardUrl) {
     };
 }
 
+// Blocks this close to the head can still reorg: read again every time, never stored.
+const SETTLED = 64n;
+
+/**
+ * Logs from `start` to `head`, oldest first, reading only the blocks `store`
+ * has not seen. A scan from the registry's deployment grows with the chain;
+ * this one grows with the time since the last call. `store` is `{ get, set }`
+ * of `{ to, logs }` by `key`; `read(from, to)` returns logs with `blockNumber`.
+ */
+export async function cachedLogs(store, key, start, head, read) {
+    const hit = store.get(key) ?? { to: start - 1n, logs: [] };
+    const fresh = hit.to < head ? await read(hit.to + 1n, head) : [];
+    const settled = head - SETTLED;
+    if (settled > hit.to) store.set(key, { to: settled, logs: [...hit.logs, ...fresh.filter((l) => l.blockNumber <= settled)] });
+    return [...hit.logs, ...fresh];
+}
+
 /**
  * Every app with a bound, verifiable card. The ones that fail are reported
  * with the reason, not dropped: a card that is down and a card that lies look
  * the same from outside, and an agent should see both.
  *
  * An app that cleared its uri (bound to "") is skipped. It is not an error.
+ *
+ * With a `store` (see cachedLogs) and `toBlock`, the logs read before are not
+ * read again; the cards are still all verified.
  */
-export async function listApps(fangorn, { fromBlock, toBlock } = {}) {
+export async function listApps(fangorn, { fromBlock, toBlock, store } = {}) {
     if (fromBlock == null) throw new Error("listApps: pass fromBlock, a block at or before the AppRegistry's deployment — from 0 is one RPC call per 1000 blocks of chain history");
-    const logs = await fangorn.getAppRegistry().getAppAgentLogs({ fromBlock: BigInt(fromBlock), toBlock });
+    const read = (from, to) => fangorn.getAppRegistry().getAppAgentLogs({ fromBlock: from, toBlock: to });
+    const logs = store && toBlock != null
+        ? await cachedLogs(store, `AppAgentChanged:${fromBlock}`, BigInt(fromBlock), BigInt(toBlock), read)
+        : await read(BigInt(fromBlock), toBlock);
     // Oldest first, so the last write wins. discoverApp re-reads the binding,
     // so a stale uri here is caught there, not trusted.
     const latest = new Map(logs.map((l) => [l.appId, l.agentUri]));
@@ -109,6 +132,18 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     eq([beta.appId, beta.card, beta.url, beta.fromBlock, beta.desc], [A, "https://a.test/card", "https://x.test", 7n, "Beta!"], "entry fields");
     eq(rejected.map((r) => r.why), ["not bound to app"], "a card that fails verification is reported");
     await listApps(fangorn).then(() => { throw new Error("missing fromBlock must throw"); }, () => {});
+
+    const m = new Map(), store = { get: (k) => m.get(k), set: (k, v) => m.set(k, v) }, asked = [];
+    const chain = [{ blockNumber: 10n, n: 1 }, { blockNumber: 150n, n: 2 }, { blockNumber: 190n, n: 3 }];
+    const read = async (from, to) => (asked.push([from, to]), chain.filter((l) => l.blockNumber >= from && l.blockNumber <= to));
+    eq((await cachedLogs(store, "k", 5n, 200n, read)).map((l) => l.n), [1, 2, 3], "first call reads it all");
+    eq(m.get("k").to, 136n, "stores only what is settled");
+    eq(m.get("k").logs.map((l) => l.n), [1], "the unsettled tail is not stored");
+    eq((await cachedLogs(store, "k", 5n, 210n, read)).map((l) => l.n), [1, 2, 3], "second call: same logs, no duplicates");
+    eq(asked, [[5n, 200n], [137n, 210n]], "second call reads only from the settled point");
+    asked.length = 0;
+    await cachedLogs(store, "k", 5n, 146n, read);
+    eq(asked, [], "head at the stored point: no read");
 
     console.log("apps.js self-check ok — latest card per app, unbound skipped, failures reported, views gated to http(s)");
 }

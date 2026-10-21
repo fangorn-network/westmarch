@@ -999,4 +999,4 @@ never opened.
 | wrangler: "More than one account available" | set `CLOUDFLARE_ACCOUNT_ID` |
 | Pages deploy rejects a file over 25 MiB | onnxruntime's `.wasm` in `site/assets`; delete it after `vite build` (step 8) |
 | deployed site answers `522` | a new `pages.dev` hostname still propagating; wait a minute |
-| `app agent`: "verification timed out. Content may propagate with delay" | harmless if an Agent ID and Tx follow; the registration file is pinned — fetch it through your gateway to confirm |
+| `app agent`: "agent … was minted but its registration file was not set" | the mint landed and the pin or `setAgentURI` failed; run the `--update` command it prints, never a bare rerun (that mints a second agent) |
