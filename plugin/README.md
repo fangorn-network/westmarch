@@ -55,6 +55,34 @@ them:
 echo '["https://…/q/qb_1","https://…/q/qb_2"]' > ~/.fangorn/sources.json
 ```
 
+Run Claude Code from outside this repo. Inside it, `npx -p @fangorn-network/westmarch`
+resolves the local checkout, where `fangorn-mcp` is not on the path, so the MCP
+server reports "Connection closed".
+
+## Paying for private apps
+
+Only the MCP server pays; the skill never does. It reads its wallet from the
+environment Claude Code starts in, so export these first:
+
+```sh
+export FANGORN_MCP_WALLET_KEY=0x…   # private key of a wallet holding USDC
+export FANGORN_MCP_MAX_PRICE=0.10   # most it pays for one call, in USDC (default 0.10)
+export FANGORN_NETWORK=baseSepolia  # optional; unset, the SDK's default
+claude
+```
+
+When a private app's tool answers with x402's PaymentRequired, the server pays it
+if the price is at or under `FANGORN_MCP_MAX_PRICE`, and retries the call. With no
+wallet set, nothing is paid and the price comes back to the agent to tell the
+person.
+
+The server can also buy a pass (pay once, not per call) when the app sells one at
+or under `FANGORN_MCP_MAX_PASS`. The plugin's `.mcp.json` does not pass that
+variable through yet, so through the plugin it buys per call only.
+
+Anything under the cap is paid without asking. Use a separate wallet with a small
+balance, not one you care about.
+
 ## The verbs
 
 ```
@@ -108,5 +136,5 @@ node plugin/scripts/fx.mjs find "1950s atomic paranoia" \
 
 ## What it will not do
 
-Spend money, and host an app. `launch` walks the person to the door; the app is
+Spend money (paying is the MCP server's, above), and host an app. `launch` walks the person to the door; the app is
 on the other side of it.
