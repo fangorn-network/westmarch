@@ -1,8 +1,13 @@
 {
   "private": true,
   "type": "module",
+  "scripts": {
+    "build": "westmarch build",
+    "deploy": "wrangler deploy"
+  },
   "dependencies": {
-    "@fangorn-network/westmarch": "^2026.10.21-dev",
-    "@huggingface/transformers": "^4.3.1"
+    "@fangorn-network/westmarch": "2026.10.22-dev",
+    "@huggingface/transformers": "^4.3.1",
+    "wrangler": "^4.83.0"
   }
 }

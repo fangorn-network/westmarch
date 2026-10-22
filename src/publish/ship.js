@@ -34,7 +34,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -217,6 +217,68 @@ function assertSameDeployment(cli) {
         "they talk to different contracts. Point app.json's \"fangorn\" at a matching CLI.");
 }
 
+/** The block `appId` was claimed in, or undefined: the AppRegistered log, window by window. */
+export async function claimBlock(chain, FangornConfig, appId) {
+    const { parseAbiItem } = await import("viem");
+    const from = BigInt(FangornConfig.appRegistryFromBlock), to = await chain.getBlockNumber(), step = BigInt(FangornConfig.logWindow ?? 10000);
+    const event = parseAbiItem("event AppRegistered(bytes32 indexed app_id, address indexed owner)");
+    for (let a = from; a <= to; a += step) {
+        const [claimed] = await chain.getLogs({ address: FangornConfig.appRegistryContractAddress, event, args: { app_id: appId },
+                                                fromBlock: a, toBlock: a + step - 1n < to ? a + step - 1n : to });
+        if (claimed) return String(claimed.blockNumber);
+    }
+}
+
+/** The template's app.json as `app`'s: its name, its type tag `<app>.item.v1` and the Worker. */
+export const TEMPLATE_APP = "my-app";
+export function nameApp(cfg, app) {
+    const from = `${TEMPLATE_APP}.item.v1`, tag = `${app}.item.v1`;
+    const types = Object.fromEntries(Object.entries(cfg.types ?? {}).map(([k, t]) =>
+        k === from ? [tag, JSON.parse(JSON.stringify(t).replaceAll(from, tag))] : [k, t]));
+    return { ...cfg, app, name: cfg.name === TEMPLATE_APP ? app : cfg.name, types,
+             site: { ...cfg.site, project: app.replace(/[._]/g, "-") } };   // a Worker name: letters, digits, dashes
+}
+
+/**
+ * `westmarch build`: what Workers Builds runs under the deploy button. The site, with a card
+ * that names ORIGIN for its own URL (the Worker fills it in), and CONFIG, into the app's own
+ * wrangler.json, which `wrangler deploy` then ships with the bucket, AI and cron it declares.
+ * No chain writes and no Cloudflare calls: the owner claims the app and registers its agent
+ * from fangorn.network. While app.json still names the template's app, the app is the Worker's name.
+ *
+ * ponytail: free apps only; a paid or private one ships with westmarch-ship, which sets its secret.
+ */
+export async function buildForDeploy(configPath, wranglerPath = join(dirname(resolve(configPath)), "wrangler.json")) {
+    const w = JSON.parse(readFileSync(wranglerPath, "utf8"));
+    let cfg = loadConfig(configPath);
+    if (cfg.app === TEMPLATE_APP) cfg = nameApp(cfg, w.name);
+    if (cfg.paid || cfg.private) throw new Error(`${configPath}: a paid or private app ships with westmarch-ship`);
+    if (!cfg.network) throw new Error(`${configPath}: "network" is required`);
+    if (!w.r2_buckets?.[0]?.bucket_name?.includes(w.name))
+        log(`the R2 bucket ${w.r2_buckets?.[0]?.bucket_name} doesn't name the Worker; two apps sharing one overwrite each other's view`);
+
+    process.env.FANGORN_NETWORK = process.env.CHAIN_NAME = cfg.network;
+    const [{ createPublicClient, http }, view, { ORIGIN }] = await Promise.all([import("viem"), import("./view.js"), import("../../site/worker.js")]);
+    const FangornConfig = await view.network(cfg.network);
+    const fangorn = await view.readOnlyFangorn();
+    fangorn.setAppId(cfg.app);
+    if (/^0x0+$/.test(await fangorn.getAppRegistry().getAppOwner()))
+        throw new Error(`${cfg.app} is unclaimed: claim it at fangorn.network first${/[._]/.test(cfg.app) ? "" : `, or set "app" in app.json to the name you claimed`}`);
+    const chain = createPublicClient({ transport: http(FangornConfig.rpcUrl) });
+    const fromBlock = cfg.fromBlock != null ? String(cfg.fromBlock) : await claimBlock(chain, FangornConfig, fangorn.getAppId());
+
+    const base = dirname(resolve(configPath));
+    const { site, writeCard } = await buildSite(cfg, base);
+    writeCard(ORIGIN, { fromBlock, repos: [] });
+    const gateway = process.env.FANGORN_IPFS_GATEWAY;
+    w.assets = { ...w.assets, directory: relative(dirname(resolve(wranglerPath)), site) };
+    w.vars = { ...w.vars, CONFIG: { app: cfg.app, name: cfg.name, description: cfg.description, fromBlock, network: cfg.network,
+                                    schema: { types: cfg.types, relations: cfg.relations }, repos: [], paid: null, private: null },
+               ...(gateway ? { IPFS_GATEWAY: gateway } : {}) };
+    writeFileSync(wranglerPath, JSON.stringify(w, null, 1) + "\n");
+    log(`built ${cfg.app} (fromBlock ${fromBlock}) into ${site}; wrangler deploy ships it`);
+}
+
 // ── the steps ─────────────────────────────────────────────────────────────────
 
 export async function ship(configPath, { crawl = true, deploy = true, dry = false, replace = false, only = null, register = false } = {}) {
@@ -245,7 +307,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
 
     // The SDK's network name: view.js reads with it, and the CLI and the sources spawned below sign on it.
     process.env.FANGORN_NETWORK = process.env.CHAIN_NAME = cfg.network;
-    const [{ createPublicClient, http, parseAbiItem }, view] = await Promise.all([import("viem"), import("./view.js")]);
+    const [{ createPublicClient, http }, view] = await Promise.all([import("viem"), import("./view.js")]);
     const FangornConfig = await view.network(cfg.network);
     const fangorn = await view.readOnlyFangorn();
     fangorn.setAppId(cfg.app);
@@ -270,15 +332,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
         throw new Error(`${cfg.app} belongs to ${owner}, not this wallet (${me}); pick another name`);
     }
     // Claimed elsewhere (fangorn.network, the CLI): the view starts at the claim, found once.
-    if (state.fromBlock == null && cfg.fromBlock == null) {
-        const from = BigInt(FangornConfig.appRegistryFromBlock), to = await chain.getBlockNumber(), step = BigInt(FangornConfig.logWindow ?? 10000);
-        const event = parseAbiItem("event AppRegistered(bytes32 indexed app_id, address indexed owner)");
-        for (let a = from; a <= to && state.fromBlock == null; a += step) {
-            const [claimed] = await chain.getLogs({ address: FangornConfig.appRegistryContractAddress, event, args: { app_id: appId },
-                                                    fromBlock: a, toBlock: a + step - 1n < to ? a + step - 1n : to });
-            if (claimed) state.fromBlock = String(claimed.blockNumber);
-        }
-    }
+    if (state.fromBlock == null && cfg.fromBlock == null) state.fromBlock = await claimBlock(chain, FangornConfig, appId);
     state.fromBlock ??= String(cfg.fromBlock ?? FangornConfig.appRegistryFromBlock);
     log(`app ${cfg.app} = ${appId}, owner ${owner}, fromBlock ${state.fromBlock}`);
 

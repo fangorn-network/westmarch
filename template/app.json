@@ -1,6 +1,6 @@
 {
  "app": "my-app",
- "name": "My App",
+ "name": "my-app",
  "description": "One sentence: what is in here, and who it is for.",
  "network": "baseSepolia",
  "site": {

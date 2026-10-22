@@ -1,12 +1,14 @@
 #!/usr/bin/env node
-// A new app from the template: its recipe (app.json, eval/, ci/), no data.
+// A new app from the template: its recipe (app.json, wrangler.json, eval/), no data.
 //   npx @fangorn-network/westmarch init <app> [dir] [--no-install]
+//   westmarch build      the deploy button's build step (ship.js buildForDeploy)
 // The app's data is what its members commit; the repo this makes can be public.
 import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildForDeploy, nameApp } from "./ship.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const TEMPLATE = join(ROOT, "template");
@@ -20,12 +22,11 @@ export function init(app, dir = app, { install = true, log = console.log } = {})
     cpSync(TEMPLATE, dir, { recursive: true });
     renameSync(join(dir, "gitignore"), join(dir, ".gitignore"));   // npm drops a published .gitignore
 
-    const cfg = JSON.parse(readFileSync(join(dir, "app.json"), "utf8"));
-    const tag = `${app}.item.v1`;
-    const type = JSON.parse(JSON.stringify(cfg.types["my-app.item.v1"]).replaceAll("my-app.item.v1", tag));
-    Object.assign(cfg, { app, name: app, types: { [tag]: type } });
-    cfg.site.project = app.replace(/[._]/g, "-");                   // a Worker name: letters, digits, dashes
+    const cfg = nameApp(JSON.parse(readFileSync(join(dir, "app.json"), "utf8")), app);
     writeFileSync(join(dir, "app.json"), JSON.stringify(cfg, null, 1) + "\n");
+    const w = JSON.parse(readFileSync(join(dir, "wrangler.json"), "utf8"));
+    Object.assign(w, { name: cfg.site.project, r2_buckets: [{ ...w.r2_buckets[0], bucket_name: `${cfg.site.project}-view` }] });
+    writeFileSync(join(dir, "wrangler.json"), JSON.stringify(w, null, 1) + "\n");
     writeFileSync(join(dir, "README.md"), readFileSync(join(dir, "README.md"), "utf8").replaceAll("my-app", app));
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
     pkg.dependencies["@fangorn-network/westmarch"] = `^${JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version}`;
@@ -40,13 +41,7 @@ export function init(app, dir = app, { install = true, log = console.log } = {})
     }
     log(`${app} is in ${dir}. Next:
   1. app.json: the description, and the type's fields (role_map)
-  2. gh repo create ${app} --private --source ${dir} --push
-  3. gh secret set ETH_PRIVATE_KEY        # the wallet that claimed ${app}; read from the prompt, never echoed
-     gh secret set PINATA_JWT
-     gh variable set PINATA_GATEWAY --body <your-gateway>.mypinata.cloud
-     gh secret set CLOUDFLARE_API_TOKEN
-     gh secret set CLOUDFLARE_ACCOUNT_ID
-  4. gh workflow run ship                  # deploys the Worker; then publish records (README.md)`);
+  2. npx westmarch-ship app.json           # claims ${app} if it isn't yet, deploys the Worker, registers its agent`);
     return dir;
 }
 
@@ -57,7 +52,9 @@ if (process.argv[2] === "--selfcheck") {
         const cfg = JSON.parse(readFileSync(join(dir, "app.json"), "utf8"));
         if (cfg.app !== "my.app_1" || cfg.site.project !== "my-app-1" || !cfg.types["my.app_1.item.v1"]?.presentation.types["my.app_1.item.v1"])
             throw new Error(`app.json not filled: ${JSON.stringify(cfg)}`);
-        if (!existsSync(join(dir, ".gitignore")) || !existsSync(join(dir, ".github/workflows/ship.yml"))) throw new Error("template files missing");
+        if (!existsSync(join(dir, ".gitignore"))) throw new Error("template files missing");
+        const w = JSON.parse(readFileSync(join(dir, "wrangler.json"), "utf8"));
+        if (w.name !== "my-app-1" || w.r2_buckets[0].bucket_name !== "my-app-1-view") throw new Error(`wrangler.json not filled: ${JSON.stringify(w)}`);
         if (readFileSync(join(dir, "README.md"), "utf8").includes("my-app")) throw new Error("README still names my-app");
         let threw = false;
         try { init("x", join(dir, "y"), { install: false, log: () => {} }); } catch { threw = true; }
@@ -68,7 +65,10 @@ if (process.argv[2] === "--selfcheck") {
     const [app, dir] = process.argv.slice(3).filter((a) => !a.startsWith("--"));
     try { init(app, dir, { install: !process.argv.includes("--no-install") }); }
     catch (e) { console.error(e.message); process.exit(1); }
+} else if (process.argv[2] === "build") {
+    try { await buildForDeploy(process.argv[3] ?? "app.json"); }
+    catch (e) { console.error(e.message); process.exit(1); }
 } else {
-    console.error("usage: westmarch init <app> [dir] [--no-install]");
+    console.error("usage: westmarch init <app> [dir] [--no-install] | westmarch build [app.json]");
     process.exit(2);
 }

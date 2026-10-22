@@ -455,6 +455,9 @@ async function paidCall(origin, tool, payment, run) {
     return { ...result, _meta: { ...result._meta, "x402/payment-response": settled } };
 }
 
+export const ORIGIN = "https://origin.westmarch.invalid";
+const BY_ORIGIN = new Set(["/.well-known/agent-card.json", "/openapi.json", "/.well-known/x402"]);
+
 const worker = {
     async fetch(request, env) {
         CONFIG = env.CONFIG ?? CONFIG;
@@ -473,7 +476,14 @@ const worker = {
         if (p === "/paid" && request.method === "POST") return CONFIG.paid ? sellBatch(request, env, url) : json({ error: "nothing is sold here" }, 404);
         if (p.startsWith("/paid/")) return CONFIG.paid ? sell(request, env, url) : json({ error: "nothing is sold here" }, 404);
 
-        const res = await env.ASSETS.fetch(request);
+        let res = await env.ASSETS.fetch(request);
+        // A site built before its URL was known (`westmarch build`, under the deploy button) names
+        // ORIGIN wherever it means its own: it is wherever it is served from.
+        if (res.ok && BY_ORIGIN.has(p)) {
+            const body = (await res.text()).replaceAll(ORIGIN, url.origin);
+            res = new Response(body, { status: res.status, headers: res.headers });
+            res.headers.delete("content-length");
+        }
         const out = new Response(res.body, res);
         if (p === "/.well-known/agent-card.json") out.headers.set("access-control-allow-origin", "*");
         if (p.startsWith("/assets/")) out.headers.set("cache-control", "public, max-age=31536000, immutable");
@@ -511,7 +521,7 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     const calls = [];
     const AI = { run: async (model, { text }) => { calls.push({ model, text });
         return { data: text.map((t) => { const v = new Array(768).fill(0); for (const w of t.toLowerCase().split(/\W+/)) if (w.length > 3) v[[...w].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 256, 7)] += 1; return v; }) }; } };
-    const env = { VIEW, AI, ASSETS: { fetch: async () => new Response("<!doctype html>site") },
+    const env = { VIEW, AI, ASSETS: { fetch: async (r) => new Response(new URL(r.url).pathname.endsWith("agent-card.json") ? `{"url":"${ORIGIN}/"}` : "<!doctype html>site") },
                   CONFIG: { app: "shop", name: "Shop", description: "Things for a room.", repos: [] } };
     CONFIG = env.CONFIG;
 
@@ -540,6 +550,8 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     eq((await (await worker.fetch(new Request("https://shop.test/mcp", { method: "POST", body: '{"jsonrpc":"2.0","method":"notifications/initialized"}' }), env)).status), 202, "a notification is accepted, not answered");
 
     const cat = await worker.fetch(new Request("https://shop.test/view/cdn/catalog"), env);
+    const card = await worker.fetch(new Request("https://shop.example.workers.dev/.well-known/agent-card.json"), env);
+    eq([await card.json(), card.headers.get("access-control-allow-origin")], [{ url: "https://shop.example.workers.dev/" }, "*"], "a card built before its URL was known names the origin it is served from");
     eq([cat.status, cat.headers.get("access-control-allow-origin"), (await cat.json()).domains[0].link_hosts], [200, "*", ["docs.example"]], "the view is served from R2, with the hosts its records link to");
     eq((await worker.fetch(new Request("https://shop.test/doc?u=https://evil.example/x.pdf"), env)).status, 403, "/doc refuses a host no record links to");
     eq((await worker.fetch(new Request("https://shop.test/view/cdn/nope"), env)).status, 404, "a missing file is a 404");

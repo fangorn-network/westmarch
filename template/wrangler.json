@@ -1,0 +1,12 @@
+{
+ "name": "my-app",
+ "main": "node_modules/@fangorn-network/westmarch/site/worker.js",
+ "compatibility_date": "2025-09-15",
+ "compatibility_flags": ["nodejs_compat"],
+ "assets": { "directory": ".ship/site", "binding": "ASSETS" },
+ "r2_buckets": [{ "binding": "VIEW", "bucket_name": "my-app-view" }],
+ "ai": { "binding": "AI" },
+ "triggers": { "crons": ["*/5 * * * *"] },
+ "alias": { "@huggingface/transformers": "./node_modules/@fangorn-network/westmarch/site/no-model.js" },
+ "vars": {}
+}

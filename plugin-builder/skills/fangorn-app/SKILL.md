@@ -208,7 +208,7 @@ app.json            the app: types (role maps), sources (none: it presents what 
 sources/*.py        one module per source, if the app crawls anything
 eval/goals.md       the bet
 eval/golden.jsonl   the questions
-ci/ship.sh          ship | eval, on any CI or a laptop; .github/workflows/ship.yml wraps it
+wrangler.json       the Worker, for the deploy button (`westmarch build` fills CONFIG); westmarch-ship writes its own
 .ship/              stage, cache, vectors (ignored); state.json (committed: claim block, URL, agent id)
 ```
 
