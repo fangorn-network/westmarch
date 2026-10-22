@@ -5,8 +5,8 @@
 //   site/worker.js, on a cron                                          (the free tier)
 //
 // Reads the registry and storage and nothing else: every repo the app presents (its
-// members' repos, less its exclusions, `appRepos`), at their latest heads, and the app
-// owner's schema (`fangorn.schema`, see below). Embeds only records the view does not hold
+// members' repos, less its exclusions, `appRepos`), at their latest heads; the schema
+// (app.json's `types` + `relations`) comes from the caller. Embeds only records the view does not hold
 // yet, drops removed ones, and writes, through a store (a directory or an R2 bucket):
 //
 //   cdn/catalog
@@ -40,15 +40,9 @@ import { dirname } from "node:path";
 import { EMBED_DIM, EMBED_DTYPE, EMBED_MODEL, embedDocumentDirect, packVec, unpackVec } from "../core/embed.js";
 import { coverage as fitCoverage } from "../market/reactions.js";
 
-/** The app owner's repo that declares the app's types: one TYPE_TAG record per type, one
- *  RELATION_TAG record per allowed reference between two of them. */
-export const SCHEMA_REPO = "fangorn.schema";
-export const TYPE_TAG = "fangorn.type.v1";
-export const RELATION_TAG = "fangorn.relation.v1";
 export const EMBEDDER = { runtime: "transformers.js", model: EMBED_MODEL, dtype: EMBED_DTYPE };
 const SINGULAR = ["identity", "title", "subtitle", "temporal", "spatial", "media", "thread"];
 const MULTI = ["tags", "measures", "relations", "text"];
-const ZERO = "0x0000000000000000000000000000000000000000";
 // Refit coverage once a domain has grown this many times over what it was fit on.
 const COVERAGE_REFIT = 2;
 
@@ -75,17 +69,13 @@ export function composeText(fields, rm) {
     return s.slice(0, 1000 - "search_document: ".length);
 }
 
-/** `fangorn.schema` records → { types: {tag: {description, role_map, presentation}}, relations }. */
-export function parseSchema(contents) {
-    const types = {}, relations = [];
-    for (const r of contents?.records ?? []) {
-        const p = r.payload ?? {};
-        if (r.type === TYPE_TAG && typeof p.tag === "string")
-            types[p.tag] = { description: String(p.description ?? ""), role_map: p.role_map ?? {}, presentation: p.presentation ?? {} };
-        else if (r.type === RELATION_TAG && p.rel && p.from && p.to)
-            relations.push({ rel: String(p.rel), from: String(p.from), to: String(p.to) });
-    }
-    return { types, relations };
+/** app.json's `types` + `relations` → { types: {tag: {description, role_map, presentation}}, relations }. */
+export function schemaOf({ types = {}, relations = [] } = {}) {
+    return {
+        types: Object.fromEntries(Object.entries(types).map(([tag, t]) =>
+            [tag, { description: String(t.description ?? ""), role_map: t.role_map ?? {}, presentation: t.presentation ?? {} }])),
+        relations: relations.filter((r) => r.rel && r.from && r.to).map((r) => ({ rel: String(r.rel), from: String(r.from), to: String(r.to) })),
+    };
 }
 
 /** Declared means declared: every role present, left-out ones empty. */
@@ -281,7 +271,7 @@ const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 
 /**
  * Bring the view up to date with what the app presents. `fangorn` is an SDK client (reads
- * only); the view goes to `store`, or the directory `out`. `repos` narrows it to those repo
+ * only); `schema` is app.json's { types, relations } (a type it leaves out is guessed); the view goes to `store`, or the directory `out`. `repos` narrows it to those repo
  * names (every publisher's); without it, every repo the app presents. `fromBlock` must be
  * at or before the first update to a repo the app presents, or a repo the scan misses is left out;
  * left out, the SDK's deployment start. `embedBatch(texts)` embeds many at once where the
@@ -290,25 +280,20 @@ const sha256 = (s) => createHash("sha256").update(s).digest("hex");
  * ([{owner, repo, root}], exclusions already applied), as a Worker does across runs.
  * Returns per-domain counts of what changed.
  */
-export async function publishView({ fangorn, app, repos, out, store = fsStore(out), fromBlock, presented, rebake = false,
+export async function publishView({ fangorn, app, schema, repos, out, store = fsStore(out), fromBlock, presented, rebake = false,
                                     embed = embedDocumentDirect, embedBatch = (ts) => Promise.all(ts.map(embed)),
                                     embedder = EMBEDDER, log = console.log, shardRows = 20000, concurrency = 4, open = (p) => p }) {
     fangorn.setAppId(app);
     const appId = fangorn.getAppId();
-    const owner = (await fangorn.getAppRegistry().getAppOwner()).toLowerCase();
-    let schema = { types: {}, relations: [] };
-    if (owner === ZERO) log(`app ${app} is unclaimed, so it has no schema; every type will be guessed`);
-    else {
-        try { schema = parseSchema((await retry(() => fangorn.readRepo(owner, SCHEMA_REPO))).contents); }
-        catch (e) { log(`schema: none read (${e.message}); every type will be guessed`); }
-    }
+    schema = schemaOf(schema);
     const declared = Object.keys(schema.types);
     log(`schema: ${declared.length ? declared.join(", ") : "no declared types"}`);
     const schemaHash = sha256(JSON.stringify(schema));
 
     // Every repo the app presents, at its accepted head: one log scan, exclusions applied.
     const listed = (presented ?? await retry(() => fangorn.appRepos(fromBlock == null ? {} : { fromBlock: BigInt(fromBlock) })))
-        .filter((t) => t.repo !== SCHEMA_REPO && (!repos?.length || repos.includes(t.repo)));
+        // ponytail: "fangorn.schema" is where apps shipped before 2026-10-22 committed their schema; never data.
+        .filter((t) => t.repo !== "fangorn.schema" && (!repos?.length || repos.includes(t.repo)));
     log(`${listed.length} repo(s) presented${repos?.length ? ` of ${repos.join(", ")}` : ""}`);
 
     const report = {};
@@ -535,10 +520,9 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
 
     const APP = `0x${"ab".repeat(32)}`, OWNER = `0x${"11".repeat(20)}`, PUB = `0x${"22".repeat(20)}`;
     const TAG = "shop.item.v1";
+    const schema = { types: { [TAG]: { description: "Things for a room.", role_map: { identity: "sku", title: "name", text: "about" },
+        presentation: { externalUrl: { [TAG]: "https://shop.example/{sku}" } } } } };
     const chain = {
-        [`${OWNER}/${SCHEMA_REPO}`]: { records: [rec("t1", TYPE_TAG, {
-            tag: TAG, description: "Things for a room.", role_map: { identity: "sku", title: "name", text: "about" },
-            presentation: { externalUrl: { [TAG]: "https://shop.example/{sku}" } } })] },
         [`${PUB}/shop`]: { records: [
             rec("c1", TAG, { sku: "a1", name: "Oak table", about: "a solid oak dining table", price: 3 }),
             rec("c2", TAG, { sku: "b2", name: "Lamp", about: "brass reading lamp", price: 1 }),
@@ -557,11 +541,11 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     appendFileSync(`${out}/vectors.ndjson`, '["cut sho');
     eq(packVec(await cachedEmbed(`${out}/vectors.ndjson`, embed)("Title: Oak")), packVec(v1), "a line cut short by a kill is skipped, not fatal");
     embedded.length = 0; rmSync(`${out}/vectors.ndjson`);
-    const run = () => publishView({ fangorn, app: APP, out, embed, log: () => {} });
+    const run = () => publishView({ fangorn, app: APP, schema, out, embed, log: () => {} });
 
     const d = domainFor(APP, PUB, "shop");
     const split = mkdtempSync(`${tmpdir()}/view-`);
-    await publishView({ fangorn, app: APP, out: split, embed, log: () => {}, shardRows: 2 });
+    await publishView({ fangorn, app: APP, schema, out: split, embed, log: () => {}, shardRows: 2 });
     eq(manifestOf(split, d).shards.map((s) => s.count), [2, 1], "rows past shardRows go to the next shard");
     embedded.length = 0;
     eq((await run())[d], { added: 3, removed: 0 }, "first run embeds everything");
@@ -626,16 +610,16 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     let budget = 40;
     const capped = (ts) => (budget -= ts.length) < 0 ? Promise.reject(new Error("daily allowance used")) : Promise.all(ts.map(embed));
     const bd = domainFor(APP, PUB, "big");
-    eq((await publishView({ fangorn, app: APP, out: big, repos: ["big"], embedBatch: capped, log: () => {} }))[bd],
+    eq((await publishView({ fangorn, app: APP, schema, out: big, repos: ["big"], embedBatch: capped, log: () => {} }))[bd],
        { added: 32, removed: 0, partial: true }, "an encoder that gives out keeps what it embedded");
     eq([manifestOf(big, bd).count, manifestOf(big, bd).head], [32, null], "served, and the head not taken");
     budget = 1e9;
-    eq((await publishView({ fangorn, app: APP, out: big, repos: ["big"], embedBatch: capped, log: () => {} }))[bd],
+    eq((await publishView({ fangorn, app: APP, schema, out: big, repos: ["big"], embedBatch: capped, log: () => {} }))[bd],
        { added: 48, removed: 0 }, "the next run embeds only the rest");
     eq(manifestOf(big, bd).count, 80, "and serves all of it");
     delete chain[BIG];
     rmSync(big, { recursive: true, force: true });
-    eq((await publishView({ fangorn, app: APP, out, embed, rebake: true, log: () => {} }))[d],
+    eq((await publishView({ fangorn, app: APP, schema, out, embed, rebake: true, log: () => {} }))[d],
        { added: 2, removed: 0 }, "--rebake starts the domain over");
     eq(readdirSync(`${out}/cdn/domains/${d}/shards`).length, 1, "and leaves no orphaned shards");
     rmSync(out, { recursive: true, force: true });
@@ -644,16 +628,16 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     // undeclared one is left alone; a target whose identity moves relinks the row without embedding it.
     {
         const T = "civic.item.v1", M = "civic.matter.v1";
-        const rel = { [`${OWNER}/${SCHEMA_REPO}`]: { records: [
-            rec("ti", TYPE_TAG, { tag: T, role_map: { identity: "item_id", title: "heading", thread: "part_of" } }),
-            rec("tm", TYPE_TAG, { tag: M, role_map: { identity: "matter_id", title: "title" } }),
-            rec("tr", RELATION_TAG, { rel: "part_of", from: T, to: M })] },
+        const relSchema = { types: { [T]: { role_map: { identity: "item_id", title: "heading", thread: "part_of" } },
+                                     [M]: { role_map: { identity: "matter_id", title: "title" } } },
+                            relations: [{ rel: "part_of", from: T, to: M }] };
+        const rel = {
             [`${PUB}/civic`]: { records: [
                 rec("i1", T, { item_id: "a#1", heading: "Rezone, committee", part_of: { local: "m" } }),
                 rec("i2", T, { item_id: "b#4", heading: "Rezone, council", cites: { local: "m" } }),
                 rec("m1", M, { matter_id: "plover:7", title: "Rezone" }, "m")] } };
         const o = mkdtempSync(`${tmpdir()}/view-`), dr = domainFor(APP, PUB, "civic");
-        const go = () => publishView({ fangorn: localFangorn(rel, { appId: APP, owner: OWNER }), app: APP, out: o, embed, log: () => {} });
+        const go = () => publishView({ fangorn: localFangorn(rel, { appId: APP, owner: OWNER }), app: APP, schema: relSchema, out: o, embed, log: () => {} });
         const rows = async () => Object.fromEntries([...(await loadDomain(fsStore(o), `cdn/domains/${dr}`)).rows.values()]
             .map((r) => [r.fields.heading ?? r.fields.title, r.fields.part_of ?? r.fields.cites ?? null]));
         await go();
@@ -682,7 +666,7 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
             },
         };
         const r2 = r2Store(bucket);
-        const via = await publishView({ fangorn, app: APP, store: r2, embed, log: () => {} });
+        const via = await publishView({ fangorn, app: APP, schema, store: r2, embed, log: () => {} });
         eq(Object.keys(via), [d], "a view builds into a bucket");
         eq(await r2.list("cdn/domains"), [d], "list names a folder's children");
         eq((await liveFields(r2)).length, 2, "and reads back");

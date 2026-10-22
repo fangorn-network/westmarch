@@ -3,7 +3,7 @@
 //
 //   anvil, with the contracts built from source (FANGORN_CONTRACTS_DIR, default
 //   ../contracts/solidity) behind their proxies; an IPFS gateway on localhost that the
-//   publishers write to; publishers that claim an app, declare its schema and publish
+//   publishers write to; publishers that claim an app and publish
 //   into it, and one that publishes under no app; then the app's Worker (site/worker.js)
 //   under `wrangler dev`, with its real AI binding (so: logged in to wrangler, and it
 //   spends a few neurons) and a local R2. It runs the cron, asks /mcp, excludes a
@@ -18,7 +18,6 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appId as appIdOf } from "@fangorn-network/sdk";
-import { RELATION_TAG, SCHEMA_REPO, TYPE_TAG } from "../src/publish/view.js";
 import { wranglerConfig } from "../src/publish/ship.js";
 import { devnet } from "../src/publish/devnet.js";
 
@@ -44,12 +43,6 @@ const { client, deployment, rpcUrl, gatewayUrl, kids, stop } = net;
 // ── publishers ────────────────────────────────────────────────────────────────
 const owner = await client(APP);
 await owner.getAppRegistry().registerApp();
-await owner.initRepo(SCHEMA_REPO);
-await owner.uploadBatch(SCHEMA_REPO, [
-    { id: "type:shop.item.v1", type: TYPE_TAG, payload: { tag: "shop.item.v1", description: "Furniture and lamps.",
-        role_map: { identity: "sku", title: "name", text: ["about"], tags: ["material"] } } },
-    { id: "rel:x", type: RELATION_TAG, payload: { rel: "matches", from: "shop.item.v1", to: "shop.item.v1" } },
-]);
 const guest = await client(APP);
 await owner.getAppRegistry().acceptPublisher(guest.getAddress());
 await guest.initRepo("catalog");
@@ -68,7 +61,9 @@ const dir = mkdtempSync(join(tmpdir(), "wm-e2e-"));
 mkdirSync(join(dir, "site"));
 writeFileSync(join(dir, "site/index.html"), "<!doctype html><title>e2e</title>");
 const wcfg = wranglerConfig({ name: "wm-e2e", site: join(dir, "site"),
-    config: { app: APP, name: "E2E Shop", description: "Furniture and lamps.", fromBlock: "0", repos: [], deployment } });
+    config: { app: APP, name: "E2E Shop", description: "Furniture and lamps.", fromBlock: "0", repos: [], deployment,
+    schema: { types: { "shop.item.v1": { description: "Furniture and lamps.", role_map: { identity: "sku", title: "name", text: ["about"], tags: ["material"] } } },
+              relations: [{ rel: "matches", from: "shop.item.v1", to: "shop.item.v1" }] } } });
 wcfg.vars.RPC_URL = rpcUrl;
 wcfg.vars.IPFS_GATEWAY = gatewayUrl;
 writeFileSync(join(dir, "wrangler.json"), JSON.stringify(wcfg, null, 1));
@@ -96,7 +91,7 @@ try {
     const cat = await until(async () => { const c = await catalog(); return c?.domains?.length ? c : null; }, "the first index run");
     const guestDomain = `${appIdOf(APP).slice(2, 10)}-${guest.getAddress().slice(2, 10).toLowerCase()}-catalog`;
     check(JSON.stringify(cat.domains.map((d) => [d.name, d.count])) === JSON.stringify([[guestDomain, 3]]),
-        "the cron indexed the guest's accepted repo, and not the loner's (no app) or the schema");
+        "the cron indexed the guest's accepted repo, and not the loner's (no app)");
     const m = await (await fetch(`${base}/view/cdn/domains/${guestDomain}/manifest`)).json();
     check(m.embedder.runtime === "workers-ai" && m.dim === 256 && m.role_map.title === "name", "the manifest names the Worker's encoder, 256 dims, and the declared roles");
 

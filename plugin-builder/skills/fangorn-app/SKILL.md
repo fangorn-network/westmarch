@@ -1,6 +1,6 @@
 ---
 name: fangorn-app
-description: Build, publish and register a Fangorn app with @fangorn-network/westmarch — a self-improving database with no server. The owner's questions come first; then sources (a crawler, a one-time dataset, or live publishers) are graded against those questions locally before anything goes on chain; then a static site any person can search by meaning and any agent can discover, verify and drive. Use this whenever someone wants to put a dataset, catalog, corpus or feed "on Fangorn", make it searchable without running a server, write golden questions or an eval for one, expose it to agents (WebMCP page tools, fangorn-mcp data tools, an agent card, ERC-8004/A2A), declare a fangorn.schema role_map, run westmarch-ship, westmarch-view, westmarch-eval or lint, or asks how their data can be found by fangorn-mcp.
+description: Build, publish and register a Fangorn app with @fangorn-network/westmarch — a self-improving database with no server. The owner's questions come first; then sources (a crawler, a one-time dataset, or live publishers) are graded against those questions locally before anything goes on chain; then a static site any person can search by meaning and any agent can discover, verify and drive. Use this whenever someone wants to put a dataset, catalog, corpus or feed "on Fangorn", make it searchable without running a server, write golden questions or an eval for one, expose it to agents (WebMCP page tools, fangorn-mcp data tools, an agent card, ERC-8004/A2A), declare an app.json role_map, run westmarch-ship, westmarch-view, westmarch-eval or lint, or asks how their data can be found by fangorn-mcp.
 ---
 
 # Building a Fangorn app with westmarch
@@ -371,11 +371,11 @@ Then show the person the plan, and run it on their go-ahead:
 
 ```sh
 npx westmarch-ship app.json --dry-run   # every step, printed, none done
-npx westmarch-ship app.json             # schema, crawl + publish, view, site, card, deploy, mint the agent
+npx westmarch-ship app.json             # crawl + publish, view, site, card, deploy, mint the agent
 ```
 
 The claim and join are already done (skipped *Register*? the same command does them
-first). It commits the schema to `fangorn.schema`, runs each source with `--publish`
+first). It runs each source with `--publish`
 (one push per namespace), builds the view, writes the stock page, card and `_headers`
 (and `_worker.js` with `paid`), deploys, and mints the ERC-8004 agent from the finished
 card. Every step checks the chain or Cloudflare first, so rerunning it is how the app is
@@ -517,7 +517,7 @@ The class decides cost, what must be rerun, and whether the person approves firs
 | class | example | what changes | rerun | approval |
 |---|---|---|---|---|
 | **a. page only** | chips, sort, detail panel, more-like-this | `app/` | build, card, deploy | deploy |
-| **b. schema only** | a new facet, `externalUrl`, `presentation.types` labels, a `measures` field | `schema/graph.json` | schema commit + push, `westmarch-view` (applies the spec with no re-embed), build, card, deploy | push + deploy |
+| **b. schema only** | a new facet, `externalUrl`, `presentation.types` labels, a `measures` field | `app.json` `types` | ship (redeploys the Worker; its next cron applies the spec with no re-embed) | deploy |
 | **c. data** | a new field on records, new records | `pipeline/graph.mjs` | data commit + push, `westmarch-view`, build, card, deploy | push + deploy, stating the re-embed cost |
 | **d. out of scope** | login, payments, writes | — | — | tell them why |
 
@@ -746,28 +746,16 @@ the source's own id under another name, and declare `identity: "id"` in the sche
 
 **5. Declare the schema** (guide §5)
 
-`schema/graph.json` holds one `fangorn.type.v1` vertex per data type, whose payload
-carries `tag`, `description`, `role_map` and `presentation`. The role map decides what
-gets embedded (`text`, plus `title`, `subtitle`, `tags`), what readers see, and what
-agents can filter and count on. Declare every type you publish: an undeclared type gets
-its roles guessed from field names, which works for display and often fails for search.
+`app.json`'s `types` holds one entry per data type tag: `description`, `role_map` and
+`presentation` (and `relations` the references allowed between them). Nothing is committed
+on chain: `westmarch-ship` passes it to the Worker in its CONFIG, and `westmarch-view` takes
+it with `--config app.json`. The role map decides what gets embedded (`text`, plus `title`,
+`subtitle`, `tags`), what readers see, and what agents can filter and count on. Declare
+every type you publish: an undeclared type gets its roles guessed from field names, which
+works for display and often fails for search.
 
-Commit it to the reserved namespace from its own directory, because the CLI tracks one
-namespace per directory in `.fangorn/repo.json` and finds that file by searching upward:
-
-```sh
-cd schema && fangorn repo init fangorn.schema \
-  && fangorn commit graph.json -m "schema v1" --replace && fangorn push && cd ..
-```
-
-`repo init` is itself a chain write: it commits an empty root and pushes it to
-allocate the namespace, so count it in the gas the person approves. The `commit` after
-it reads that root back through the gateway, which is where a gateway/JWT mismatch
-(step 1) first shows. When chaining these through a pipe (to strip spinner output),
-`set -o pipefail`, or a failed `commit` still runs the `push`.
-
-Only the app owner's `fangorn.schema` is read. Records keep the text they were
-embedded with until re-embedded, so get the `text` role right before the first bake.
+Records keep the text they were embedded with until re-embedded, so get the `text` role
+right before the first bake.
 
 **6. Commit and push the data** (guide §6)
 
@@ -953,7 +941,7 @@ back with the wrong case still hits, and `comedy` never counts every `dark comed
 | pin | why |
 |---|---|
 | the app name | claimed once, permanent; its hash is the appId in every card and log |
-| namespace names | `fangorn.schema` is reserved; each data namespace is a timeline readers follow by name |
+| namespace names | each data namespace is a timeline readers follow by name |
 | the card's `url` and `fromBlock` | a rebuild that changes either publishes a card every reader rejects |
 | a record's `id` | the same thing under a new id is a delete and an insert, re-embedded at full cost |
 | for an app selling files through `src/publish/graph.js` and `envelope.js`: `ns`, `file`, `passages`, `pointerFields` | folded into every resourceId and vertex ever minted; the headers of those two files say why |

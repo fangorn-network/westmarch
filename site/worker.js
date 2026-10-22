@@ -27,7 +27,7 @@
 // paying, so nobody pays for a record that does not exist, and decrypts and checks it after.
 //
 // Bindings: VIEW (R2), AI (Workers AI), ASSETS (the site), CONFIG (a JSON var: app, name,
-// description, fromBlock, repos, paid, deployment), and optionally RPC_URL and IPFS_GATEWAY
+// description, fromBlock, schema, repos, paid, deployment), and optionally RPC_URL and IPFS_GATEWAY
 // (vars) and PAID_SECRET (a secret).
 
 import { Fangorn, FangornConfig, SupportedNetworks, repoExcluded } from "@fangorn-network/sdk";
@@ -105,7 +105,7 @@ export async function index(env, { log = console.log } = {}) {
         // Imported here: x402.js's self-check imports this module, and a cycle at load would deadlock it.
         const { openRow } = await import("../src/agent/x402.js");
         const report = await publishView({
-            fangorn: r.fangorn, app: CONFIG.app, repos: CONFIG.repos, store: r2Store(env.VIEW),
+            fangorn: r.fangorn, app: CONFIG.app, schema: CONFIG.schema, repos: CONFIG.repos, store: r2Store(env.VIEW),
             presented: await presented(r, state), embedBatch: encode(env, DOCUMENT), embedder: await embedderOf(env), log,
             ...(CONFIG.private ? { open: (p) => openRow(env.PAID_SECRET, p) } : {}),
         });
@@ -488,7 +488,7 @@ export default worker;
 
 // ── self-check: `node site/worker.js` — a fake bucket, a fake AI binding, a fake registry ──
 if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1]?.endsWith("/worker.js")) {
-    const { localFangorn, SCHEMA_REPO, TYPE_TAG } = await import("../src/publish/view.js");
+    const { localFangorn } = await import("../src/publish/view.js");
     const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} != ${JSON.stringify(b)}`); };
 
     const objs = new Map();
@@ -517,14 +517,14 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
 
     const APP = `0x${"ab".repeat(32)}`, OWNER = `0x${"11".repeat(20)}`, PUB = `0x${"22".repeat(20)}`, TAG = "shop.item.v1";
     const rec = (cid, type, payload) => ({ id: cid, cid, type, payload });
+    CONFIG.schema = { types: { [TAG]: { role_map: { identity: "sku", title: "name", text: "about", media: "doc" } } } };
     const chain = {
-        [`${OWNER}/${SCHEMA_REPO}`]: { records: [rec("t", TYPE_TAG, { tag: TAG, role_map: { identity: "sku", title: "name", text: "about", media: "doc" } })] },
         [`${PUB}/shop`]: { records: [
             rec("c1", TAG, { sku: "a1", name: "Oak table", about: "a solid oak dining table", doc: "https://docs.example/oak.pdf" }),
             rec("c2", TAG, { sku: "b2", name: "Brass lamp", about: "a brass reading lamp" })] },
     };
     const fangorn = localFangorn(chain, { appId: APP, owner: OWNER });
-    await publishView({ fangorn, app: APP, store: r2Store(VIEW), embedBatch: encode(env, DOCUMENT), embedder: WORKER_EMBEDDER, log: () => {} });
+    await publishView({ fangorn, app: APP, schema: CONFIG.schema, store: r2Store(VIEW), embedBatch: encode(env, DOCUMENT), embedder: WORKER_EMBEDDER, log: () => {} });
     eq([calls[0].model, calls[0].text[0].startsWith(DOCUMENT)], [AI_MODEL, true], "documents go to the AI binding with the document prompt");
 
     const call = async (method, params) => (await (await worker.fetch(new Request("https://shop.test/mcp",
@@ -551,7 +551,7 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     const sealedAgain = await sealRow(SECRET, { sku: "v1", name: "Velvet chair", about: "a green velvet armchair" });
     eq(sealedAgain, chain[`${PUB}/vault`].records[0].payload, "an unchanged row seals to the same bytes (the same CID: not embedded again)");
     if (JSON.stringify(sealedAgain).includes("Velvet")) throw new Error("a sealed row must not carry its plaintext");
-    await publishView({ fangorn, app: APP, store: r2Store(VIEW), embedBatch: encode(env, DOCUMENT), embedder: WORKER_EMBEDDER, log: () => {},
+    await publishView({ fangorn, app: APP, schema: CONFIG.schema, store: r2Store(VIEW), embedBatch: encode(env, DOCUMENT), embedder: WORKER_EMBEDDER, log: () => {},
         open: (p) => openRow(SECRET, p) });
     env.PAID_SECRET = SECRET;
     CONFIG = env.CONFIG = { ...env.CONFIG, private: { network: "eip155:84532", asset: `0x${"aa".repeat(20)}`, payTo: `0x${"5e".repeat(20)}`,

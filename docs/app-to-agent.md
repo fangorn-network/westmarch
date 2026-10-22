@@ -19,9 +19,9 @@ which anything can produce: a scraper, a database export, a converted spreadshee
 
 ```
  your data ─► data/graph.json ─► fangorn commit/push ─┐
- schema/graph.json ─► fangorn commit/push ────────────┤  (namespace fangorn.schema)
                                                       ▼
                                                     chain ─► westmarch-view ─► site/view/
+ app.json types ──────────────────────────────────────────────┘
                                                              (embeds only what changed, applies the schema)
  app/ (page) ─► vite build ─► site/ ◄── the page loads site/view
  pipeline/agent-card.mjs ─► site/.well-known/agent-card.json (views: [site/view]) ─► deploy
@@ -69,7 +69,7 @@ update: each step checks the chain (or Cloudflare) first and acts only on a diff
 ```
 
 ```sh
-npx westmarch-ship app.json            # claim, join, schema, crawl + publish, view, site, card, deploy, agent
+npx westmarch-ship app.json            # claim, join, crawl + publish, view, site, card, deploy, agent
 npx westmarch-ship app.json --dry-run  # every step, printed, none done
 npx westmarch-ship app.json --no-crawl # rebuild view, site and card from what is on chain
 npx westmarch-ship app.json --replace  # each source's crawl becomes its namespace's whole state
@@ -81,21 +81,20 @@ Workers AI), the view, `/mcp`, and the page. What `ship` does, in order:
 
 1. **claim** the app on the first run, and record the claim block (the card's `fromBlock`);
    the claimer is the app's first member;
-2. **commit the schema** (`types`, `relations`) to `fangorn.schema`, if the chain's differs;
-3. **run each source**: a command that publishes into `--namespace` when given `--publish`.
+2. **run each source**: a command that publishes into `--namespace` when given `--publish`.
    Every quickbeam scraper Source does. A source with `"each": "rows.json"` is a template,
    one source per row (`{field}`, `{field|slug}`, `{args...}`), so adding a town, a feed or
    an account is adding a row;
-4. **the site** in `.ship/site`: the stock page (search, plus a feed of what is coming up and
+3. **the site** in `.ship/site`: the stock page (search, plus a feed of what is coming up and
    what just happened, by the `temporal` role and the first `facets` field; for rows that are
    not meetings, an explore page: `site.examples` as searches to try, the latest records by
    `temporal`, and each declared facet's values to browse), the agent card,
    `/openapi.json` and `/.well-known/x402` when anything is for sale, and `_headers`;
-5. **deploy the Worker** (`wrangler deploy`): its R2 bucket (created if missing), Workers AI,
-   the cron (`site.cron`, default every 5 minutes) and its CONFIG. With `paid`, it sells each
+4. **deploy the Worker** (`wrangler deploy`): its R2 bucket (created if missing), Workers AI,
+   the cron (`site.cron`, default every 5 minutes) and its CONFIG, which carries the schema. With `paid`, it sells each
    record over x402; only records whose sha256 a live row carries are for sale. If the app
    has no view yet, ship builds the first one here (`--index`) rather than wait for the cron;
-6. **register** the ERC-8004 agent and bind the card, if the chain points elsewhere. An
+5. **register** the ERC-8004 agent and bind the card, if the chain points elsewhere. An
    agent is minted once; later runs only rebind.
 
 State lives in `.ship/` next to `app.json`. In CI, cache `.ship/cache` and `.ship/stage`
@@ -304,39 +303,29 @@ What makes records work well:
 
 ## 5. Declare the schema
 
-The schema says what your data is. You commit it to a reserved namespace,
-`fangorn.schema`, in your app:
-- **Types:** each is a vertex tagged `fangorn.type.v1`.
-- **Relations:** the relations allowed between types are edges between those vertices.
+The schema says what your data is. It lives in `app.json` and nowhere else; nothing is
+committed on chain:
+- **`types`:** one entry per type tag: `description`, `role_map`, `presentation`.
+- **`relations`:** the references allowed between types, `{ "rel", "from", "to" }`.
 
-`westmarch-view` (and hosted quickbeam) read it for every record they embed, so it decides:
+`westmarch-ship` hands it to the Worker in its CONFIG, and `westmarch-view` reads it with
+`--config app.json`. It is applied to every record they embed, so it decides:
 - **what gets embedded:** the `text` role, plus title, subtitle and tags;
 - **what readers see:** titles, links, labels;
 - **what agents can do:** filters, counts, and choosing among views by their description.
 
-`schema/graph.json`:
+In `app.json`:
 
 ```json
-{
- "vertices": [
-  { "id": "tree", "tag": "fangorn.type.v1", "payload": {
-      "tag": "my-app.tree.v1",
-      "description": "Tree species: what they are, where they grow, and what they are good for.",
-      "role_map": { "identity": "id", "title": "name", "subtitle": "species",
-                    "tags": ["family", "region"], "text": ["description"] },
-      "presentation": { "externalUrl": { "my-app.tree.v1": "https://en.wikipedia.org/wiki/{species}" } } } }
- ],
- "edges": []
-}
+"types": {
+  "my-app.tree.v1": {
+    "description": "Tree species: what they are, where they grow, and what they are good for.",
+    "role_map": { "identity": "id", "title": "name", "subtitle": "species",
+                  "tags": ["family", "region"], "text": ["description"] },
+    "presentation": { "externalUrl": { "my-app.tree.v1": "https://en.wikipedia.org/wiki/{species}" } } }
+},
+"relations": []
 ```
-
-```sh
-cd schema && fangorn repo init fangorn.schema \
-  && fangorn commit graph.json -m "schema v1" --replace && fangorn push && cd ..
-```
-
-`fangorn repo init` tracks one namespace per directory (in `.fangorn/`), which is why the
-schema is committed from its own `schema/` folder.
 
 **`role_map`** says which field is what:
 
@@ -354,13 +343,10 @@ schema is committed from its own `schema/` folder.
   map inferred from its fields. That works for display and often fails for search: a
   field called `desc` or `nct` isn't recognized, and a `price` can end up as the date.
   Declare every type you publish.
-- **Only the app owner's schema counts.** Any publisher can write a namespace called
-  `fangorn.schema`; only the owner's is read.
-- **You can change it at any time** with another commit. A view takes the new role map and
-  description on its next `westmarch-view` run. **Records already embedded keep the text they were embedded
+- **You can change it at any time**: edit `app.json` and ship again. The view takes the new
+  role map and description on the Worker's next cron run (or the next `westmarch-view`). **Records already embedded keep the text they were embedded
   with** until they're re-embedded, so change the `text` role early.
-- **Relations** (edges between type vertices, e.g. `{ "rel": "grows_in", "from": "tree",
-  "to": "region" }`) declare which edges the app allows. Nothing enforces them yet; they
+- **Relations** (e.g. `{ "rel": "grows_in", "from": "my-app.tree.v1", "to": "my-app.region.v1" }`) declare which edges the app allows. Nothing enforces them yet; they
   are what publisher graphs will be validated against.
 
 ## 6. Commit and push the data

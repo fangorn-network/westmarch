@@ -14,16 +14,15 @@
 //
 //   1. claim the app (first run only; the claim block becomes the card's fromBlock).
 //      The claimer is the app's first member, so its own updates are accepted.
-//   2. commit the schema, if the one on chain differs from app.json's `types`
-//   3. run each source, which crawls and publishes straight into the app
-//   4. the stock page, the card and _headers → .ship/site
-//   5. deploy the Worker: its R2 bucket, Workers AI, the cron, CONFIG
-//   6. register the ERC-8004 agent and bind the card, if the chain points elsewhere
+//   2. run each source, which crawls and publishes straight into the app
+//   3. the stock page, the card and _headers → .ship/site
+//   4. deploy the Worker: its R2 bucket, Workers AI, the cron, CONFIG (app.json's schema rides in it)
+//   5. register the ERC-8004 agent and bind the card, if the chain points elsewhere
 //
-// The Worker picks up what 2 and 3 published on its next cron run (every few minutes),
+// The Worker picks up what 2 published on its next cron run (every few minutes),
 // so the view follows the chain with nobody running anything.
 //
-// --register is the fast path, run before there is any data: 1, 4, 5 and 6 binding the card
+// --register is the fast path, run before there is any data: 1, 3, 4 and 5 binding the card
 // without minting. The mint copies the card's skills into its IPFS registration file and is
 // never redone, so it waits for the first full ship, when the card lists what the app does.
 //
@@ -38,7 +37,6 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { RELATION_TAG, TYPE_TAG } from "./view.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // USDC per x402 network (CAIP-2): its address and EIP-712 domain, as each contract reports them.
@@ -151,16 +149,6 @@ export function loadConfig(path) {
     return { relations: [], tags: [], types: {}, ...c };
 }
 
-/** The schema commit for `types` + `relations`: one fangorn.type.v1 record per type, one
- *  fangorn.relation.v1 record per allowed reference. A file for `fangorn commit --replace`. */
-export function schemaRecords(types, relations = []) {
-    return { records: [
-        ...Object.entries(types).map(([tag, t]) => ({ id: `type:${tag}`, type: TYPE_TAG, payload: {
-            tag, description: t.description ?? "", role_map: t.role_map ?? {}, presentation: t.presentation ?? {} } })),
-        ...relations.map((r) => ({ id: `rel:${r.rel}:${r.from}:${r.to}`, type: RELATION_TAG, payload: { rel: r.rel, from: r.from, to: r.to } })),
-    ] };
-}
-
 /** The Worker's wrangler config: the stock worker, the site as its assets, its bucket, the AI
  *  binding, the cron and CONFIG. `worker` is site/worker.js unless a test points elsewhere. */
 export function wranglerConfig({ name, site, account, cron = "*/5 * * * *", config, url, ipfsGateway, worker = join(HERE, "../../site/worker.js") }) {
@@ -185,13 +173,6 @@ export function wranglerConfig({ name, site, account, cron = "*/5 * * * *", conf
  *  canonical key order, not the order app.json wrote them in. */
 const stable = (v) => Array.isArray(v) ? v.map(stable)
     : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, stable(v[k])])) : v;
-
-/** Same shape parseSchema returns, so a config and the chain compare directly. */
-const canonical = (types, relations = []) => JSON.stringify(stable({
-    types: Object.fromEntries(Object.entries(types).sort(([a], [b]) => a.localeCompare(b))
-        .map(([tag, t]) => [tag, { description: t.description ?? "", role_map: t.role_map ?? {}, presentation: t.presentation ?? {} }])),
-    relations: [...relations].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
-}));
 
 // ── processes ─────────────────────────────────────────────────────────────────
 
@@ -240,8 +221,9 @@ function assertSameDeployment(cli) {
 
 export async function ship(configPath, { crawl = true, deploy = true, dry = false, replace = false, only = null, register = false } = {}) {
     const cfg = loadConfig(configPath);
-    if (!register && (!Object.keys(cfg.types).length || !cfg.sources.length))
-        throw new Error(`${configPath}: no types or sources yet, so nothing to build; --register sets up the app alone`);
+    // No sources is fine: the app then presents whatever its members commit (repos: [] = all of them).
+    if (!register && !Object.keys(cfg.types).length)
+        throw new Error(`${configPath}: no types yet, so nothing to build; --register sets up the app alone`);
     // No default: one that changed would claim every app that leaned on it again, elsewhere.
     if (!cfg.network) throw new Error(`${configPath}: "network" is required: "baseSepolia" for a new app, or the network the app was claimed on (before 2026-10-20 the default was "arbitrumSepolia")`);
     CLI = cliArgv(cfg);
@@ -289,22 +271,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     state.fromBlock ??= String(cfg.fromBlock ?? FangornConfig.appRegistryFromBlock);
     log(`app ${cfg.app} = ${appId}, owner ${owner}, fromBlock ${state.fromBlock}`);
 
-    // 2. schema
-    if (!register) {
-        let onChain = null;
-        try { onChain = view.parseSchema((await fangorn.readRepo(owner, view.SCHEMA_REPO)).contents); } catch { /* none yet */ }
-        if (!onChain || canonical(onChain.types, onChain.relations) !== canonical(cfg.types, cfg.relations)) {
-            const sdir = join(dir, "schema");
-            mkdirSync(sdir, { recursive: true });
-            writeFileSync(join(sdir, "schema.json"), JSON.stringify(schemaRecords(cfg.types, cfg.relations), null, 1));
-            log(`schema ${onChain ? "changed" : "is new"}: committing ${Object.keys(cfg.types).join(", ")}`);
-            fangornCli(cfg.app, ["repo", "init", view.SCHEMA_REPO], { cwd: sdir, dry });
-            fangornCli(cfg.app, ["commit", "schema.json", "-m", "schema", "--replace"], { cwd: sdir, dry });
-            fangornCli(cfg.app, ["push"], { cwd: sdir, dry });
-        } else log("schema unchanged");
-    }
-
-    // 3. sources: crawl + publish straight into the app. One source failing (a site that
+    // 2. sources: crawl + publish straight into the app. One source failing (a site that
     // blocks us, a feed that is down) keeps its last published data and does not stop the
     // others; the ship still exits non-zero at the end, naming it.
     const failed = [];
@@ -322,7 +289,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
         }
     }
 
-    // 4. the page, the card, the headers
+    // 3. the page, the card, the headers
     const { site, writeCard } = await buildSite(cfg, base);
     // site.url: the app's own domain, routed to the Worker. Otherwise its workers.dev URL,
     // which is only known once it is deployed: the first deploy learns it and the card follows.
@@ -350,13 +317,13 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     const writeSite = (u) => writeCard(u, { fromBlock: state.fromBlock, repos, paid: sale(u).paid, access: access(u).card });
     writeSite(url ?? `https://${cfg.site.project}.workers.dev`);
 
-    // 5. the Worker
+    // 4. the Worker
     const workerConfig = (u) => {
         const path = join(dir, "wrangler.json");
         writeFileSync(path, JSON.stringify(wranglerConfig({
             name: cfg.site.project, site, account: cfg.site.account, cron: cfg.site.cron, url: cfg.site.url, ipfsGateway: view.ipfsGateway(),
             config: { app: cfg.app, name: cfg.name, description: cfg.description, fromBlock: state.fromBlock, network: cfg.network,
-                      repos: register ? [] : repos, paid: sale(u).sale, private: access(u).config },
+                      schema: { types: cfg.types, relations: cfg.relations }, repos: register ? [] : repos, paid: sale(u).sale, private: access(u).config },
         }), null, 1));
         return path;
     };
@@ -380,7 +347,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
         else if (cfg.paid) log("paid: set the key secret once with `npx wrangler secret put PAID_SECRET --config .ship/wrangler.json`");
     } else workerConfig(url ?? `https://${cfg.site.project}.workers.dev`);
 
-    // 6. ERC-8004 + the binding
+    // 5. ERC-8004 + the binding
     const cardUrl = `${url}/.well-known/agent-card.json`;
     const bound = await registry.appAgentUri(appId).catch(() => "");
     const mint = () => {
@@ -403,7 +370,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     } else if (deploy) log("card already bound");
 
     // A new app has no view until the cron runs, which may be hours off: build the first one now.
-    if (deploy && !dry && !register && !await fetch(`${url}/view/cdn/catalog`).then((r) => r.ok, () => false)) {
+    if (deploy && !dry && !register && cfg.sources.length && !await fetch(`${url}/view/cdn/catalog`).then((r) => r.ok, () => false)) {
         log("no view yet: indexing it here rather than waiting for the cron");
         await indexHere(configPath).catch((e) => log(`✗ first index: ${e.message}; the cron will build it`));
     }
@@ -579,21 +546,18 @@ export function readStage(cfg, base, { crawl = false, only = null, log: say = lo
 }
 
 /**
- * The whole app on this machine (devnet.js): a local chain and IPFS, the app claimed and its
- * schema committed there, what the sources staged published into it, and its Worker under
+ * The whole app on this machine (devnet.js): a local chain and IPFS, the app claimed there, what the sources staged published into it, and its Worker under
  * `wrangler dev` with a local R2 and an encoder on localhost (or Workers AI with ai=true).
  * Runs the indexer once, says where everything is, and stays up until interrupted.
  */
 export async function devnetShip(configPath, { crawl = false, only = null, port = 8787, ai = false } = {}) {
     const cfg = loadConfig(configPath);
     const base = dirname(resolve(configPath));
-    const [{ devnet }, { SCHEMA_REPO }] = await Promise.all([import("./devnet.js"), import("./view.js")]);
+    const { devnet } = await import("./devnet.js");
     const staged = readStage(cfg, base, { crawl, only });
     const net = await devnet({ log });
     const owner = await net.client(cfg.app);
     await owner.getAppRegistry().registerApp();
-    await owner.initRepo(SCHEMA_REPO);
-    await owner.uploadBatch(SCHEMA_REPO, schemaRecords(cfg.types, cfg.relations).records);
     // The claimer publishes the sources, as `fangorn` does in a ship.
     for (const [ns, records] of Object.entries(staged)) {
         if (!records.length) continue;
@@ -607,7 +571,7 @@ export async function devnetShip(configPath, { crawl = false, only = null, port 
     const { site, writeCard } = await buildSite(cfg, base);
     writeCard(url, { fromBlock: "0", repos });
     const wcfg = wranglerConfig({ name: cfg.site.project, site, config: { app: cfg.app, name: cfg.name, description: cfg.description,
-        fromBlock: "0", repos, paid: null, deployment: net.deployment } });
+        fromBlock: "0", schema: { types: cfg.types, relations: cfg.relations }, repos, paid: null, deployment: net.deployment } });
     // Its own R2 and state, apart from a deployed app's.
     wcfg.vars.RPC_URL = net.rpcUrl;
     wcfg.vars.IPFS_GATEWAY = net.gatewayUrl;
@@ -701,8 +665,7 @@ export async function buildLocal(configPath, out, { crawl = false, only = null, 
     env.cacheDir = `${homedir()}/.cache/fangorn-mcp/models`;
     // Not the app's real id or owner: nothing here is compared with the chain.
     const appId = `0x${createHash("sha256").update(cfg.app).digest("hex")}`, owner = `0x${"10ca1".padStart(40, "0")}`;
-    const chain = { [`${owner}/${view.SCHEMA_REPO}`]: {
-        records: schemaRecords(cfg.types, cfg.relations).records.map((r) => ({ ...r, cid: r.id })) } };
+    const chain = {};
     // Storage addresses a record by its content, and so does this.
     for (const [ns, records] of Object.entries(readStage(cfg, base, { crawl, only, log: say })))
         chain[`${owner}/${ns}`] = { records: records.map((r) => ({ ...r, cid: createHash("sha256").update(JSON.stringify(stable(r.payload))).digest("hex") })) };
@@ -711,7 +674,7 @@ export async function buildLocal(configPath, out, { crawl = false, only = null, 
     const embed = view.cachedEmbed(join(base, ".ship/vectors.ndjson"));
     const repos = [...new Set(cfg.sources.map((s) => s.namespace))].filter((n) => !only || only.includes(n));
     const report = await view.publishView({ fangorn: view.localFangorn(chain, { appId, owner }), app: cfg.app,
-        repos, out, embed, log: say });
+        schema: { types: cfg.types, relations: cfg.relations }, repos, out, embed, log: say });
     const rows = Object.values(report).reduce((n, r) => n + r.added, 0);
     say(`local view: ${out}  ·  ${rows} records, ${embed.misses} embedded, ${rows - embed.misses} from the vector cache`);
     return report;
@@ -720,19 +683,6 @@ export async function buildLocal(configPath, out, { crawl = false, only = null, 
 // ── cli ───────────────────────────────────────────────────────────────────────
 if (process.argv[1]?.endsWith("ship.js") || process.argv[1]?.endsWith("westmarch-ship")) {
     if (process.argv[2] === "--selfcheck") {
-        // The schema as committed, read back the way the chain returns it, must compare
-        // equal to the config, or every run re-commits an unchanged schema.
-        const { parseSchema } = await import("./view.js");
-        const types = { "t.v1": { description: "d", role_map: { title: "name", text: ["body"] }, presentation: { externalUrl: { "t.v1": "{url}" } } },
-                        "u.v1": { description: "e", role_map: { title: "label" } } };
-        const relations = [{ rel: "cites", from: "t.v1", to: "u.v1" }];
-        const g = schemaRecords(types, relations);
-        // Keys reversed at every depth, as a canonical (sorted) encoding hands them back.
-        const reverse = (v) => Array.isArray(v) ? v.map(reverse)
-            : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).reverse().map((k) => [k, reverse(v[k])])) : v;
-        const readBack = parseSchema({ records: g.records.map((r) => ({ ...r, cid: `cid-${r.id}`, payload: reverse(r.payload) })) });
-        if (canonical(readBack.types, readBack.relations) !== canonical(types, relations)) throw new Error("schema does not round-trip");
-        if (canonical(readBack.types, readBack.relations) === canonical({ ...types, "v.v1": {} }, relations)) throw new Error("a new type must count as a change");
         const row = { city: "Wisconsin Rapids", state: "WI", site: "https://x", args: ["--archive-page", "/569/A"] };
         const cmd = fill(["py", "--site", "{site}", "--city", "{city}", "{args...}", "--ns", "us-{state|lower}-{city|slug}"], row);
         if (JSON.stringify(cmd) !== JSON.stringify(["py", "--site", "https://x", "--city", "Wisconsin Rapids", "--archive-page", "/569/A", "--ns", "us-wi-wisconsin-rapids"]))
@@ -750,7 +700,7 @@ if (process.argv[1]?.endsWith("ship.js") || process.argv[1]?.endsWith("westmarch
             throw new Error(`private discovery: ${JSON.stringify(dp.x402)}`);
         if (units("0.01") !== "10000" || units("5") !== "5000000" || units("1.5", 2) !== "150") throw new Error("units");
         if (USDC["eip155:84532"].name !== "USDC" || USDC["eip155:8453"].name !== "USD Coin") throw new Error("USDC's EIP-712 name differs on Base Sepolia and Base");
-        console.log("ship.js self-check ok — a committed schema reads back equal to its config, a new type counts as a change, a source template fills per row, the Worker config binds its bucket, AI and cron, and the paid route is priced per id in /openapi.json and named in /.well-known/x402");
+        console.log("ship.js self-check ok — a source template fills per row, the Worker config binds its bucket, AI and cron, and the paid route is priced per id in /openapi.json and named in /.well-known/x402");
         process.exit(0);
     }
     const [path, ...flags] = process.argv.slice(2);
