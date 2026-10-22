@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@fangorn-network/westmarch": "^2026.10.21-dev",
+    "@huggingface/transformers": "^4.3.1"
+  }
+}

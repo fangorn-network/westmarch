@@ -194,23 +194,26 @@ local build; Pinata before *Go live*.
   throwaway keys are only for read-only paths. Needed to register.
 - A Pinata JWT, because commits and the ERC-8004 agent pin files to IPFS. Not needed
   until *Go live*.
-- A Cloudflare account (`npx wrangler login`). Pages serves `/.well-known/` and custom headers.
+- A Cloudflare account (`npx wrangler login`, or `CLOUDFLARE_API_TOKEN` and
+  `CLOUDFLARE_ACCOUNT_ID` in CI). The app is a Worker on their account.
 
-Project layout:
+Start every app from the template, never by hand:
 
 ```sh
-mkdir my-app && cd my-app && git init && npm init -y && npm pkg set type=module
-npm i @fangorn-network/westmarch @huggingface/transformers
-mkdir -p sources eval && echo ".ship/" > .gitignore
+npx @fangorn-network/westmarch init <app>   # the repo, npm installed, first commit
 ```
 
 ```
-app.json            the app: types (role maps), sources, site, paid
-sources/*.py        one module per source
+app.json            the app: types (role maps), sources (none: it presents what members commit), site, paid
+sources/*.py        one module per source, if the app crawls anything
 eval/goals.md       the bet
 eval/golden.jsonl   the questions
-.ship/              stage, cache, vectors, state.json — written by westmarch-ship
+ci/ship.sh          ship | eval, on any CI or a laptop; .github/workflows/ship.yml wraps it
+.ship/              stage, cache, vectors (ignored); state.json (committed: claim block, URL, agent id)
 ```
+
+The repo is the recipe, never the data, so it can be public. If they claimed the name on
+fangorn.network, `westmarch-ship` finds the claim block on chain; it never claims twice.
 
 ## Chain writes and deploys are the person's call
 
@@ -235,15 +238,8 @@ yet: an `app.json` with the app, its name, a one-line description and the site.
 
 - `fangorn init` (key, Pinata JWT, gateway); `fangorn wallet` shows the owner. The config
   file beats `ETH_PRIVATE_KEY` in the environment.
-- Create the Pages project by hand, from an empty directory, and put its account in
-  `app.json` `site.account`. `westmarch-ship` would create it from the app directory, and
-  wrangler ≥ 4.138 run there autoconfigures a Worker (see *By hand*, before step 9):
-
-  ```sh
-  cd "$(mktemp -d)" && CLOUDFLARE_ACCOUNT_ID=<id> npx wrangler pages project create <project> --production-branch main --force
-  ```
-
-  A taken name gets a suffix (`my-app-4xk.pages.dev`); `westmarch-ship` reads the real one back.
+- `site.account` in `app.json`, or `CLOUDFLARE_ACCOUNT_ID`: the Cloudflare account the
+  Worker deploys to. `westmarch-ship` creates its R2 bucket and learns its workers.dev URL.
 
 Then show the plan, and run it on their go-ahead:
 

@@ -7,7 +7,7 @@ const checks = [
     "src/market/terms.js", "src/market/reactions.js", "src/market/cohort.js", "src/taste/vault.js",
     "src/publish/graph.js", "src/publish/envelope.js", "src/market/demand.js", "src/market/settle.js",
     "src/publish/manifest.js", "src/agent/agent-card.js", "src/publish/view.js",
-    "src/publish/ship.js --selfcheck", "src/publish/eval.ts --selfcheck", "src/publish/cli.js --selfcheck",
+    "src/publish/ship.js --selfcheck", "src/publish/init.js --selfcheck", "src/publish/eval.ts --selfcheck", "src/publish/cli.js --selfcheck",
     "src/publish/enrich.js", "src/core/embed.js", "src/core/rank.js", "src/discover/apps.js",
     "src/discover/explore.js", "src/agent/mcp.js --selfcheck", "src/core/roles.js", "src/core/shard.js",
     "src/discover/directory.js", "src/taste/taste.js", "src/taste/steam.js", "src/taste/taste-doc.js",

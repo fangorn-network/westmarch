@@ -1,0 +1,27 @@
+{
+ "app": "my-app",
+ "name": "My App",
+ "description": "One sentence: what is in here, and who it is for.",
+ "network": "baseSepolia",
+ "site": {
+  "project": "my-app",
+  "examples": []
+ },
+ "tags": [],
+ "types": {
+  "my-app.item.v1": {
+   "description": "One item: what a record is, in the words a searcher would use.",
+   "role_map": {
+    "identity": "id",
+    "title": "title",
+    "tags": ["tags"],
+    "text": ["text"]
+   },
+   "presentation": {
+    "types": { "my-app.item.v1": { "singular": "item", "plural": "items" } },
+    "facets": ["tags"]
+   }
+  }
+ },
+ "sources": []
+}

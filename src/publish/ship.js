@@ -245,7 +245,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
 
     // The SDK's network name: view.js reads with it, and the CLI and the sources spawned below sign on it.
     process.env.FANGORN_NETWORK = process.env.CHAIN_NAME = cfg.network;
-    const [{ createPublicClient, http }, view] = await Promise.all([import("viem"), import("./view.js")]);
+    const [{ createPublicClient, http, parseAbiItem }, view] = await Promise.all([import("viem"), import("./view.js")]);
     const FangornConfig = await view.network(cfg.network);
     const fangorn = await view.readOnlyFangorn();
     fangorn.setAppId(cfg.app);
@@ -258,8 +258,9 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     const me = (fangornCli(cfg.app, ["wallet"]).match(/Address:\s+(0x[0-9a-fA-F]{40})/) ?? [])[1]?.toLowerCase();
     if (!me) throw new Error("`fangorn wallet` shows no address; run `fangorn init`");
     let owner = (await registry.getAppOwner()).toLowerCase();
+    const chain = createPublicClient({ transport: http(FangornConfig.rpcUrl) });
     if (/^0x0+$/.test(owner)) {
-        const block = await createPublicClient({ transport: http(FangornConfig.rpcUrl) }).getBlockNumber();
+        const block = await chain.getBlockNumber();
         state.fromBlock = String(block);
         log(`${cfg.app} is unclaimed; claiming it for ${me} (fromBlock ${block})`);
         fangornCli(cfg.app, ["app", "claim"], { dry });
@@ -267,6 +268,16 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
         save();
     } else if (owner !== me) {
         throw new Error(`${cfg.app} belongs to ${owner}, not this wallet (${me}); pick another name`);
+    }
+    // Claimed elsewhere (fangorn.network, the CLI): the view starts at the claim, found once.
+    if (state.fromBlock == null && cfg.fromBlock == null) {
+        const from = BigInt(FangornConfig.appRegistryFromBlock), to = await chain.getBlockNumber(), step = BigInt(FangornConfig.logWindow ?? 10000);
+        const event = parseAbiItem("event AppRegistered(bytes32 indexed app_id, address indexed owner)");
+        for (let a = from; a <= to && state.fromBlock == null; a += step) {
+            const [claimed] = await chain.getLogs({ address: FangornConfig.appRegistryContractAddress, event, args: { app_id: appId },
+                                                    fromBlock: a, toBlock: a + step - 1n < to ? a + step - 1n : to });
+            if (claimed) state.fromBlock = String(claimed.blockNumber);
+        }
     }
     state.fromBlock ??= String(cfg.fromBlock ?? FangornConfig.appRegistryFromBlock);
     log(`app ${cfg.app} = ${appId}, owner ${owner}, fromBlock ${state.fromBlock}`);

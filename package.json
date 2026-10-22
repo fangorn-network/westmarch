@@ -68,6 +68,7 @@
     "viem": "^2.56.3"
   },
   "bin": {
+    "westmarch": "./src/publish/init.js",
     "westmarch-publish": "./src/publish/cli.js",
     "westmarch-view": "./src/publish/view-cli.js",
     "westmarch-ship": "./src/publish/ship.js",
@@ -78,6 +79,7 @@
   },
   "files": [
     "src",
+    "template",
     "docs/app-to-agent.md",
     "site/agent.js",
     "site/dist",

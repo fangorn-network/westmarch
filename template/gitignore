@@ -1,0 +1,3 @@
+.ship/*
+!.ship/state.json
+node_modules/
