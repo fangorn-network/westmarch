@@ -39,8 +39,9 @@ fangorn --app my-app push
 ```
 
 The view picks it up within 5 minutes at `<url>/view`. A source that crawls something
-on a schedule goes in `app.json` `sources`, and ships with `npx westmarch-ship app.json`;
-see westmarch's docs.
+on a schedule goes in `app.json` `sources`, and publishes with
+`npx westmarch-ship app.json --no-deploy` (the push to `main` deploys; without the flag it
+would deploy a second copy over this Worker). See westmarch's docs.
 
 ## Keep it good
 

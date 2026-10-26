@@ -61,6 +61,38 @@ conversation; do not collect it with a form.
 Roughly this order. Loop back freely: a failing question in step 5 often sends you back to
 step 3 or 4.
 
+**0. What already exists.** Many people claim the app at fangorn.network and press its
+Deploy to Cloudflare button before they ever open this skill. They arrive with the name
+claimed, a GitHub repo made from westmarch's template, a Worker running, and maybe the
+card bound. Check before asking anything, and never redo what is done:
+
+- Is the working directory a repo with `app.json` and `wrangler.json`? If `"app"` still
+  says `my-app`, ask which name they claimed and set it.
+- `fangorn wallet` shows the signing wallet. `npx westmarch-ship app.json --register --dry-run`
+  reads the chain and says whether the name is claimed, by whom, and what card is bound.
+  It writes nothing to the chain or Cloudflare, only `.ship/` locally.
+
+Then:
+
+- **Claimed by this wallet, with the Deploy button's Worker running.** The name and the
+  site are settled: skip *What is permanent* for them, `westmarch init` and *Register the
+  app*, and go from step 1 to step 3. This app deploys by `git push`: Workers Builds runs
+  `westmarch build` on every push to `main`. **Never run `westmarch-ship` here without
+  `--no-deploy`**, or it deploys a second copy over the Worker. Sources publish with
+  `npx westmarch-ship app.json --no-deploy`, members push with the `fangorn` CLI, and
+  `--local` grades as usual. The Deploy button builds free apps only. Selling records
+  (`paid`) or the data (`private`) means moving its deploys to `westmarch-ship`, which
+  sets the secret: say so before they choose a price.
+- **Claimed by this wallet, but no repo or Worker yet.** `westmarch init <app>`, then
+  *Register the app*. `westmarch-ship` finds the claim and never claims twice.
+- **Claimed by another wallet.** Stop. Either `fangorn init` was given a different key
+  from the wallet they used at fangorn.network (the hub exports it), or the name belongs
+  to someone else and they need another.
+- **Unclaimed.** Start at step 1.
+
+An app that is already claimed still goes through step 1.5. The claim is spent, but the
+answer still decides what to build into it.
+
 **1. What it is, and who it is for.** Open with one broad question: what they want to make
 and who would use it. Reflect back a short sketch (the user, what they ask, what they get)
 and refine it until they say it is right. Over the next few turns, as follow-ups to what
@@ -71,7 +103,30 @@ they said rather than as a list, draw out:
 - what must be covered, and by when: towns, products, years, accounts;
 - what must never show: people's names, addresses, a client's name.
 
-**2. Register it.** As soon as the sketch is agreed, settle the app name and where the
+**1.5. Is it worth building?** Registering is permanent, so ask two things first, using
+the questions from step 1. Neither is a hard stop: say what you found and let the person
+decide.
+
+- **Does an agent need it?** Put three to five of their questions to a model with no
+  tools and none of their data (a subagent with no tools, not you, since you have heard
+  the conversation), then again with web search only. Judge each answer against what the
+  person says is right. If both already answer well, say so plainly: an agent can already
+  get this, so what would the app add? Good answers exist: data that is not online (an
+  archive, a sensor, a computation over history), or newer than any model's training
+  cutoff, or something a person needs to be able to prove. Write the result to
+  `eval/goals.md` as the **baseline** (date, model, closed-book and web scores), so the
+  finished app can be graded on the same questions and its lift stated.
+- **Does it harm anyone?** Fangorn data should measure institutions, infrastructure and
+  the environment, not individuals. Check that:
+  - every contributor opts in and can leave;
+  - nothing published can be traced back to one person (publish aggregates above a
+    threshold, coarse places, no addresses);
+  - the people the data is about are not worse off for it being published.
+  
+  If it fails one, reshape it (aggregate, coarsen, drop a field) or say it should not be
+  built. Anything this rules out goes into "what must never show" as a hard check.
+
+**2. Register it.** As soon as the sketch is agreed and worth building, settle the app name and where the
 site lives (see *What is permanent*): propose a default for each, say it cannot be
 changed, and wait for a yes. Then *Register the app*, and tell them what now exists: the
 page at its URL and the card bound on chain. Everything after this fills it in.
@@ -98,9 +153,11 @@ yes.
 ## Writing the questions
 
 `eval/goals.md` has one section per goal: the customer, their questions, the coverage they
-need, a date, and what would kill it ("no paying user of this kind by then"). It is the
-person's bet about what is worth having: draft it from their words and have them confirm
-it, but never fill a gap with your own guess about what they want.
+need, a date, what would kill it ("no paying user of this kind by then"), and the baseline
+from step 1.5 (how a model did on those questions with no tools and with web search, so
+the app's lift over both can be stated). It is the person's bet about what is worth
+having: draft it from their words and have them confirm it, but never fill a gap with your
+own guess about what they want.
 
 `eval/golden.jsonl` holds the checks, one per line, each with the `goal` it serves.
 
@@ -128,10 +185,13 @@ A source is one kind of input:
   each run and replacing the last;
 - **live**: people, agents or devices submitting. There is no ingest server: they
   register as publishers in the app and push into its namespace from their own wallets,
-  and the view reads every publisher's commits (one domain per publisher).
-  `westmarch-ship` does not handle this yet — its namespaces come from `sources`, and
-  `--local` sees only what is staged, so contributions are never graded. If the app is
-  mostly live input, say so and build the parts that are crawl or snapshot first.
+  and the view reads every publisher's commits (one domain per publisher). An app with no
+  `sources` already presents every member's repo. An app with sources narrows its view
+  to their namespaces, so name the ones members push to in `"live": ["readings"]` (or
+  `"live": true` for any). `--local` then reads what members have already committed to
+  those namespaces from the chain (reads only, no gas), beside what the sources staged,
+  so contributions are graded too. Give each device its own repo name: one writer per
+  repo.
 
 For crawl and snapshot, the person must give a path or URL to the actual data; ask for it
 plainly and wait. Do not scaffold, invent a shape, or write placeholder rows in its place.

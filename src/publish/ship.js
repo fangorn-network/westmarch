@@ -88,6 +88,9 @@ const log = (s) => console.error(`[ship] ${s}`);
 //   "types": { "<tag>": { "description": "…", "role_map": {…}, "presentation": {…} } },
 //   "relations": [{ "rel": "…", "from": "<tag>", "to": "<tag>" }],
 //   "sources": [{ "namespace": "…", "cwd": "…", "command": ["python", "-m", "…", …] }],
+//   "live": ["readings"],     // optional: namespaces members push to from their own wallets (devices,
+//                             //   contributors), presented beside the sources'; true = every repo they push.
+//                             //   Without sources the app already presents every member's repo.
 //   "network": "baseSepolia", // required: the SDK's network name. baseSepolia for a new app; an app
 //                             //   already claimed on arbitrumSepolia keeps it (a different name re-claims it there)
 //   "fangorn": "fangorn",     // the CLI that signs; e.g. "node ~/fangorn/fangorn/lib/cli/cli.js",
@@ -146,7 +149,16 @@ export function loadConfig(path) {
     if (!c.site.project) throw new Error(`${path}: site.project names the Cloudflare Worker`);
     for (const s of c.sources) if (!s.namespace || !Array.isArray(s.command))
         throw new Error(`${path}: each source needs a namespace and a command (an argv array)`);
+    if (c.live != null && c.live !== true && !(Array.isArray(c.live) && c.live.every((n) => typeof n === "string")))
+        throw new Error(`${path}: live is true (every repo members push) or a list of the namespaces they push to`);
     return { relations: [], tags: [], types: {}, ...c };
+}
+
+/** The repo names the view presents: the sources' namespaces plus `live`'s, the ones members push
+ *  to themselves (devices, contributors). [] means every repo the app presents: no sources, or live: true. */
+export function presentedRepos(cfg) {
+    if (cfg.live === true) return [];
+    return [...new Set([...cfg.sources.map((s) => s.namespace), ...(cfg.live ?? [])])];
 }
 
 /** The Worker's wrangler config: the stock worker, the site as its assets, its bucket, the AI
@@ -359,7 +371,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     // site.url: the app's own domain, routed to the Worker. Otherwise its workers.dev URL,
     // which is only known once it is deployed: the first deploy learns it and the card follows.
     let url = cfg.site.url?.replace(/\/$/, "") ?? state.url ?? null;
-    const repos = [...new Set(cfg.sources.map((s) => s.namespace))];
+    const repos = presentedRepos(cfg);
     // Paid records are in the committed rows already, encrypted (`paid_ct`: AES-256-GCM under
     // HMAC-SHA256(PAID_SECRET, id), see x402.js). The Worker sells keys, never records, so the
     // data a buyer pays for is on IPFS, committed, and in their hands before they pay.
@@ -435,7 +447,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     } else if (deploy) log("card already bound");
 
     // A new app has no view until the cron runs, which may be hours off: build the first one now.
-    if (deploy && !dry && !register && cfg.sources.length && !await fetch(`${url}/view/cdn/catalog`).then((r) => r.ok, () => false)) {
+    if (deploy && !dry && !register && (cfg.sources.length || cfg.live) && !await fetch(`${url}/view/cdn/catalog`).then((r) => r.ok, () => false)) {
         log("no view yet: indexing it here rather than waiting for the cron");
         await indexHere(configPath).catch((e) => log(`✗ first index: ${e.message}; the cron will build it`));
     }
@@ -732,12 +744,30 @@ export async function buildLocal(configPath, out, { crawl = false, only = null, 
     const appId = `0x${createHash("sha256").update(cfg.app).digest("hex")}`, owner = `0x${"10ca1".padStart(40, "0")}`;
     const chain = {};
     // Storage addresses a record by its content, and so does this.
-    for (const [ns, records] of Object.entries(readStage(cfg, base, { crawl, only, log: say })))
+    if (cfg.sources.length) for (const [ns, records] of Object.entries(readStage(cfg, base, { crawl, only, log: say })))
         chain[`${owner}/${ns}`] = { records: records.map((r) => ({ ...r, cid: createHash("sha256").update(JSON.stringify(stable(r.payload))).digest("hex") })) };
+    // What members already pushed to the live namespaces, read from the chain (reads only, no gas),
+    // so a recipe is graded on contributed data too, not just on what the sources staged.
+    if (cfg.live) {
+        if (cfg.network) process.env.FANGORN_NETWORK = process.env.CHAIN_NAME = cfg.network;
+        const fangorn = await view.readOnlyFangorn();
+        fangorn.setAppId(cfg.app);
+        const statePath = join(base, ".ship/state.json");
+        const fromBlock = (existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")).fromBlock : null) ?? cfg.fromBlock;
+        const staged = new Set(cfg.sources.map((s) => s.namespace));
+        for (const t of await fangorn.appRepos(fromBlock == null ? {} : { fromBlock: BigInt(fromBlock) })) {
+            if (t.repo === "fangorn.schema" || staged.has(t.repo) || (only && !only.includes(t.repo))
+                || (cfg.live !== true && !cfg.live.includes(t.repo))) continue;
+            const { contents } = await fangorn.readRepo(t.owner, t.repo);
+            chain[`${t.owner.toLowerCase()}/${t.repo}`] = { records: contents.records };
+            say(`live ${t.owner}/${t.repo}: ${contents.records.length} records, from the chain`);
+        }
+    }
+    if (!Object.keys(chain).length) throw new Error("nothing to build: no sources staged anything and no member has pushed to a live namespace");
     rmSync(out, { recursive: true, force: true });
     mkdirSync(join(base, ".ship"), { recursive: true });
     const embed = view.cachedEmbed(join(base, ".ship/vectors.ndjson"));
-    const repos = [...new Set(cfg.sources.map((s) => s.namespace))].filter((n) => !only || only.includes(n));
+    const repos = presentedRepos(cfg).filter((n) => !only || only.includes(n));
     const report = await view.publishView({ fangorn: view.localFangorn(chain, { appId, owner }), app: cfg.app,
         schema: { types: cfg.types, relations: cfg.relations }, repos, out, embed, log: say });
     const rows = Object.values(report).reduce((n, r) => n + r.added, 0);
@@ -763,6 +793,10 @@ if (process.argv[1]?.endsWith("ship.js") || process.argv[1]?.endsWith("westmarch
         const dp = discovery({ name: "Q", description: "q" }, "https://q.example", null, { pass: "5000000", days: 30, call: "10000", decimals: 6 });
         if (dp.openapi.paths["/pass"].post["x-payment-info"].price.amount !== "5" || dp.x402.resources.join() !== "https://q.example/pass" || dp.openapi.paths["/paid"])
             throw new Error(`private discovery: ${JSON.stringify(dp.x402)}`);
+        const src = [{ namespace: "towns", command: ["py"] }];
+        if (presentedRepos({ sources: src }).join() !== "towns" || presentedRepos({ sources: src, live: ["readings", "towns"] }).join() !== "towns,readings"
+            || presentedRepos({ sources: src, live: true }).length || presentedRepos({ sources: [] }).length)
+            throw new Error("presentedRepos: sources plus live namespaces; [] (every repo) for live: true or no sources");
         if (units("0.01") !== "10000" || units("5") !== "5000000" || units("1.5", 2) !== "150") throw new Error("units");
         if (USDC["eip155:84532"].name !== "USDC" || USDC["eip155:8453"].name !== "USD Coin") throw new Error("USDC's EIP-712 name differs on Base Sepolia and Base");
         console.log("ship.js self-check ok — a source template fills per row, the Worker config binds its bucket, AI and cron, and the paid route is priced per id in /openapi.json and named in /.well-known/x402");

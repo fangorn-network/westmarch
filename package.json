@@ -1,6 +1,6 @@
 {
   "name": "@fangorn-network/westmarch",
-  "version": "2026.10.22-dev.1",
+  "version": "2026.10.26-dev",
   "description": "all-in-one builder for fangorn apps",
   "license": "MIT",
   "type": "module",
@@ -56,7 +56,7 @@
     }
   },
   "devDependencies": {
-    "@fangorn-network/sdk": "^2026.10.21-dev",
+    "@fangorn-network/sdk": "^2026.10.26-dev",
     "@huggingface/transformers": "^4.2.0",
     "@noble/curves": "^1.9.1",
     "@privy-io/react-auth": "^3.47.0",
