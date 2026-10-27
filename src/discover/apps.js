@@ -33,6 +33,12 @@ function safeView(url) {
  *  src/agent/agent-card.js's self-check fails if the two drift. */
 export const APP_EXTENSION = "https://fangorn.network/a2a/app/v1";
 
+/** The app's agent skill, `{url, sha256}`, when its card names one well-formed; else null. */
+export const skillOf = (ext) => {
+    const k = ext?.params?.skill;
+    return k && safeView(k.url) && /^[0-9a-f]{64}$/.test(k.sha256 ?? "") ? { url: k.url, sha256: k.sha256 } : null;
+};
+
 /** A verified card → an app entry. `views` is westmarch's param; the SDK does not read it. */
 export function toApp({ card, appId, fromBlock, repos }, cardUrl) {
     const ext = card.capabilities.extensions.find((e) => e.uri === APP_EXTENSION);
@@ -40,7 +46,7 @@ export function toApp({ card, appId, fromBlock, repos }, cardUrl) {
     const p = ext?.params?.paid;
     const paid = p && /^https?:\/\//.test(p.url ?? "") && p.url.includes("{id}") && /^\d+$/.test(String(p.price)) ? p : null;
     return {
-        appId, card: cardUrl, fromBlock, repos, views, paid,
+        appId, card: cardUrl, fromBlock, repos, views, paid, skill: skillOf(ext),
         mcp: safeView(ext?.params?.mcp),
         name: card.name ?? appId,
         desc: card.description ?? "",

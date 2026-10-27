@@ -24,7 +24,7 @@ import net from "node:net";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline";
-import { APP_EXTENSION, listApps, toApp } from "../discover/apps.js";
+import { APP_EXTENSION, listApps, skillOf, toApp } from "../discover/apps.js";
 
 const log = (...a) => console.error("[fangorn-mcp]", ...a);   // stdout is the protocol
 // FANGORN_MCP_TRACE=1: step timings on stderr, for finding where an answer waits.
@@ -214,8 +214,9 @@ export function handlers(deps) {
         if (!mcp) throw new Error(`${card.name ?? cardUrl} has no MCP server (its card has no \`mcp\`)`);
         let s = slug(card.name ?? app);
         while (open.has(s)) s += "-";
-        const access = card.capabilities?.extensions?.find((e) => e.uri === APP_EXTENSION)?.params?.access ?? null;
-        const o = { slug: s, name: card.name, card: cardUrl, appId, ...await deps.remoteTools(mcp, { access }) };
+        const ext = card.capabilities?.extensions?.find((e) => e.uri === APP_EXTENSION);
+        const access = ext?.params?.access ?? null;
+        const o = { slug: s, name: card.name, card: cardUrl, appId, skill: skillOf(ext), ...await deps.remoteTools(mcp, { access }) };
         trace(`open ${app}: ready`);
         open.set(o.slug, o);
         deps.notify?.("notifications/tools/list_changed");
@@ -249,7 +250,10 @@ export function handlers(deps) {
         "open-app": async ({ app }) => {
             const o = await openApp(app);
             return text({ app: o.slug, name: o.name, card: o.card,
-                          call_as: `${o.slug}__<tool>, or call-app-tool`, tools: o.tools });
+                          call_as: `${o.slug}__<tool>, or call-app-tool`, tools: o.tools,
+                          // An app's own skill: standing instructions for the reader's agent, so never loaded
+                          // silently. The fangorn-index skill offers it to the user and pins the hash on a yes.
+                          ...(o.skill ? { skill: { ...o.skill, adopt: "The app ships an agent skill. Offer it to the user (what it would make you do, from its description); adopt it only on their yes, checking sha256, and ask again if the hash changes." } } : {}) });
         },
         "call-app-tool": async ({ app, tool, arguments: args }) => call(app, tool, args),
     };
@@ -298,7 +302,8 @@ if (process.argv[2] === "--selfcheck") {
         findApps: async () => ({ apps: [{ name: "Kings Foil", desc: "trials", card: "https://k.test/card", appId: "0xk" },
                                         { name: "Bare", desc: "", card: "https://b.test/card", appId: "0xb" }], rejected: [{}] }),
         exploreApps: async (q) => ({ ranked_by: q ? "meaning" : null, apps: [{ app: "kings-foil", name: "Kings Foil", relevant: true }, { app: "b", name: "B", relevant: false }] }),
-        resolveCard: async (url) => (url.includes("b.test") ? { card: { name: "Bare" }, mcp: null } : { card: { name: "Kings Foil" }, mcp: "https://k.test/mcp" }),
+        resolveCard: async (url) => (url.includes("b.test") ? { card: { name: "Bare" }, mcp: null } : { card: { name: "Kings Foil", capabilities: { extensions: [{ uri: APP_EXTENSION,
+            params: { skill: { url: "https://k.test/skill/kings-foil/SKILL.md", sha256: "b".repeat(64) } } }] } }, mcp: "https://k.test/mcp" }),
         remoteTools: async () => (opened++, remote),
     };
     deps.notify = serve(handlers(deps), { input, output });
@@ -321,6 +326,7 @@ if (process.argv[2] === "--selfcheck") {
     call(5, "open-app", { app: "Kings Foil" }); await wait();
     call(6, "open-app", { app: "https://k.test/card" }); await wait();
     assert(body(5).tools[0].name === "search" && opened === 1, "open once, by name or by card URL");
+    assert(body(5).skill?.url === "https://k.test/skill/kings-foil/SKILL.md" && /user/.test(body(5).skill.adopt), "open-app offers the app's skill, for the user to adopt");
     assert(replies.some((r) => r.method === "notifications/tools/list_changed"), "opening notifies");
     rpc(7, "tools/list"); call(8, "kings-foil__search", { query: "x" }); call(9, "call-app-tool", { app: "kings-foil", tool: "search" });
     call(10, "call-app-tool", { app: "kings-foil", tool: "boom" }); call(11, "open-app", { app: "nope" }); call(13, "open-app", { app: "Bare" }); rpc(12, "nope"); await wait();

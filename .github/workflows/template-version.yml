@@ -1,0 +1,13 @@
+name: template version
+
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          main=$(jq -r .version package.json)
+          tmpl=$(jq -r '.dependencies["@fangorn-network/westmarch"] // .devDependencies["@fangorn-network/westmarch"]' template/package.json)
+          [ "$main" = "$tmpl" ] || { echo "::error file=template/package.json::template pins @fangorn-network/westmarch $tmpl, package.json is $main"; exit 1; }
