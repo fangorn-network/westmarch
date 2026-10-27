@@ -83,6 +83,8 @@ const log = (s) => console.error(`[ship] ${s}`);
 //                                 //   (pages/intro.html, a fragment, replaces the description on the front page)
 //             "nav": [{ "href": "coverage.html", "label": "Coverage" }],   // optional: header links to them
 //             "examples": ["…"],  // optional: questions to start from, on the front page (and a private app's gate)
+//             "skill": "skill/SKILL.md",   // optional: the app's agent skill, served at skill/<app>/SKILL.md and named
+//                                          //   in the card with its sha256; fangorn-index offers it to whoever opens the app
 //             "agent": "app/agent.js" },   // optional: the module whose registerAgent the card lists, when
 //                                          // `pages` replaces the stock index.html with a page of its own
 //   "types": { "<tag>": { "description": "…", "role_map": {…}, "presentation": {…} } },
@@ -549,6 +551,15 @@ export async function buildSite(cfg, base) {
     if (cfg.site.pages) cpSync(resolve(base, cfg.site.pages), site, { recursive: true });
     writeFileSync(join(site, "nav.json"), JSON.stringify(cfg.site.nav ?? []));
     writeFileSync(join(site, "examples.json"), JSON.stringify(cfg.site.examples ?? []));
+    // site.skill: the app's agent skill (a SKILL.md), served at skill/<app>/SKILL.md and named in the
+    // card with its hash, so fangorn-index can offer it to whoever opens the app.
+    let skill = null;
+    if (cfg.site.skill) {
+        const bytes = readFileSync(resolve(base, cfg.site.skill));
+        mkdirSync(join(site, "skill", cfg.app), { recursive: true });
+        writeFileSync(join(site, "skill", cfg.app, "SKILL.md"), bytes);
+        skill = { path: `skill/${cfg.app}/SKILL.md`, sha256: createHash("sha256").update(bytes).digest("hex") };
+    }
     // The card lists the tools the page at `url` registers: the stock page's, or the app's own.
     const card = await import("../agent/agent-card.js");
     const { registerAgent } = await import(cfg.site.agent ? pathToFileURL(resolve(base, cfg.site.agent)).href : "../../site/agent.js");
@@ -564,7 +575,8 @@ export async function buildSite(cfg, base) {
                 ...(paid ? [{ id: "keys", name: "Keys", tags: [...(cfg.tags ?? []), "x402"],
                     description: `The keys to sealed records (POST ${u}/paid), per record.` }] : []),
             ],
-            fangorn: { app: cfg.app, fromBlock, repos, views: [`${u}/view`], mcp: `${u}/mcp`, config, ...(paid ? { paid } : {}), ...(access ? { access } : {}) },
+            fangorn: { app: cfg.app, fromBlock, repos, views: [`${u}/view`], mcp: `${u}/mcp`, config, ...(paid ? { paid } : {}), ...(access ? { access } : {}),
+                       ...(skill ? { skill: { url: `${u}/${skill.path}`, sha256: skill.sha256 } } : {}) },
         });
         mkdirSync(join(site, ".well-known"), { recursive: true });
         writeFileSync(join(site, ".well-known/agent-card.json"), JSON.stringify(agentCard, null, 1));

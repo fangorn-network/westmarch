@@ -48,6 +48,10 @@ const HEX32 = /^0x[0-9a-fA-F]{64}$/;
  *              tools, as the free tier's Worker does at /mcp.
  *   config     the deployment; defaults to the SDK's, so the addresses in the
  *              card cannot drift from the ones `discoverApp` checks.
+ *   skill      `{url, sha256}`: the app's own agent skill (a SKILL.md), for agents
+ *              that adopt it, so its behaviour travels with the app and not with a
+ *              marketplace. The hash pins what the reader saw: an agent adopts it
+ *              only on its user's yes, and asks again when the hash changes.
  */
 export function agentCard({ name, description, url, version = "0.0.0", tools = [], tags = [], skills = [], fangorn, ...rest }) {
     if (!name || !url) throw new Error("agentCard: name and url are required");
@@ -75,7 +79,7 @@ export function agentCard({ name, description, url, version = "0.0.0", tools = [
 
 /** The params `discoverApp` reads, validated the same way it validates them.
  *  A malformed card should fail the build, not the first reader. */
-export function fangornExtension({ app, fromBlock, repos = [], views = [], mcp, paid, access, config = BaseSepoliaConfig }) {
+export function fangornExtension({ app, fromBlock, repos = [], views = [], mcp, paid, access, skill, config = BaseSepoliaConfig }) {
     if (!app) throw new Error("fangorn.app is required");
     const id = HEX32.test(app) ? app : hashAppId(app);
     const from = String(fromBlock ?? "");
@@ -96,6 +100,8 @@ export function fangornExtension({ app, fromBlock, repos = [], views = [], mcp, 
     }
     // `access`: a private app. Its view and tools need a pass (`pass_url`, `pass` in base units, for
     // `days`) or one x402 payment of `call` per tool call; describe and the catalog are free.
+    if (skill && !(/^https?:\/\//.test(skill.url ?? "") && /^[0-9a-f]{64}$/.test(skill.sha256 ?? "")))
+        throw new Error(`fangorn.skill needs an http(s) url and the sha256 of the file, in hex: ${JSON.stringify(skill)}`);
     if (access && !(/^https?:\/\//.test(access.pass_url ?? "") && /^\d+$/.test(String(access.pass)) && /^\d+$/.test(String(access.call))))
         throw new Error(`fangorn.access needs pass_url, and pass and call in base units: ${JSON.stringify(access)}`);
     return {
@@ -110,6 +116,7 @@ export function fangornExtension({ app, fromBlock, repos = [], views = [], mcp, 
             ...(paid ? { paid: { url: paid.url, price: String(paid.price), asset: paid.asset, network: paid.network,
                                  symbol: paid.symbol ?? "USDC", decimals: paid.decimals ?? 6, description: paid.description ?? "" } } : {}),
             ...(access ? { access } : {}),
+            ...(skill ? { skill: { url: skill.url, sha256: skill.sha256 } } : {}),
         },
     };
 }
@@ -148,6 +155,10 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     throws(() => fangornExtension({ app: "a" }), /fromBlock/, "missing fromBlock");
     throws(() => fangornExtension({ app: "a", fromBlock: 0, views: ["javascript:alert(1)"] }), /views/, "non-http view");
     throws(() => agentCard({ name: "X" }), /url/, "missing url");
+    const sha = "a".repeat(64);
+    eq(fangornExtension({ app: "a", fromBlock: 0, skill: { url: "https://x.test/skill/a/SKILL.md", sha256: sha } }).params.skill, { url: "https://x.test/skill/a/SKILL.md", sha256: sha }, "a skill rides in the extension");
+    throws(() => fangornExtension({ app: "a", fromBlock: 0, skill: { url: "https://x.test/s.md" } }), /skill/, "a skill without its hash");
+    throws(() => fangornExtension({ app: "a", fromBlock: 0, skill: { url: "file:///etc/passwd", sha256: sha } }), /skill/, "a non-http skill");
 
     console.log("agent-card.js self-check ok — tools captured without executing, extension matches the SDK's, bad params fail the build");
 }
