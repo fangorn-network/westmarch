@@ -45,7 +45,7 @@
     "@fangorn-network/markov": "^0.1.0"
   },
   "peerDependencies": {
-    "@fangorn-network/sdk": "^2026.10.21-dev",
+    "@fangorn-network/sdk": "^2026.10.26-dev",
     "@huggingface/transformers": "^4.2.0",
     "@noble/curves": "^1.9.1",
     "viem": "^2.55.1"
