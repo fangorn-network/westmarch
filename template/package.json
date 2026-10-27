@@ -6,7 +6,7 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "@fangorn-network/westmarch": "2026.10.27.1",
+    "@fangorn-network/westmarch": "2026.10.27.2",
     "@huggingface/transformers": "^4.3.1",
     "wrangler": "^4.83.0"
   }

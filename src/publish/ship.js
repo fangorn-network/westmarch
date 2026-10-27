@@ -166,10 +166,13 @@ export function presentedRepos(cfg) {
 
 /** The Worker's wrangler config: the stock worker, the site as its assets, its bucket, the AI
  *  binding, the cron and CONFIG. `worker` is site/worker.js unless a test points elsewhere. */
-export function wranglerConfig({ name, site, account, cron = "*/5 * * * *", config, url, ipfsGateway, worker = join(HERE, "../../site/worker.js") }) {
+export function wranglerConfig({ name, site, account, cron = "*/5 * * * *", cpuMs, config, url, ipfsGateway, worker = join(HERE, "../../site/worker.js") }) {
     return {
         name, main: worker, compatibility_date: "2025-09-15", compatibility_flags: ["nodejs_compat"],
         ...(account ? { account_id: account } : {}),
+        // site.cpu_ms: the indexer's CPU per run. Reading one big commit (50k records) outlasts the
+        // 30 s Workers Paid default; up to 300000. The Free plan refuses the deploy with it set.
+        ...(cpuMs ? { limits: { cpu_ms: cpuMs } } : {}),
         assets: { directory: site, binding: "ASSETS" },
         r2_buckets: [{ binding: "VIEW", bucket_name: `${name}-view` }],
         ai: { binding: "AI" },
@@ -401,7 +404,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     const workerConfig = (u) => {
         const path = join(dir, "wrangler.json");
         writeFileSync(path, JSON.stringify(wranglerConfig({
-            name: cfg.site.project, site, account: cfg.site.account, cron: cfg.site.cron, url: cfg.site.url, ipfsGateway: view.ipfsGateway(),
+            name: cfg.site.project, site, account: cfg.site.account, cron: cfg.site.cron, cpuMs: cfg.site.cpu_ms, url: cfg.site.url, ipfsGateway: view.ipfsGateway(),
             config: { app: cfg.app, name: cfg.name, description: cfg.description, fromBlock: state.fromBlock, network: cfg.network,
                       schema: { types: cfg.types, relations: cfg.relations }, repos: register ? [] : repos, paid: sale(u).sale, private: access(u).config },
         }), null, 1));
@@ -717,8 +720,11 @@ export async function indexHere(configPath, { port = 8791 } = {}) {
     if (secret) writeFileSync(vars, `PAID_SECRET=${secret}\n`, { mode: 0o600 });
     const url = `http://127.0.0.1:${port}`, start = Math.floor(Date.now() / 1000);
     const wrangler = spawn("npx", ["wrangler", "dev", "--config", wpath, "--port", String(port), "--ip", "127.0.0.1", "--test-scheduled"],
-        { cwd: join(HERE, "../.."), stdio: ["ignore", "inherit", "inherit"],
+        { cwd: join(HERE, "../.."), stdio: ["ignore", "pipe", "inherit"],
           env: { ...process.env, ...(cfg.site.account ? { CLOUDFLARE_ACCOUNT_ID: cfg.site.account } : {}) } });
+    // A run already holds the lock (the deployed cron's): this one skips, and the catalog would never move.
+    let skipped = false;
+    wrangler.stdout.on("data", (b) => { process.stdout.write(b); if (String(b).includes("index: a run is in progress; skipped")) skipped = true; });
     try {
         for (;;) {
             if (wrangler.exitCode !== null) throw new Error("wrangler dev exited");
@@ -730,6 +736,7 @@ export async function indexHere(configPath, { port = 8791 } = {}) {
         let catalog = null;
         while (!(catalog?.generated_at >= start)) {
             if (wrangler.exitCode !== null) throw new Error("wrangler dev exited");
+            if (skipped) throw new Error("another indexer run holds the lock (the deployed cron's, most likely); it frees within 2 minutes of that run dying. Try again then.");
             await new Promise((ok) => setTimeout(ok, 5000));
             catalog = await fetch(`${url}/view/cdn/catalog`).then((r) => (r.ok ? r.json() : null), () => null);
         }

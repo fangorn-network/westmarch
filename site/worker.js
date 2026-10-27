@@ -57,8 +57,18 @@ const encode = (env, prompt) => async (texts) =>
 // ── the indexer ───────────────────────────────────────────────────────────────
 
 const STATE = "state.json", LOCK = "index.lock";
-// A run past this is presumed dead and its lock taken over. Cron runs get 15 minutes.
-const LOCK_MS = 14 * 60_000;
+// A live run beats its lock every BEAT_MS; one silent past LOCK_MS is presumed dead (killed for CPU
+// or wall time, which skips `finally`) and its lock taken over. Lock: "<last beat ms> <run id>".
+// ponytail: get-then-put, so two runs starting in the same instant can both take it; R2's onlyIf etag when that shows.
+const LOCK_MS = 2 * 60_000, BEAT_MS = 30_000;
+export async function takeLock(bucket, now = Date.now()) {
+    const held = await (await bucket.get(LOCK))?.text();
+    if (held && now - Number(held.split(" ")[0]) < LOCK_MS) return null;
+    const id = crypto.randomUUID();
+    const beat = () => bucket.put(LOCK, `${Date.now()} ${id}`);
+    await beat();
+    return { id, beat, release: async () => { if ((await (await bucket.get(LOCK))?.text())?.endsWith(id)) await bucket.delete(LOCK); } };
+}
 
 // CONFIG.network: the SDK's network name ("baseSepolia"); absent, its default.
 const network = () => SupportedNetworks[CONFIG.network] ?? FangornConfig;
@@ -96,9 +106,9 @@ export async function presented({ fangorn, chain }, state) {
 }
 
 export async function index(env, { log = console.log } = {}) {
-    const lock = await env.VIEW.get(LOCK);
-    if (lock && Date.now() - Number(await lock.text()) < LOCK_MS) return log("index: a run is in progress; skipped");
-    await env.VIEW.put(LOCK, String(Date.now()));
+    const lock = await takeLock(env.VIEW);
+    if (!lock) return log("index: a run is in progress; skipped");
+    const beating = setInterval(() => lock.beat().catch(() => {}), BEAT_MS);
     try {
         const state = (await (await env.VIEW.get(STATE))?.json()) ?? { block: null, repos: {} };
         const r = reader(env);
@@ -113,7 +123,8 @@ export async function index(env, { log = console.log } = {}) {
         log(`index: through block ${state.block}, ${Object.keys(report).length} domain(s) changed`);
         return report;
     } finally {
-        await env.VIEW.delete(LOCK);
+        clearInterval(beating);
+        await lock.release();
     }
 }
 
@@ -517,6 +528,15 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
                      delimitedPrefixes: [...new Set(ks.filter((k) => rest(k).includes("/")).map((k) => `${prefix + rest(k).split("/")[0]}/`))] };
         },
     };
+    const a = await takeLock(VIEW);
+    eq([!!a, await takeLock(VIEW)], [true, null], "a held lock skips the next run");
+    objs.set(LOCK, { bytes: new TextEncoder().encode(`${Date.now() - LOCK_MS - 1} dead`), at: new Date() });
+    const b = await takeLock(VIEW);
+    await a.release();
+    eq([!!b, objs.has(LOCK)], [true, true], "a silent lock is taken over, and its dead owner can't release the new one");
+    await b.release();
+    eq(objs.has(LOCK), false, "the owner releases its own lock");
+
     // Words → a 768-d vector, so a query shares dimensions with the rows that share its words.
     const calls = [];
     const AI = { run: async (model, { text }) => { calls.push({ model, text });

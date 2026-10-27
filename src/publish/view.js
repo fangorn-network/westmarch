@@ -168,12 +168,21 @@ export async function readOnlyFangorn() {
  *  A build that must not touch the chain — a candidate recipe graded before it ships —
  *  runs the exact code a real one does. */
 export function localFangorn(chain, { appId, owner }) {
-    const root = (k) => `0x${createHash("sha256").update(JSON.stringify(chain[k])).digest("hex")}`;
+    // Every version handed out is kept, so repoDiff can diff any two, as the SDK diffs two roots.
+    const versions = new Map();
+    const root = (k) => { const h = `0x${createHash("sha256").update(JSON.stringify(chain[k])).digest("hex")}`; versions.set(h, structuredClone(chain[k]?.records ?? [])); return h; };
+    const repoDiff = async (from, to) => {
+        if (!versions.has(from) || !versions.has(to)) throw new Error("unknown root");
+        const [a, b] = [versions.get(from), versions.get(to)], cidOf = new Map(a.map((r) => [r.id, r.cid])), ids = new Set(b.map((r) => r.id));
+        return { puts: b.filter((r) => cidOf.get(r.id) !== r.cid), deletes: a.filter((r) => !ids.has(r.id)).map((r) => r.id),
+                 superseded: a.filter((r) => !ids.has(r.id) || b.some((x) => x.id === r.id && x.cid !== r.cid)).map((r) => r.cid) };
+    };
     return {
+        engine: { repoDiff }, reads: 0,
         setAppId() {}, getAppId: () => appId,
         getAppRegistry: () => ({ getAppOwner: async () => owner }),
         appRepos: async () => Object.keys(chain).map((k) => ({ owner: k.split("/")[0], repo: k.split("/").slice(1).join("/"), root: root(k) })),
-        readRepo: async (o, repo) => { const c = chain[`${o}/${repo}`]; return { tip: c ? root(`${o}/${repo}`) : null, contents: { records: c?.records ?? [] } }; },
+        readRepo: async function (o, repo) { this.reads++; const c = chain[`${o}/${repo}`]; return { tip: c ? root(`${o}/${repo}`) : null, contents: { records: c?.records ?? [] } }; },
     };
 }
 
@@ -243,11 +252,12 @@ export function r2Store(bucket, prefix = "view/") {
 const readJson = async (store, p, dflt) => { const b = await store.get(p); return b ? JSON.parse(new TextDecoder().decode(b)) : dflt; };
 const writeJson = (store, p, o) => store.put(p, JSON.stringify(o, null, 1));
 
-/** What a domain already serves: its manifest and every row (for tombstones and coverage). */
-async function loadDomain(store, dir) {
+/** What a domain already serves: its manifest and every row (for tombstones and coverage), or
+ *  with `only`, the rows of those shard files alone. */
+async function loadDomain(store, dir, only = null) {
     const manifest = await readJson(store, `${dir}/manifest`, null);
     const rows = new Map();
-    for (const s of manifest?.shards ?? []) {
+    for (const s of (manifest?.shards ?? []).filter((x) => !only || only.includes(x.file))) {
         const b = await store.get(`${dir}/shards/${s.file}`);
         if (!b) throw new Error(`${dir}: shard ${s.file} is named by its manifest and missing`);
         for (const line of gunzipSync(b).toString("utf8").split("\n")) if (line.trim()) { const r = JSON.parse(line); rows.set(r.track_id, r); }
@@ -339,21 +349,38 @@ async function retry(f, tries = 6) {
     }
 }
 
+const CHECKPOINT = 2048;   // rows embedded between saves; a killed run redoes at most this many
 async function publishDomain({ fangorn, store, schema, schemaHash, publisher, repo, head, domain, dir, rebake, embedBatch, embedder, log, shardRows, open }) {
     // The head the domain was built from, and the schema it was built under: neither moved,
     // nothing to read. This is what keeps a cron run with nothing new to one read per repo.
     const was = rebake ? null : await readJson(store, `${dir}/manifest`, null);
     if (was && was.head === head && was.schema_hash === schemaHash) return null;
 
-    const { contents } = await retry(() => fangorn.readRepo(publisher, repo));
+    // The head moved from one this domain was built from: read only what changed between them (the
+    // SDK's repoDiff opens only the changed paths of the record tree), not every record again. A
+    // schema with relations links each row against all the others, so it still reads the whole repo;
+    // so does an SDK whose diff can't name the replaced versions, and a diff that fails (a force-push
+    // to a head whose blocks are gone).
+    // ponytail: relations read whole; diff their targets too when a big corpus declares one.
+    const diff = was?.head && !schema.relations?.length && fangorn.engine?.repoDiff
+        ? await retry(() => fangorn.engine.repoDiff(was.head, head)).catch((e) => { log(`${domain}: diff from ${was.head} failed (${e.message}); reading it whole`); return null; })
+        : null;
+    const got = diff?.superseded ? diff.puts : (await retry(() => fangorn.readRepo(publisher, repo))).contents.records;
     // `open`: a private app's rows are sealed on chain (x402.js's sealRow); the Worker opens them here.
-    const records = new Map(await Promise.all(contents.records.filter((r) => r.payload && typeof r.payload === "object")
+    const records = new Map(await Promise.all(got.filter((r) => r.payload && typeof r.payload === "object")
         .map(async (r) => [r.cid, { id: r.id, fields: { ...(await open(r.payload)), entityType: r.type } }])));
     linkRelations(records, schema);
     const fieldsOf = (cid) => records.get(cid).fields;
 
     if (rebake) await store.del(dir);   // old shards would stay reachable
-    const had = await loadDomain(store, dir);
+    // Append only: the diff replaced nothing, so no row already served changes, and the 50k of them
+    // are left unread. Only the shards saved since the last head (`ahead`, a killed run's checkpoints)
+    // are read, to skip what they hold. A removal, an edit, a rebake or a coverage refit reads all.
+    // Rows in `ahead` are already counted, and come back among the puts of a diff from the old head.
+    const aheadRows = (was?.shards ?? []).filter((x) => was.ahead?.includes(x.file)).reduce((n, x) => n + x.count, 0);
+    const append = !!was && !!diff?.superseded && !diff.superseded.length && !was.tombstones?.length
+        && (was.count ?? 0) + diff.puts.length - aheadRows < COVERAGE_REFIT * (was.coverage?.fit_at ?? 0);
+    const had = await loadDomain(store, dir, append ? was.ahead ?? [] : null);
     const made = had.manifest?.embedder ?? (had.manifest ? { runtime: "fastembed", dtype: "fp32" } : null);
     // Same model and dtype is the same encoder, whatever ran it: q8 on CPU, CUDA and WASM agree to
     // ~0.98-0.99 cosine, fp32 against q8 noticeably less.
@@ -364,10 +391,11 @@ async function publishDomain({ fangorn, store, schema, schemaHash, publisher, re
     const dead = new Set(had.manifest?.tombstones ?? []);
     const live = (id) => had.rows.has(id) && !dead.has(id);
     const fresh = [...records.keys()].filter((id) => !live(id));
-    const gone = [...had.rows.keys()].filter((id) => live(id) && !records.has(id));
+    // From a diff, `records` holds only what changed: what is gone is what it superseded.
+    const gone = diff?.superseded ? diff.superseded.filter(live) : [...had.rows.keys()].filter((id) => live(id) && !records.has(id));
     // A row already served whose links changed (its matter came later, or moved): new fields,
-    // the same vector, so no embedding, only a rewrite.
-    const relinked = [...had.rows.keys()].filter((id) => live(id) && records.has(id)
+    // the same vector, so no embedding, only a rewrite. Only relations relink, and they read whole.
+    const relinked = diff?.superseded ? [] : [...had.rows.keys()].filter((id) => live(id) && records.has(id)
         && JSON.stringify(had.rows.get(id).fields) !== JSON.stringify(fieldsOf(id)));
     for (const id of relinked) had.rows.get(id).fields = fieldsOf(id);
 
@@ -383,6 +411,34 @@ async function publishDomain({ fangorn, store, schema, schemaHash, publisher, re
         }
     }
 
+    const manifest = had.manifest ?? { name: domain, description: "", count: 0, dim: EMBED_DIM, model: EMBED_MODEL,
+        distance: "Cosine", embedder, filter: { owner: [publisher], repo: [repo] }, shards: [], tombstones: [] };
+    // Pages and R2 serve files of any size, but a reader holds a shard whole; 52k Steam games
+    // gzipped to 28 MiB in one. ponytail: split by row count (~550 B a row gzipped).
+    const writeShard = async (all) => {
+        const files = [];
+        for (let i = 0; i < all.length; i += shardRows) {
+            const ls = all.slice(i, i + shardRows);
+            const gz = gzipSync(`${ls.join("\n")}\n`, { level: 9 });
+            const digest = sha256(gz);
+            const file = `shard-${String(manifest.shards.length).padStart(4, "0")}-${digest.slice(0, 12)}.ndjson.gz`;
+            await store.put(`${dir}/shards/${file}`, gz);
+            manifest.shards.push({ file, count: ls.length, bytes: gz.length, sha256: digest });
+            files.push(file);
+        }
+        return files;
+    };
+    // What is embedded so far, served now under the old head: a run killed later (CPU, wall time:
+    // no exception, no `finally`) loses at most CHECKPOINT rows, and the next run embeds only the rest.
+    const save = async () => {
+        manifest.ahead = [...(manifest.ahead ?? []), ...await writeShard(lines)];
+        const rows = lines.map((l) => JSON.parse(l));
+        for (const r of rows) { had.rows.set(r.track_id, r); dead.delete(r.track_id); }
+        lines.length = 0;
+        manifest.head = had.manifest?.head ?? null;
+        manifest.schema_hash = schemaHash;
+        await applySpec(store, dir, manifest, schema, had.rows, dead, rolesOf, append ? rows : null);
+    };
     let n = 0, stopped = null;
     const lines = [];
     // 32 at a time: what an encoder batches (embed.js, a GPU, the Worker's AI binding).
@@ -400,39 +456,26 @@ async function publishDomain({ fangorn, store, schema, schemaHash, publisher, re
         }
         if (Math.floor((n + ids.length) / 1000) > Math.floor(n / 1000)) log(`${domain}: embedded ${n + ids.length}/${fresh.length}`);
         n += ids.length;
+        if (lines.length >= CHECKPOINT && n < fresh.length) await save();
     }
-    const manifest = had.manifest ?? { name: domain, description: "", count: 0, dim: EMBED_DIM, model: EMBED_MODEL,
-        distance: "Cosine", embedder, filter: { owner: [publisher], repo: [repo] }, shards: [], tombstones: [] };
     // Unfinished: the old head stays, so the next run sees a head to catch up to and embeds only what is missing.
     manifest.head = stopped ? (had.manifest?.head ?? null) : head;
     manifest.schema_hash = schemaHash;
+    if (!stopped) delete manifest.ahead;   // the head is taken: everything is behind it
     if (!fresh.length && !gone.length && !relinked.length && had.manifest && !rebake) {
-        await applySpec(store, dir, manifest, schema, had.rows, dead);   // a schema change alone still lands
+        await applySpec(store, dir, manifest, schema, had.rows, dead, new Map(), append ? [] : null);   // a schema change alone still lands
         return { added: 0, removed: 0 };
     }
 
-    // Pages and R2 serve files of any size, but a reader holds a shard whole; 52k Steam games
-    // gzipped to 28 MiB in one. ponytail: split by row count (~550 B a row gzipped).
-    const writeShard = async (all) => {
-        for (let i = 0; i < all.length; i += shardRows) {
-            const ls = all.slice(i, i + shardRows);
-            const gz = gzipSync(`${ls.join("\n")}\n`, { level: 9 });
-            const digest = sha256(gz);
-            const file = `shard-${String(manifest.shards.length).padStart(4, "0")}-${digest.slice(0, 12)}.ndjson.gz`;
-            await store.put(`${dir}/shards/${file}`, gz);
-            manifest.shards.push({ file, count: ls.length, bytes: gz.length, sha256: digest });
-        }
-    };
     if (stopped) {
-        await writeShard(lines);
-        for (const l of lines) { const r = JSON.parse(l); had.rows.set(r.track_id, r); dead.delete(r.track_id); }
-        await applySpec(store, dir, manifest, schema, had.rows, dead, rolesOf);
+        await save();
         log(`${domain}: stopped at ${n}/${fresh.length} (${stopped.message}); the rest on the next run`);
         return { added: n, removed: 0, partial: true };
     }
+    const last = lines.map((l) => JSON.parse(l));
     if (lines.length) {
         await writeShard(lines);
-        for (const l of lines) { const r = JSON.parse(l); had.rows.set(r.track_id, r); dead.delete(r.track_id); }
+        for (const r of last) { had.rows.set(r.track_id, r); dead.delete(r.track_id); }
     }
     for (const id of gone) dead.add(id);
     // A tombstone hides a row from readers, but its shard still serves the bytes. A record
@@ -441,6 +484,8 @@ async function publishDomain({ fangorn, store, schema, schemaHash, publisher, re
     // files are deleted. No re-embedding: the vectors are already in the rows.
     // ponytail: rewrites the whole domain on every removal; compact past a threshold if domains get big.
     if (dead.size || relinked.length) {
+        // A compaction rewrites `had.rows` as the whole domain, which append mode never loaded.
+        if (append) throw new Error(`${domain}: append mode reached a compaction; nothing written past the new shard`);
         for (const s of manifest.shards) await store.del(`${dir}/shards/${s.file}`);
         manifest.shards = [];
         for (const id of dead) had.rows.delete(id);
@@ -449,16 +494,19 @@ async function publishDomain({ fangorn, store, schema, schemaHash, publisher, re
     }
     manifest.tombstones = [...dead].sort();
     manifest.created_at = Math.floor(Date.now() / 1000);
-    await applySpec(store, dir, manifest, schema, had.rows, dead, rolesOf);
+    await applySpec(store, dir, manifest, schema, had.rows, dead, rolesOf, append ? last : null);
     log(`${domain}: +${fresh.length} embedded, -${gone.length} removed, ${relinked.length} relinked, ${manifest.count} live`);
     return { added: fresh.length, removed: gone.length, ...(relinked.length ? { relinked: relinked.length } : {}) };
 }
 
 /** Counts, types, roles, description, presentation, coverage and the hosts its media role
- *  links to (what a Worker may show inline, see site/worker.js) from what the domain holds. */
-async function applySpec(store, dir, manifest, schema, rows, dead, guessed = new Map()) {
-    const liveRows = [...rows.values()].filter((r) => !dead.has(r.track_id));
-    const types = {};
+ *  links to (what a Worker may show inline, see site/worker.js) from what the domain holds.
+ *  `added`: append mode, where `rows` is not the whole domain: fold these new rows into the
+ *  manifest's totals instead of recounting. Coverage is left as fitted (publishDomain appends only
+ *  while no refit is due). ponytail: hosts only grow on append; a removal recounts them. */
+async function applySpec(store, dir, manifest, schema, rows, dead, guessed = new Map(), added = null) {
+    const liveRows = added ?? [...rows.values()].filter((r) => !dead.has(r.track_id));
+    const types = added ? Object.fromEntries((manifest.entity_types ?? []).map((e) => [e.type, e.count])) : {};
     for (const r of liveRows) types[r.fields?.entityType] = (types[r.fields?.entityType] ?? 0) + 1;
     const tags = Object.entries(types).sort((a, b) => b[1] - a[1]).map(([t]) => t);
     // Compare with what is stored, not with the manifest as it arrived: publishDomain has already
@@ -466,20 +514,20 @@ async function applySpec(store, dir, manifest, schema, rows, dead, guessed = new
     // the old manifest naming deleted shards.
     const before = JSON.stringify(await readJson(store, `${dir}/manifest`, null));
 
-    manifest.count = liveRows.length;
+    manifest.count = added ? (manifest.count ?? 0) + added.length : liveRows.length;
     manifest.entity_types = tags.map((t) => ({ type: t, count: types[t] }));
     const spec = domainSpec(schema, tags);
-    const fields = [...new Set(liveRows.slice(0, 500).flatMap((r) => Object.keys(r.fields ?? {})))].sort();
+    const fields = [...new Set([...(added ? manifest.role_map?.fields ?? [] : []), ...liveRows.slice(0, 500).flatMap((r) => Object.keys(r.fields ?? {}))])].sort();
     manifest.role_map = { ...(spec?.role_map ?? manifest.role_map ?? guessed.values().next().value ?? completeRoles()), fields };
     if (spec?.description) manifest.description = spec.description;
     if (spec && Object.keys(spec.presentation).length) manifest.presentation = spec.presentation;
     const media = [manifest.role_map.media ?? []].flat();
-    manifest.link_hosts = [...new Set(liveRows.flatMap((r) => media.map((m) => r.fields?.[m]))
+    manifest.link_hosts = [...new Set([...(added ? manifest.link_hosts ?? [] : []), ...liveRows.flatMap((r) => media.map((m) => r.fields?.[m]))
         .filter((u) => typeof u === "string" && u.startsWith("https://"))
-        .map((u) => { try { return new URL(u).hostname; } catch { return null; } }).filter(Boolean))].sort();
+        .map((u) => { try { return new URL(u).hostname; } catch { return null; } })].filter(Boolean))].sort();
 
     const cov = manifest.coverage;
-    if (liveRows.length && (!cov || liveRows.length >= COVERAGE_REFIT * (cov.fit_at ?? 0))) {
+    if (!added && liveRows.length && (!cov || liveRows.length >= COVERAGE_REFIT * (cov.fit_at ?? 0))) {
         manifest.coverage = { ...fitCoverage(liveRows.map((r) => unpackVec(r.v))), fit_at: liveRows.length };
     }
     if (JSON.stringify(manifest) !== before) await writeJson(store, `${dir}/manifest`, manifest);
@@ -617,6 +665,49 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     eq((await publishView({ fangorn, app: APP, schema, out: big, repos: ["big"], embedBatch: capped, log: () => {} }))[bd],
        { added: 48, removed: 0 }, "the next run embeds only the rest");
     eq(manifestOf(big, bd).count, 80, "and serves all of it");
+    // Killed partway (a Worker over its CPU or wall time: no exception, no return): the last
+    // checkpoint is served, and the next run embeds only what came after it.
+    chain[BIG] = { records: Array.from({ length: CHECKPOINT + 100 }, (_, i) => ({ id: `k${i}`, cid: `kill${i}`, type: "shop.item.v1", payload: { sku: `k${i}`, name: `Kept ${i}` } })) };
+    let left = CHECKPOINT + 64;
+    const dies = (ts) => (left -= ts.length) < 0 ? new Promise(() => {}) : Promise.all(ts.map(embed));
+    publishView({ fangorn, app: APP, schema, out: big, repos: ["big"], embedBatch: dies, log: () => {} });
+    for (let i = 0; i < 200 && manifestOf(big, bd).count < CHECKPOINT; i++) await new Promise((ok) => setTimeout(ok, 10));
+    eq((await publishView({ fangorn, app: APP, schema, out: big, repos: ["big"], embedBatch: capped, log: () => {} }))[bd],
+       { added: 100, removed: 80 }, "a killed run resumes from its last checkpoint");
+    // A built domain whose head moves reads only the diff: 10 new tracks on top of thousands
+    // never read the thousands again, and a removal or an edit drops the version it replaced.
+    const whole = fangorn.reads;
+    chain[BIG].records.push(...Array.from({ length: 10 }, (_, i) => ({ id: `n${i}`, cid: `next${i}`, type: "shop.item.v1", payload: { sku: `n${i}`, name: `New ${i}` } })));
+    chain[BIG].records.splice(0, 1, { ...chain[BIG].records[0], cid: "kill0-v2", payload: { sku: "k0", name: "Kept 0, renamed" } });
+    chain[BIG].records.splice(1, 1);
+    eq([(await publishView({ fangorn, app: APP, schema, out: big, repos: ["big"], embedBatch: capped, log: () => {} }))[bd], fangorn.reads - whole],
+       [{ added: 11, removed: 2 }, 0], "a moved head reads only what changed");
+    eq(manifestOf(big, bd).count, CHECKPOINT + 100 + 10 - 1, "and serves the repo as it now stands");
+    // Only additions: the rows already served are not read at all, only a delta shard is written.
+    const disk = fsStore(big), opened = [];
+    const watched = { ...disk, get: (p) => { opened.push(p); return disk.get(p); } };
+    const n0 = manifestOf(big, bd).count, shards0 = manifestOf(big, bd).shards.length;
+    chain[BIG].records.push(...Array.from({ length: 10 }, (_, i) => ({ id: `m${i}`, cid: `more${i}`, type: "shop.item.v1", payload: { sku: `m${i}`, name: `More ${i}` } })));
+    eq((await publishView({ fangorn, app: APP, schema, store: watched, repos: ["big"], embedBatch: capped, log: () => {} }))[bd],
+       { added: 10, removed: 0 }, "an append embeds only the new records");
+    eq(opened.filter((p) => p.includes("/shards/")), [], "and reads no shard it already served");
+    const after = manifestOf(big, bd);
+    eq([after.count, after.shards.length, after.entity_types[0].count, after.ahead], [n0 + 10, shards0 + 1, n0 + 10, undefined], "counts, types and one delta shard, with the head taken");
+    eq((await liveFields(big)).length, n0 + 10, "and every row is still served");
+    // An append killed after a checkpoint: the next run reads only that checkpoint's shard, and
+    // embeds only what came after it, never the checkpointed rows a second time.
+    const n1 = manifestOf(big, bd).count, fit = manifestOf(big, bd).coverage.fit_at, extra = CHECKPOINT + 2;
+    if (n1 + extra >= COVERAGE_REFIT * fit) throw new Error(`test setup: ${n1} + ${extra} rows would refit coverage (fit at ${fit}), not append`);
+    chain[BIG].records.push(...Array.from({ length: extra }, (_, i) => ({ id: `a${i}`, cid: `app${i}`, type: "shop.item.v1", payload: { sku: `a${i}`, name: `Appended ${i}` } })));
+    left = CHECKPOINT + 1;
+    publishView({ fangorn, app: APP, schema, out: big, repos: ["big"], embedBatch: dies, log: () => {} });
+    for (let i = 0; i < 300 && !manifestOf(big, bd).ahead; i++) await new Promise((ok) => setTimeout(ok, 10));
+    eq([manifestOf(big, bd).count, manifestOf(big, bd).ahead?.length], [n1 + CHECKPOINT, 1], "a killed append serves its checkpoint, named as ahead of the head");
+    opened.length = 0;
+    eq((await publishView({ fangorn, app: APP, schema, store: watched, repos: ["big"], embedBatch: capped, log: () => {} }))[bd],
+       { added: 2, removed: 0 }, "and the next run embeds only what came after it");
+    eq([opened.filter((p) => p.includes("/shards/")).length, manifestOf(big, bd).count, (await liveFields(big)).length],
+       [1, n1 + extra, n1 + extra], "reading only the checkpoint's shard, and serving each row once");
     delete chain[BIG];
     rmSync(big, { recursive: true, force: true });
     eq((await publishView({ fangorn, app: APP, schema, out, embed, rebake: true, log: () => {} }))[d],
