@@ -39,6 +39,14 @@ export const skillOf = (ext) => {
     return k && safeView(k.url) && /^[0-9a-f]{64}$/.test(k.sha256 ?? "") ? { url: k.url, sha256: k.sha256 } : null;
 };
 
+// The app's Claude Code plugin, for what a skill can't do (hooks). Both fields reach a shell command
+// in the reader's agent, so they are held to a GitHub owner/repo (or https URL) and a plain name.
+export const PLUGIN_MARKETPLACE = /^([\w.-]+\/[\w.-]+|https:\/\/[\w.\/-]+)$/, PLUGIN_NAME = /^[a-z0-9][a-z0-9-]*$/;
+export const pluginOf = (ext) => {
+    const p = ext?.params?.plugin;
+    return p && PLUGIN_MARKETPLACE.test(p.marketplace ?? "") && PLUGIN_NAME.test(p.name ?? "") ? { marketplace: p.marketplace, name: p.name } : null;
+};
+
 /** A verified card → an app entry. `views` is westmarch's param; the SDK does not read it. */
 export function toApp({ card, appId, fromBlock, repos }, cardUrl) {
     const ext = card.capabilities.extensions.find((e) => e.uri === APP_EXTENSION);
@@ -46,7 +54,7 @@ export function toApp({ card, appId, fromBlock, repos }, cardUrl) {
     const p = ext?.params?.paid;
     const paid = p && /^https?:\/\//.test(p.url ?? "") && p.url.includes("{id}") && /^\d+$/.test(String(p.price)) ? p : null;
     return {
-        appId, card: cardUrl, fromBlock, repos, views, paid, skill: skillOf(ext),
+        appId, card: cardUrl, fromBlock, repos, views, paid, skill: skillOf(ext), plugin: pluginOf(ext),
         mcp: safeView(ext?.params?.mcp),
         name: card.name ?? appId,
         desc: card.description ?? "",

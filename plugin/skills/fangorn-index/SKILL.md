@@ -156,6 +156,14 @@ stranger running inside the person's agent, so:
    `$D/.fangorn.json`, show the person what changed (a diff of the old and new file) and
    update only on their yes. Removing an adopted skill means deleting `$D`.
 
+**A plugin, too.** An app whose value depends on running without being called (codex checks every
+web search) ships a Claude Code plugin, and `open-app` returns `plugin: {marketplace, name, install}`.
+Hooks run code on this machine on every matching event, so it is the same rule, louder: offer it
+once, say what it hooks (read the plugin's `hooks/hooks.json` in its repo and name the events),
+and run `install` only on a yes. There is
+no hash to pin: a plugin follows its repo, so installing it trusts the app's publisher. If the person
+says no, don't offer it again for that app.
+
 ---
 
 ## 3. Limits — state these, do not paper over them

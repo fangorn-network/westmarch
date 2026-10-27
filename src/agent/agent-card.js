@@ -17,6 +17,7 @@
 // point back at it, so writing someone else's appId here gets you nothing.
 
 import { FANGORN_APP_EXTENSION, BaseSepoliaConfig, appId as hashAppId } from "@fangorn-network/sdk";
+import { PLUGIN_MARKETPLACE, PLUGIN_NAME } from "../discover/apps.js";
 
 /** Run `register` against a recording `document.modelContext`; return what it
  *  registered. `register` is whatever the page calls at load. */
@@ -79,7 +80,7 @@ export function agentCard({ name, description, url, version = "0.0.0", tools = [
 
 /** The params `discoverApp` reads, validated the same way it validates them.
  *  A malformed card should fail the build, not the first reader. */
-export function fangornExtension({ app, fromBlock, repos = [], views = [], mcp, paid, access, skill, config = BaseSepoliaConfig }) {
+export function fangornExtension({ app, fromBlock, repos = [], views = [], mcp, paid, access, skill, plugin, config = BaseSepoliaConfig }) {
     if (!app) throw new Error("fangorn.app is required");
     const id = HEX32.test(app) ? app : hashAppId(app);
     const from = String(fromBlock ?? "");
@@ -102,6 +103,8 @@ export function fangornExtension({ app, fromBlock, repos = [], views = [], mcp, 
     // `days`) or one x402 payment of `call` per tool call; describe and the catalog are free.
     if (skill && !(/^https?:\/\//.test(skill.url ?? "") && /^[0-9a-f]{64}$/.test(skill.sha256 ?? "")))
         throw new Error(`fangorn.skill needs an http(s) url and the sha256 of the file, in hex: ${JSON.stringify(skill)}`);
+    if (plugin && !(PLUGIN_MARKETPLACE.test(plugin.marketplace ?? "") && PLUGIN_NAME.test(plugin.name ?? "")))
+        throw new Error(`fangorn.plugin needs a marketplace (GitHub owner/repo or https URL) and a plugin name: ${JSON.stringify(plugin)}`);
     if (access && !(/^https?:\/\//.test(access.pass_url ?? "") && /^\d+$/.test(String(access.pass)) && /^\d+$/.test(String(access.call))))
         throw new Error(`fangorn.access needs pass_url, and pass and call in base units: ${JSON.stringify(access)}`);
     return {
@@ -117,6 +120,7 @@ export function fangornExtension({ app, fromBlock, repos = [], views = [], mcp, 
                                  symbol: paid.symbol ?? "USDC", decimals: paid.decimals ?? 6, description: paid.description ?? "" } } : {}),
             ...(access ? { access } : {}),
             ...(skill ? { skill: { url: skill.url, sha256: skill.sha256 } } : {}),
+            ...(plugin ? { plugin: { marketplace: plugin.marketplace, name: plugin.name } } : {}),
         },
     };
 }
@@ -159,6 +163,8 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     eq(fangornExtension({ app: "a", fromBlock: 0, skill: { url: "https://x.test/skill/a/SKILL.md", sha256: sha } }).params.skill, { url: "https://x.test/skill/a/SKILL.md", sha256: sha }, "a skill rides in the extension");
     throws(() => fangornExtension({ app: "a", fromBlock: 0, skill: { url: "https://x.test/s.md" } }), /skill/, "a skill without its hash");
     throws(() => fangornExtension({ app: "a", fromBlock: 0, skill: { url: "file:///etc/passwd", sha256: sha } }), /skill/, "a non-http skill");
+    eq(fangornExtension({ app: "a", fromBlock: 0, plugin: { marketplace: "o/r", name: "a" } }).params.plugin, { marketplace: "o/r", name: "a" }, "a plugin rides in the extension");
+    throws(() => fangornExtension({ app: "a", fromBlock: 0, plugin: { marketplace: "o/r; rm -rf ~", name: "a" } }), /plugin/, "a plugin that would inject into a shell");
 
     console.log("agent-card.js self-check ok — tools captured without executing, extension matches the SDK's, bad params fail the build");
 }
