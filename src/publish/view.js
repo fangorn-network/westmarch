@@ -40,6 +40,9 @@ import { dirname } from "node:path";
 import { EMBED_DIM, EMBED_DTYPE, EMBED_MODEL, embedDocumentDirect, packVec, unpackVec } from "../core/embed.js";
 import { coverage as fitCoverage } from "../market/reactions.js";
 
+// The origin the agent card is built with; the Worker swaps in wherever it is served from.
+// Here, not in site/worker.js: workerd refuses a Worker module exporting anything but handlers.
+export const ORIGIN = "https://origin.westmarch.invalid";
 export const EMBEDDER = { runtime: "transformers.js", model: EMBED_MODEL, dtype: EMBED_DTYPE };
 const SINGULAR = ["identity", "title", "subtitle", "temporal", "spatial", "media", "thread"];
 const MULTI = ["tags", "measures", "relations", "text"];

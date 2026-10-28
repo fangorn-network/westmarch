@@ -276,7 +276,7 @@ export async function buildForDeploy(configPath, wranglerPath = join(dirname(res
         log(`the R2 bucket ${w.r2_buckets?.[0]?.bucket_name} doesn't name the Worker; two apps sharing one overwrite each other's view`);
 
     process.env.FANGORN_NETWORK = process.env.CHAIN_NAME = cfg.network;
-    const [{ createPublicClient, http }, view, { ORIGIN }] = await Promise.all([import("viem"), import("./view.js"), import("../../site/worker.js")]);
+    const [{ createPublicClient, http }, view] = await Promise.all([import("viem"), import("./view.js")]);
     const FangornConfig = await view.network(cfg.network);
     const fangorn = await view.readOnlyFangorn();
     fangorn.setAppId(cfg.app);
@@ -287,7 +287,7 @@ export async function buildForDeploy(configPath, wranglerPath = join(dirname(res
 
     const base = dirname(resolve(configPath));
     const { site, writeCard } = await buildSite(cfg, base);
-    writeCard(ORIGIN, { fromBlock, repos: [] });
+    writeCard(view.ORIGIN, { fromBlock, repos: [] });
     const gateway = process.env.FANGORN_IPFS_GATEWAY;
     w.assets = { ...w.assets, directory: relative(dirname(resolve(wranglerPath)), site) };
     w.vars = { ...w.vars, CONFIG: { app: cfg.app, name: cfg.name, description: cfg.description, fromBlock, network: cfg.network,
