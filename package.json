@@ -1,6 +1,6 @@
 {
   "name": "@fangorn-network/westmarch",
-  "version": "2026.10.27.2",
+  "version": "2026.10.28",
   "description": "all-in-one builder for fangorn apps",
   "license": "MIT",
   "type": "module",
