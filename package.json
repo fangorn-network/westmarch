@@ -39,7 +39,8 @@
     "prepare": "tsc -p .",
     "test": "node scripts/test.js",
     "lint": "node src/publish/lint.js",
-    "e2e:worker": "node scripts/e2e-worker.mjs"
+    "e2e:worker": "node scripts/e2e-worker.mjs",
+    "prepack": "vite build site"
   },
   "dependencies": {
     "@fangorn-network/markov": "^0.1.0"
@@ -65,7 +66,8 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "typescript": "^5.9.3",
-    "viem": "^2.56.3"
+    "viem": "^2.56.3",
+    "vite": "^8.3.5"
   },
   "bin": {
     "westmarch": "src/publish/init.js",
