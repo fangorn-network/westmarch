@@ -68,14 +68,14 @@
     "viem": "^2.56.3"
   },
   "bin": {
-    "westmarch": "./src/publish/init.js",
-    "westmarch-publish": "./src/publish/cli.js",
-    "westmarch-view": "./src/publish/view-cli.js",
-    "westmarch-ship": "./src/publish/ship.js",
-    "westmarch-eval": "./dist/ts/eval.js",
-    "westmarch-lint": "./src/publish/lint.js",
-    "fangorn-mcp": "./src/agent/mcp.js",
-    "fangorn-fx": "./plugin/scripts/fx.mjs"
+    "westmarch": "src/publish/init.js",
+    "westmarch-publish": "src/publish/cli.js",
+    "westmarch-view": "src/publish/view-cli.js",
+    "westmarch-ship": "src/publish/ship.js",
+    "westmarch-eval": "dist/ts/eval.js",
+    "westmarch-lint": "src/publish/lint.js",
+    "fangorn-mcp": "src/agent/mcp.js",
+    "fangorn-fx": "plugin/scripts/fx.mjs"
   },
   "files": [
     "src",
