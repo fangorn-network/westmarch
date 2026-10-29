@@ -240,8 +240,11 @@ export async function claimBlock(chain, FangornConfig, appId) {
     const { parseAbiItem } = await import("viem");
     const from = BigInt(FangornConfig.appRegistryFromBlock), to = await chain.getBlockNumber(), step = BigInt(FangornConfig.logWindow ?? 10000);
     const event = parseAbiItem("event AppRegistered(bytes32 indexed app_id, address indexed owner)");
+    // A renamed app was registered under the id it was claimed with, not the name it goes by now.
+    const canonical = await chain.readContract({ address: FangornConfig.appRegistryContractAddress, functionName: "canonicalAppId", args: [appId],
+                                                 abi: [parseAbiItem("function canonicalAppId(bytes32) view returns (bytes32)")] });
     for (let a = from; a <= to; a += step) {
-        const [claimed] = await chain.getLogs({ address: FangornConfig.appRegistryContractAddress, event, args: { app_id: appId },
+        const [claimed] = await chain.getLogs({ address: FangornConfig.appRegistryContractAddress, event, args: { app_id: canonical },
                                                 fromBlock: a, toBlock: a + step - 1n < to ? a + step - 1n : to });
         if (claimed) return String(claimed.blockNumber);
     }
