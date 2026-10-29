@@ -46,7 +46,7 @@
     "@fangorn-network/markov": "^0.1.0"
   },
   "peerDependencies": {
-    "@fangorn-network/sdk": "^2026.10.27-dev",
+    "@fangorn-network/sdk": "^2026.10.28",
     "@huggingface/transformers": "^4.2.0",
     "@noble/curves": "^1.9.1",
     "viem": "^2.55.1"
@@ -57,7 +57,7 @@
     }
   },
   "devDependencies": {
-    "@fangorn-network/sdk": "^2026.10.27-dev",
+    "@fangorn-network/sdk": "^2026.10.28",
     "@huggingface/transformers": "^4.2.0",
     "@noble/curves": "^1.9.1",
     "@privy-io/react-auth": "^3.47.0",

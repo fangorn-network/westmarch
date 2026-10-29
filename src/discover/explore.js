@@ -54,7 +54,7 @@ export const CHAIN = chainOf();
 
 const APP_AGENT_CHANGED = parseAbiItem("event AppAgentChanged(bytes32 indexed app_id, string agent_uri)");
 const REGISTERED = parseAbiItem("event Registered(uint256 indexed agentId, string agentURI, address indexed owner)");
-const APPS = parseAbi(["function getAppOwner(bytes32) view returns (address)"]);
+const APPS = parseAbi(["function getAppOwner(bytes32) view returns (address)", "function canonicalAppId(bytes32) view returns (bytes32)"]);
 const REP = parseAbi([
     "function getClients(uint256) view returns (address[])",
     "function getSummary(uint256, address[], string, string) view returns (uint64, int128, uint8)",
@@ -169,7 +169,12 @@ export async function readDirectory(client, { chain = CHAIN, onUpdate = () => {}
         try {
             if (!/^https:\/\//.test(uri)) throw new Error("card is not https");
             card = await json(uri);
-            const why = verifyCard(card, appId, chain);
+            let why = verifyCard(card, appId, chain);
+            if (why === "card names another app") {   // or a name the app was renamed to: logs carry the id it was claimed under
+                const named = card.capabilities.extensions.find((e) => e.uri === APP_EXTENSION).params.appId;
+                const canonical = await client.readContract({ address: chain.appRegistry, abi: APPS, functionName: "canonicalAppId", args: [named] }).catch(() => null);
+                if (canonical?.toLowerCase() === appId.toLowerCase()) why = verifyCard(card, named, chain);
+            }
             if (why) throw new Error(why);
         } catch (e) { dropped.push({ card: uri, why: e?.message ?? String(e) }); return settle(); }
 
