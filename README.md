@@ -9,6 +9,7 @@ to a Fangorn app and ERC-8004 agent that any agent can discover, verify and driv
 installs `fangorn-mcp` in one command; in Claude Code, `claude plugin marketplace add
 fangorn-network/westmarch && claude plugin install fangorn-index@fangorn` adds it with its skill.
 
+**Using Codex?** [Install the Fangorn app and improvement skills](codex/README.md).
 
 ## The free tier: one Worker per app
 
