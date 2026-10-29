@@ -1,6 +1,6 @@
 {
   "name": "@fangorn-network/westmarch",
-  "version": "2026.10.27.2",
+  "version": "2026.10.29",
   "description": "all-in-one builder for fangorn apps",
   "license": "MIT",
   "type": "module",
@@ -39,7 +39,8 @@
     "prepare": "tsc -p .",
     "test": "node scripts/test.js",
     "lint": "node src/publish/lint.js",
-    "e2e:worker": "node scripts/e2e-worker.mjs"
+    "e2e:worker": "node scripts/e2e-worker.mjs",
+    "prepack": "vite build site"
   },
   "dependencies": {
     "@fangorn-network/markov": "^0.1.0"
@@ -65,17 +66,18 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "typescript": "^5.9.3",
-    "viem": "^2.56.3"
+    "viem": "^2.56.3",
+    "vite": "^8.3.5"
   },
   "bin": {
-    "westmarch": "./src/publish/init.js",
-    "westmarch-publish": "./src/publish/cli.js",
-    "westmarch-view": "./src/publish/view-cli.js",
-    "westmarch-ship": "./src/publish/ship.js",
-    "westmarch-eval": "./dist/ts/eval.js",
-    "westmarch-lint": "./src/publish/lint.js",
-    "fangorn-mcp": "./src/agent/mcp.js",
-    "fangorn-fx": "./plugin/scripts/fx.mjs"
+    "westmarch": "src/publish/init.js",
+    "westmarch-publish": "src/publish/cli.js",
+    "westmarch-view": "src/publish/view-cli.js",
+    "westmarch-ship": "src/publish/ship.js",
+    "westmarch-eval": "dist/ts/eval.js",
+    "westmarch-lint": "src/publish/lint.js",
+    "fangorn-mcp": "src/agent/mcp.js",
+    "fangorn-fx": "plugin/scripts/fx.mjs"
   },
   "files": [
     "src",

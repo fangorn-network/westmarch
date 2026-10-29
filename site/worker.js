@@ -35,7 +35,7 @@ import { createPublicClient, http } from "viem";
 import { generatePrivateKey } from "viem/accounts";
 import { EMBED_MODEL, DOCUMENT, QUERY, matryoshka } from "../src/core/embed.js";
 import { configure, resetShard } from "../src/core/shard.js";
-import { publishView, r2Store } from "../src/publish/view.js";
+import { ORIGIN, publishView, r2Store } from "../src/publish/view.js";
 import { viewTools } from "../src/agent/view-tools.js";
 
 let CONFIG = { paid: null };
@@ -466,7 +466,6 @@ async function paidCall(origin, tool, payment, run) {
     return { ...result, _meta: { ...result._meta, "x402/payment-response": settled } };
 }
 
-export const ORIGIN = "https://origin.westmarch.invalid";
 const BY_ORIGIN = new Set(["/.well-known/agent-card.json", "/openapi.json", "/.well-known/x402"]);
 
 const worker = {

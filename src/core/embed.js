@@ -31,13 +31,17 @@ export const EMBED_DIM = DIM;
 /** A short name for the space a taste or a reaction lives in. */
 export const SPACE = `embeddinggemma-${DIM}`;
 
-let _model = null;
+let _model = null, _progress = null;
+/** Hear the model download: transformers.js's own events ({status, file, loaded, total}), on
+ *  the thread that loads it (the page's own worker, when it calls the *Direct functions). */
+export const onModelProgress = (f) => { _progress = f; };
 const model = () => (_model ??= (async () => {
     const { AutoModel, AutoTokenizer } = await import("@huggingface/transformers");
     // WESTMARCH_EMBED_DEVICE=cuda puts a Node publisher's document side on a GPU.
     const device = globalThis.process?.env?.WESTMARCH_EMBED_DEVICE;
-    const [tokenizer, m] = await Promise.all([AutoTokenizer.from_pretrained(ONNX),
-        AutoModel.from_pretrained(ONNX, { dtype: DTYPE, ...(device && { device }) })]);
+    const progress_callback = (p) => _progress?.(p);
+    const [tokenizer, m] = await Promise.all([AutoTokenizer.from_pretrained(ONNX, { progress_callback }),
+        AutoModel.from_pretrained(ONNX, { dtype: DTYPE, progress_callback, ...(device && { device }) })]);
     // `sentence_embedding`, not mean pooling: the model's dense head runs after the pool.
     return async (texts) => {
         const { sentence_embedding: e } = await m(await tokenizer(texts, { padding: true, truncation: true }));
