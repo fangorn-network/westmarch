@@ -13,7 +13,7 @@ loop the owner runs: new records always ship, and a change to *how* records are 
 ships only if the owner's questions are answered no worse.
 
 ```
- register (minutes):  claim ─► join ─► empty site on Pages ─► card bound on chain
+ register (minutes):  claim ─► empty site on Pages ─► card bound on chain
                                                                  │ the app exists, at its URL
  build (hours):       crawl, snapshot ─► .ship/stage ─► recipe ─► local view ─► westmarch-eval
                                          (plaintext)    (app.json  (--local)    (eval/golden.jsonl)
@@ -79,7 +79,7 @@ Then:
   app*, and go from step 1 to step 3. This app deploys by `git push`: Workers Builds runs
   `westmarch build` on every push to `main`. **Never run `westmarch-ship` here without
   `--no-deploy`**, or it deploys a second copy over the Worker. Sources publish with
-  `npx westmarch-ship app.json --no-deploy`, members push with the `fangorn` CLI, and
+  `npx westmarch-ship app.json --no-deploy`, publishers push with the `fangorn` CLI, and
   `--local` grades as usual. The Deploy button builds free apps only. Selling records
   (`paid`) or the data (`private`) means moving its deploys to `westmarch-ship`, which
   sets the secret: say so before they choose a price.
@@ -184,11 +184,11 @@ A source is one kind of input:
 - **snapshot**: a file, dump or export (CSV, a database export, a bucket), read whole
   each run and replacing the last;
 - **live**: people, agents or devices submitting. There is no ingest server: they
-  register as publishers in the app and push into its namespace from their own wallets,
+  push into its namespace from their own wallets,
   and the view reads every publisher's commits (one domain per publisher). An app with no
-  `sources` already presents every member's repo. An app with sources narrows its view
-  to their namespaces, so name the ones members push to in `"live": ["readings"]` (or
-  `"live": true` for any). `--local` then reads what members have already committed to
+  `sources` presents every repo. An app with sources narrows its view
+  to their namespaces, so name the ones publishers push to in `"live": ["readings"]` (or
+  `"live": true` for any). `--local` then reads what publishers have already committed to
   those namespaces from the chain (reads only, no gas), beside what the sources staged,
   so contributions are graded too. Give each device its own repo name: one writer per
   repo.
@@ -239,16 +239,13 @@ the site just before *Register the app*, what each type costs just before *Go li
 
 ## What the person must have
 
-Do not open with this list. Check what you can yourself (`node -v`, `fangorn --version`,
-`python3 -c "import quickbeam"`), and raise a missing piece when the next step needs it:
-Node, the Fangorn CLI, the wallet and Cloudflare to register; quickbeam before the first
-local build; Pinata before *Go live*.
+Do not open with this list. Check what you can yourself (`node -v`, `fangorn --version`), and raise a missing piece
+when the next step needs it: Node, the Fangorn CLI, the wallet and Cloudflare to register;
+whatever the sources run on before the first local build; Pinata before *Go live*.
 
-- Node 22 and the Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.10.20-dev`, or whatever
+- Node 22 and the Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.11.3`, or whatever
   newer version westmarch's `package.json` lists as its `@fangorn-network/sdk` peer.
-- Python 3 with quickbeam, whose harness every source runs on. Quorum pins it in
-  `sources/requirements.txt` as
-  `quickbeam @ git+https://github.com/fangorn-network/embeddings@tony/dev`.
+- Whatever the app's sources are written in: a source is any command (see step 2).
 - A wallet on the app's network (Arbitrum Sepolia or Base Sepolia) with a little ETH. **It owns the app forever**, so it
   must be the wallet that will publish the data. Never generate a key for a real app;
   throwaway keys are only for read-only paths. Needed to register.
@@ -264,7 +261,7 @@ npx @fangorn-network/westmarch init <app>   # the repo, npm installed, first com
 ```
 
 ```
-app.json            the app: types (role maps), sources (none: it presents what members commit), site, paid
+app.json            the app: types (role maps), sources (none: it presents every repo), site, paid
 sources/*.py        one module per source, if the app crawls anything
 eval/goals.md       the bet
 eval/golden.jsonl   the questions
@@ -278,10 +275,10 @@ fangorn.network, `westmarch-ship` finds the claim block on chain; it never claim
 ## Chain writes and deploys are the person's call
 
 Several steps cost money or cannot be undone: `fangorn app claim` (first come, first
-served, permanent), `fangorn register` (pays the registration fee), every `fangorn repo
+served, permanent), every `fangorn repo
 init` and `fangorn push` (gas), `wrangler pages project create` and `pages deploy`, and
 `fangorn app agent` (pins to IPFS, mints an agent; with `--skip-register` it only binds
-the card). `westmarch-ship --register` does the claim, register, Pages deploy and bind;
+the card). `westmarch-ship --register` does the claim, Pages deploy and bind;
 without `--local` it does all of these. Show the exact command and what it does, then run it only when they
 say so. Everything else — the questions, the sources, local builds, the eval — is free
 and reversible, so just do it.
@@ -325,52 +322,28 @@ minute; retry rather than debug.
 (`presentation.externalUrl`). Declare every type: an undeclared type gets its roles
 guessed from field names, which works for display and often fails for search.
 
-**2. One source per input.** A source is a Python module on quickbeam's harness. Start
-from a working one — Quorum's `sources/dnr_wells.py` is a snapshot, `sources/legistar.py`
-a crawl with a cursor. The shape:
+**2. One source per input.** A source is any command, in any language. `westmarch-ship`
+runs it two ways, and it must answer both:
 
-```python
-import json, sys
-from quickbeam import SourceBase
-
-TAG = "my-app.thing.v1"
-
-class ThingsSource(SourceBase):
-    name = "things"
-    stems = {TAG: "things"}           # tag → the staged file, volume_1_things.json
-    snapshot_stems = {"things"}       # snapshot: each run replaces the last; omit for a crawl
-
-    def add_source_args(self, p):
-        p.add_argument("--file", required=True)
-
-    def read(self, cursor, args):     # raw rows since `cursor`
-        with open(args.file) as f:
-            return json.load(f)
-
-    def build_graph(self, records):   # raw rows → records (the recipe)
-        return {TAG: [{"name": f"things:{r['sku']}", "fields": {
-            "entityType": TAG, "thing_id": f"my-app:thing:{r['sku']}", "title": r["name"],
-            "text": f"{r['name']}: {r['about']}", **r}} for r in records]}, []
-
-    def next_cursor(self, records, prev):
-        return prev                   # a crawl returns where the next run resumes
-
-if __name__ == "__main__":
-    from quickbeam.ingest.scrapers.harness import run_source
-    run_source(ThingsSource(), sys.argv[1:])
-```
+- **Stage:** with `--output-dir <dir>` (and `--volume <n>`, default 1), write its records as
+  `volume_<n>_<stem>.json`: a JSON array of `{"name": "<record id>", "fields": {…}}`, with
+  `fields.entityType` set to the record's declared type. References between records go in
+  `volume_<n>_edges.json`: `[{"from": "<id>", "rel": "<relation>", "to": "<id>"}]`.
+  `--local` reads only these files.
+- **Publish:** with `--publish --namespace <ns> --fangorn-bin "<cli>"`, commit the same
+  records to the repo `<ns>` through that `fangorn` CLI (`fangorn commit` then `fangorn push`).
+  `--replace` means a snapshot: the run replaces the repo's records instead of adding to them.
 
 Its entry in `app.json` must pass `--output-dir .ship/stage/<namespace>`: that directory
-is the stage, and `--local` reads nothing else. A crawl also takes `--cache-dir
-.ship/cache/<namespace>` and `--checkpoint-file .ship/stage/<namespace>/checkpoint.json`.
-A source with `"each": "rows.json"` is a template, one source per row (`{field}`,
-`{field|slug}`, `{args...}`), so adding a town or a feed is adding a row.
+is the stage. A crawl also keeps its own cache and checkpoint (under `.ship/`), so the next
+run resumes where this one stopped. A source with `"each": "rows.json"` is a template, one
+source per row (`{field}`, `{field|slug}`, `{args...}`), so adding a town or a feed is
+adding a row.
 
-Withholding (names, addresses) belongs in `build_graph`, before anything is staged, so
-every record passes through it. For a paid tier: the source takes `--paid-dir`, writes one
-JSON per record there, and puts that file's sha256 on the record as `paid_sha256`; its
-`app.json` entry names `paid_dir`. Quorum's `write_paid` in `sources/civicplus.py` is the
-pattern.
+Withholding (names, addresses) belongs in the source, before anything is staged, so every
+record passes through it. To sell a record, its publisher seals and prices it when
+committing: `fangorn commit records.json --paid <field> --price 0.01`. The app then quotes
+it (`"paid": true` and `"facilitator"` in `app.json`).
 
 **3. Build and grade:**
 
@@ -388,8 +361,8 @@ A big corpus on an NVIDIA GPU: `WESTMARCH_EMBED_DEVICE=cuda` runs the same q8 en
 the GPU (same stamp; ~0.99 cosine to CPU vectors, closer than the browser's queries get).
 One-time setup: `ONNXRUNTIME_NODE_INSTALL=cuda12 node script/install.js` inside
 `node_modules/onnxruntime-node`, and the CUDA 12 runtime, cuBLAS and cuDNN on
-`LD_LIBRARY_PATH` (on WSL, add `/usr/lib/wsl/lib`). Not quickbeam: its fastembed fp32
-vectors are a different encoder and a q8 view refuses them.
+`LD_LIBRARY_PATH` (on WSL, add `/usr/lib/wsl/lib`). Another encoder's vectors (fastembed
+fp32, say) are a different encoder, and a q8 view refuses them.
 
 **4. Read the result with the person.** For each failing check:
 
@@ -743,9 +716,8 @@ example, "page tools not exercised in a WebMCP browser") rather than implying it
 written from scratch, or a large public corpus baked yourself with one vertex per shard
 carrying its sha256, so the chain anchors a digest instead of hundreds of MB of rows
 (Kingsfoil: 60,760 trials; its `pipeline/bake.mjs` and `chain/graph-commit.mjs`, and the
-layout in *The view on disk*). `westmarch-view` embeds locally on CPU; hosted quickbeam
-watches the chain and embeds on a GPU. Both write the same files, so an app moves between
-them by changing one URL in its card.
+layout in *The view on disk*). `westmarch-view` embeds locally on CPU, and the app's Worker writes the same files from
+its cron.
 
 Each step names the guide section that holds its code and the check that proves it worked.
 
@@ -776,14 +748,11 @@ alone, which matters if they already publish another one from this wallet.
 
 Record the current block number *before* claiming; it becomes the card's `fromBlock`,
 where readers start scanning the chain for this app. Then `fangorn app info` (expect
-"unclaimed") and `fangorn app claim`. Placeholder terms are fine at first; real ones
-come later with `fangorn app terms <hash> <uri>`.
+"unclaimed") and `fangorn app claim` (free).
 
 **3. Become a publisher** (guide §3)
 
-`fangorn register` does the global registration and joins this app. Both are needed:
-a push from a wallet that registered but did not join reverts `NotRegisteredForApp`.
-Check with `fangorn app info`.
+Nothing to do: any wallet with gas publishes, with or without an app.
 
 **4. Data as a graph** (guide §4)
 

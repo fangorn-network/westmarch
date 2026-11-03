@@ -92,9 +92,8 @@ git switch -c improve/<slug> origin/main
 git worktree add ../base origin/main && cp -r .ship ../base/ 2>/dev/null   # staged records, PDF cache, vectors
 ```
 
-**Data: add a place.** Sources are Python on quickbeam's harness: install
-`sources/requirements.txt` first, or point `PYTHON` at an environment that has quickbeam.
-Find how the place publishes its meetings, cheapest first:
+**Data: add a place.** Sources are whatever commands the app's `app.json` runs; install
+what they need first (for Python sources, the app's `sources/requirements.txt`). Find how the place publishes its meetings, cheapest first:
 
 - Legistar: `curl -s https://webapi.legistar.com/v1/<client>/bodies`. A list of bodies
   (check they are the city's, e.g. "Common Council", not the county's) means yes; HTTP 500
@@ -164,7 +163,7 @@ npx westmarch-eval /tmp/cand --base /tmp/base                                   
 npx westmarch-eval /tmp/new --golden eval/golden.jsonl --known 0                   # privacy checks on the new records
 ```
 
-A change to the platform itself (westmarch, quickbeam's harness) is not this skill's to
+A change to the platform itself (westmarch, the Fangorn SDK) is not this skill's to
 make: open an issue in that repo with the change proposed and the evidence, and link it.
 
 **Questions.** Add the check the Observation implies to `eval/golden.jsonl`, with the

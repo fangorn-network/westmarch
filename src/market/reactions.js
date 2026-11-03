@@ -16,7 +16,7 @@
 // ------------------------------------------------------
 // A reaction's vector is the vector of the row reacted to, which the reader
 // already downloaded in order to react to it. So a reaction corpus needs no
-// model, no GPU, no bake, no quickbeam — the vectors are copied, not computed.
+// model, no GPU, no bake — the vectors are copied, not computed.
 // The only thing that has to be fitted locally is `coverage`, which is eight
 // centroids and is the function below. A consumer becoming a publisher is
 // therefore not a tier you upgrade into; it is this file and a price.
@@ -51,7 +51,24 @@
 // hat, and a reader with nine reactions is exactly who most needs this to hold.
 
 import { EMBED_MODEL, packVec } from "../core/embed.js";
-import { lineage } from "./terms.js";
+
+const ADDR = /^0x[0-9a-fA-F]{40}$/;
+/** What a publisher owes upstream for one resource, in bps of its share. Deduped by payee:
+ *  the same source cited twice is one debt, not two, which can't be gamed by repeating an entry. */
+function lineage(entries = []) {
+    const by = new Map();
+    for (const e of entries) {
+        const to = String(e.to ?? "").toLowerCase();
+        if (!ADDR.test(to)) throw new Error(`not an address: ${e.to}`);
+        const b = BigInt(e.bps ?? 0);
+        if (b < 0n || b > 10000n) throw new Error(`lineage bps must be 0..10000, got ${e.bps}`);
+        by.set(to, { to, bps: (by.get(to)?.bps ?? 0n) + b, note: e.note ?? by.get(to)?.note ?? "" });
+    }
+    const out = [...by.values()];
+    const total = out.reduce((s, e) => s + e.bps, 0n);
+    if (total > 10000n) throw new Error(`lineage owes ${total} bps of the publisher's share — more than all of it`);
+    return out.map((e) => ({ to: e.to, bps: String(e.bps), ...(e.note ? { note: e.note } : {}) }));
+}
 
 // 32, not 8: on Kingsfoil the top 3 of 23 views held 92% of the true top 10 with 32
 // centroids and 86% with 8, and 8 missed whole topics (ALS → neurology).
@@ -68,7 +85,7 @@ const dot = (a, b) => { let s = 0, n = Math.min(a.length, b.length); for (let i 
  * Spherical k-means over the corpus's own vectors — the routing summary that
  * lets a buyer rank this corpus WITHOUT downloading it.
  *
- * Mirrors quickbeam's `cdn._coverage`: fit at full width, truncate to `dim`
+ * The view's coverage: fit at full width, truncate to `dim`
  * leading components (Matryoshka), then RENORMALIZE, because a truncated unit
  * vector is not unit and the client compares against a truncated query it
  * renormalizes too. Get that order wrong and routing degrades silently.
@@ -238,7 +255,6 @@ export function reactionCorpus(events = [], {
 
 // ── self-check: `node src/market/reactions.js` ────────────────────────────────
 if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/reactions.js")) {
-    const { splitPayment } = await import("./terms.js");
     const A = (n) => `0x${String(n).repeat(40).slice(0, 40)}`;
     const vec = (a, b) => { const v = new Float32Array(256); v[0] = a; v[1] = b; return v; };
 
@@ -321,16 +337,6 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     if (bps["archive-films"] !== 1500 || bps.games !== 500) throw new Error(`upstream must follow contribution: ${JSON.stringify(bps)}`);
     if (up.reduce((s, e) => s + Number(e.bps), 0) !== 2000) throw new Error("the declared upstream total must be exact, not a basis point short");
 
-    // …and it reconciles against a real sale. This is the claim: the corpora that
-    // produced the attention are paid when the attention sells.
-    const TERMS = { appId: "fangorn.tv", owner: A(9), appBps: 1000 };
-    const pay = splitPayment(300000n, { terms: TERMS, publisher: A(3), lineage: up });
-    const got = Object.fromEntries(pay.map((p) => [p.to, p.amount]));
-    if (got[A(9)] !== 30000n) throw new Error("the app's cut comes off the top and never moves");
-    if (got[A(1)] !== 40500n || got[A(2)] !== 13500n) throw new Error(`upstream is paid from the publisher's share: ${JSON.stringify(got, (k, v) => typeof v === "bigint" ? String(v) : v)}`);
-    if (got[A(3)] !== 216000n) throw new Error("the reader keeps the rest");
-    if (pay.reduce((s, p) => s + p.amount, 0n) !== 300000n) throw new Error("money is neither invented nor destroyed");
-
     // A reader who cites a corpus nobody registered simply owes it nothing.
     const orphan = reactionCorpus(EV, { publisher: A(3), sources: { games: A(2) } });
     if (orphan.lineage.length !== 1 || Number(orphan.lineage[0].bps) !== 2000) throw new Error("an unregistered corpus cannot be paid, and its share does not vanish");
@@ -341,5 +347,5 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
 
     console.log("reactions.js self-check ok — reactions become a corpus with no model, coverage is deterministic and renormalized after truncation, "
         + "the free index ranks on centroids alone, publishes no per-row vector to join against and no paid string anywhere including its own keys, "
-        + "time is coarse, upstream follows contribution exactly and reconciles against a real sale");
+        + "time is coarse, upstream follows contribution exactly");
 }

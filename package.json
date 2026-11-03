@@ -1,12 +1,11 @@
 {
   "name": "@fangorn-network/westmarch",
-  "version": "2026.10.29",
+  "version": "2026.11.3",
   "description": "all-in-one builder for fangorn apps",
   "license": "MIT",
   "type": "module",
   "exports": {
     "./graph": "./src/publish/graph.js",
-    "./envelope": "./src/publish/envelope.js",
     "./enrich": "./src/publish/enrich.js",
     "./shard": "./src/core/shard.js",
     "./embed": "./src/core/embed.js",
@@ -21,13 +20,10 @@
     "./corpora": "./src/discover/corpora.js",
     "./ui": "./src/agent/ui.js",
     "./lint": "./src/publish/lint.js",
-    "./terms": "./src/market/terms.js",
     "./reactions": "./src/market/reactions.js",
     "./cohort": "./src/market/cohort.js",
     "./vault": "./src/taste/vault.js",
     "./taste-doc": "./src/taste/taste-doc.js",
-    "./settle": "./src/market/settle.js",
-    "./manifest": "./src/publish/manifest.js",
     "./demand": "./src/market/demand.js",
     "./steam": "./src/taste/steam.js",
     "./tools": "./src/agent/tools.js",
@@ -40,44 +36,44 @@
     "test": "node scripts/test.js",
     "lint": "node src/publish/lint.js",
     "e2e:worker": "node scripts/e2e-worker.mjs",
-    "prepack": "vite build site"
+    "e2e:paid": "node scripts/e2e-paid.mjs"
   },
   "dependencies": {
     "@fangorn-network/markov": "^0.1.0"
   },
   "peerDependencies": {
-    "@fangorn-network/sdk": "^2026.10.27-dev",
+    "@fangorn-network/sdk": "^2026.11.3",
     "@huggingface/transformers": "^4.2.0",
     "@noble/curves": "^1.9.1",
+    "@semaphore-protocol/core": "^4.14.5",
     "viem": "^2.55.1"
   },
   "peerDependenciesMeta": {
     "@huggingface/transformers": {
       "optional": true
+    },
+    "@semaphore-protocol/core": {
+      "optional": true
     }
   },
   "devDependencies": {
-    "@fangorn-network/sdk": "^2026.10.27-dev",
+    "@fangorn-network/sdk": "2026.11.3",
     "@huggingface/transformers": "^4.2.0",
     "@noble/curves": "^1.9.1",
-    "@privy-io/react-auth": "^3.47.0",
+    "@semaphore-protocol/core": "^4.14.5",
     "@stripe/stripe-js": "^10.0.0",
     "graphql": "^16.14.2",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
     "typescript": "^5.9.3",
-    "viem": "^2.56.3",
-    "vite": "^8.3.5"
+    "viem": "^2.56.3"
   },
   "bin": {
-    "westmarch": "src/publish/init.js",
-    "westmarch-publish": "src/publish/cli.js",
-    "westmarch-view": "src/publish/view-cli.js",
-    "westmarch-ship": "src/publish/ship.js",
-    "westmarch-eval": "dist/ts/eval.js",
-    "westmarch-lint": "src/publish/lint.js",
-    "fangorn-mcp": "src/agent/mcp.js",
-    "fangorn-fx": "plugin/scripts/fx.mjs"
+    "westmarch": "./src/publish/init.js",
+    "westmarch-view": "./src/publish/view-cli.js",
+    "westmarch-ship": "./src/publish/ship.js",
+    "westmarch-eval": "./dist/ts/eval.js",
+    "westmarch-lint": "./src/publish/lint.js",
+    "fangorn-mcp": "./src/agent/mcp.js",
+    "fangorn-fx": "./plugin/scripts/fx.mjs"
   },
   "files": [
     "src",

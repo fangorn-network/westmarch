@@ -5,7 +5,7 @@
 // on the next — which is exactly what happened the first time the probe was
 // pointed at a second bundle.
 //
-// The answer is already baked. A quickbeam domain manifest carries `role_map`
+// The answer is already baked. A view's domain manifest carries `role_map`
 // (which field is the title, the subtitle, the tags, the prose to search, the
 // measures, the location, the link) and `presentation` (an icon, an accent and a
 // singular/plural name per entity type, plus per-type external URL templates).
@@ -158,7 +158,7 @@ export function rolesFrom(manifests = [], sample = []) {
 /**
  * Which collection a row belongs to.
  *
- * `entityType` is quickbeam's own convention — both bundles here carry it, and
+ * `entityType` is the view's own convention — every row carries it, and
  * the manifest's `entity_types` counts are keyed by it — so this is the one
  * field name the format actually fixes. `kind` is the older spelling and is
  * still on-chain in sond3r's vertices, hence the fallback.
@@ -249,7 +249,7 @@ export const isLocked = (field, roles) =>
 /** Is this row part of the corpus's free sample — the deterministic slice a
  *  paywalled bake hands over whole so a buyer can read before paying?
  *
- *  The bake picks it by hashing the row's own id (quickbeam `paywall.in_sample`),
+ *  The bake picks it by hashing the row's own id (`inSample`),
  *  which is what stops a seller putting its best rows in the shop window. That
  *  only holds if someone CHECKS, and the check is this function: anyone can
  *  recompute which rows should be free and see whether the shard agrees. */
@@ -460,9 +460,9 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     if (gatesOf(rolesFrom([places])).length) throw new Error("an ungated view must report no gates");
     if (isLocked("text", rolesFrom([places]))) throw new Error("nothing is locked in an ungated view");
 
-    // The free sample, recomputed. Must agree with quickbeam's paywall.in_sample
-    // byte for byte or the check that keeps a seller honest checks nothing —
-    // these ids and their verdicts are pinned against that implementation.
+    // The free sample, recomputed. Must agree with the bake's sample byte for byte or
+    // the check that keeps a seller honest checks nothing — these ids and their
+    // verdicts are pinned.
     for (const [id, yes] of [["row-47", true], ["row-169", true], ["row-0", false], ["row-3", false], ["row-19", false]]) {
         if (await inSample(id, 0.01) !== yes) throw new Error(`inSample must match the bake: ${id}`);
     }

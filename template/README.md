@@ -2,7 +2,7 @@
 
 This repo holds the app's recipe, not its data: what a record is (`app.json`), what a good
 answer looks like (`eval/`), and the Worker that serves it (`wrangler.json`). It can be
-public. The data lives on chain and IPFS, committed by the app's members; the Worker
+public. The data lives on chain and IPFS, committed by its publishers; the Worker
 indexes it every 5 minutes, and serves the site, the view, `/mcp` and the agent card.
 
 ## Deploy
@@ -29,7 +29,7 @@ fields in `role_map`. Push, and the Worker follows.
 
 ## Publish data
 
-Any member of the app commits records of its type, from anywhere:
+Any wallet commits records of its type, from anywhere:
 
 ```sh
 echo '{"records":[{"id":"first","type":"my-app.item.v1","payload":{"id":"first","title":"Hello","text":"The first item.","tags":["demo"]}}]}' > items.json

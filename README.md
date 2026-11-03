@@ -20,9 +20,9 @@ An app on the free tier is one Cloudflare Worker (`site/worker.js`), and nobody 
 after the deploy:
 
 - **Indexer.** A cron follows the update log from where it left off, and runs the
-  embedding lens (WHITEPAPER_1 §3.4) over every member's repo whose head moved: `view.js`, with
+  embedding lens (WHITEPAPER_1 §3.4) over every repo it lists whose head moved: `view.js`, with
   the Worker's AI binding as the encoder (`@cf/google/embeddinggemma-300m`, 256 dims). The view
-  goes to R2. A repo whose publisher leaves the app, or that the app excludes, loses its domain on the next run.
+  goes to R2. A repo the app stops listing loses its domain on the next run.
 - **View.** `/view/cdn/…`: the catalog, manifests and content-named shards a reader ranks in
   its own tab, so a query need never leave it.
 - **MCP.** `/mcp`, streamable HTTP: describe, search, get, similar, count, browse and threads
@@ -40,7 +40,7 @@ gateway, publishers, and the Worker under `wrangler dev` with its real AI bindin
 
 **For Publishers** — shape a tree into a commit graph, describe what's in it, seal and upload the bytes. Needs `fangorn`. Runs anywhere: a script, a server, a browser.
 
-**For Consumers** — read a quickbeam view's Semantic CDN shards in the reader's own process and rank them there. Needs a view URL and nothing else. No index server, no chain read, and the query never leaves the tab.
+**For Consumers** — read an app's view (its Semantic CDN shards) in the reader's own process and rank them there. Needs a view URL and nothing else. No index server, no chain read, and the query never leaves the tab.
 
 The two halves never talk to each other. A publisher writes a graph; some
 watcher bakes it into a view; a consumer reads the view. Either half is useful
@@ -242,7 +242,7 @@ A generic reader has one hard problem: it has rows and no idea which field is
 the title. Hardcode `name` and it works on one bundle and returns `undefined` on
 the next.
 
-The answer is already baked. A quickbeam domain manifest carries `role_map`
+The answer is already baked. A view's domain manifest carries `role_map`
 (title, subtitle, tags, the prose to search, measures, location, link) and
 `presentation` (icon, accent and singular/plural per entity type, plus per-type
 external URL templates). `rolesFrom(manifests, sample)` merges that across the

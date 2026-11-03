@@ -4,8 +4,8 @@
 //   westmarch-view --app my-app [--repo catalog …] --out site/view     (a laptop, CI)
 //   site/worker.js, on a cron                                          (the free tier)
 //
-// Reads the registry and storage and nothing else: every repo the app presents (its
-// members' repos, less its exclusions, `appRepos`), at their latest heads; the schema
+// Reads the registry and storage and nothing else: every repo the app presents (any
+// publisher's repo of a name it lists), at their latest heads; the schema
 // (app.json's `types` + `relations`) comes from the caller. Embeds only records the view does not hold
 // yet, drops removed ones, and writes, through a store (a directory or an R2 bucket):
 //
@@ -15,21 +15,20 @@
 //
 // Stateless: the view's own files are its state, and each domain's manifest names the head
 // it was built from, so a run where no head moved reads one manifest per repo and nothing
-// else. A repo the app stops presenting (an exclusion) loses its domain on the next run.
+// else. A repo the app stops presenting loses its domain on the next run.
 //
-// The layout is quickbeam's (the hosted tier), so an app moves between the two by changing
-// one URL in its card:
-//   - URL layout, domain names (`domainFor`, byte-identical to quickbeam's `_domain_for`),
+// The layout is fixed, so any reader (shard.js, a tab, an agent) reads any app's view:
+//   - URL layout, domain names (`domainFor`: the publisher's address prefix and the repo),
 //     row shape {track_id, fields, v}, manifest and catalog keys;
 //   - a record is a row: track_id = its CID, fields = payload + entityType (its type);
 //   - the schema: a declared type is embedded and shipped with exactly its role map;
-//   - the embedded text (`composeText` mirrors quickbeam's `compose_document_text`).
+//   - the embedded text (`composeText`).
 // The encoder is EmbeddingGemma (embed.js). Two runtimes of it agree closely but not bit for
 // bit, so the manifest names its `embedder` and this refuses to append to a view another
 // encoder built.
 //
-// ponytail: flat records. quickbeam folds a record's neighbours into its text and can fuse
-// publishers by shared identity; that is the hosted tier's job. A reference the schema
+// ponytail: flat records: a record's neighbours aren't folded into its text, and publishers
+// aren't fused by shared identity. A reference the schema
 // declares is written onto its source row instead (`linkRelations`), which is all a
 // serverless reader needs.
 
@@ -49,14 +48,13 @@ const MULTI = ["tags", "measures", "relations", "text"];
 // Refit coverage once a domain has grown this many times over what it was fit on.
 const COVERAGE_REFIT = 2;
 
-// ── the contract shared with quickbeam ────────────────────────────────────────
+// ── the view's contract ────────────────────────────────────────
 
 const slug = (s) => (String(s ?? "").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "x");
-/** quickbeam `_domain_for` / registry `domainFor`, for an app id. */
-export const domainFor = (appId, owner, namespace) =>
-    `${slug(appId.slice(2, 10))}-${slug(owner.slice(2, 10))}-${slug(namespace)}`;
+/** A domain's name in the view: the publisher's address prefix and the repo. */
+export const domainFor = (owner, namespace) => `${slug(owner.slice(2, 10))}-${slug(namespace)}`;
 
-/** quickbeam `compose_document_text`, minus the `search_document: ` prefix that
+/** The text a row is embedded from, minus the `search_document: ` prefix that
  *  `embedDocumentDirect` adds itself. */
 export function composeText(fields, rm) {
     const tags = (rm.tags ?? []).map((t) => (typeof fields[t] === "string" ? fields[t] : "")).join(" ");
@@ -90,8 +88,8 @@ export function completeRoles(rm = {}) {
 }
 
 // ponytail: for a type the schema does not declare, a guess from field names and
-// value lengths — enough to show and search something, and loud about it. quickbeam's
-// `infer_roles` is richer; the fix either way is declaring the type.
+// value lengths — enough to show and search something, and loud about it. The fix is
+// declaring the type.
 export function guessRoles(rows) {
     const keys = [...new Set(rows.flatMap((r) => Object.keys(r)))].filter((k) => k !== "entityType");
     const find = (names) => keys.find((k) => names.includes(k.toLowerCase())) ?? null;
@@ -104,7 +102,7 @@ export function guessRoles(rows) {
     });
 }
 
-/** Merge the declared types a domain holds (most common first), like quickbeam's `domain_spec`. */
+/** Merge the declared types a domain holds (most common first). */
 export function domainSpec(schema, tags) {
     const decls = tags.map((t) => schema?.types?.[t]).filter(Boolean);
     if (!decls.length) return null;
@@ -170,7 +168,7 @@ export async function readOnlyFangorn() {
  *  `<owner>/<repo>` to `{ records: [{id, cid, type, payload}] }`, every one presented.
  *  A build that must not touch the chain — a candidate recipe graded before it ships —
  *  runs the exact code a real one does. */
-export function localFangorn(chain, { appId, owner }) {
+export function localFangorn(chain) {
     // Every version handed out is kept, so repoDiff can diff any two, as the SDK diffs two roots.
     const versions = new Map();
     const root = (k) => { const h = `0x${createHash("sha256").update(JSON.stringify(chain[k])).digest("hex")}`; versions.set(h, structuredClone(chain[k]?.records ?? [])); return h; };
@@ -182,9 +180,7 @@ export function localFangorn(chain, { appId, owner }) {
     };
     return {
         engine: { repoDiff }, reads: 0,
-        setAppId() {}, getAppId: () => appId,
-        getAppRegistry: () => ({ getAppOwner: async () => owner }),
-        appRepos: async () => Object.keys(chain).map((k) => ({ owner: k.split("/")[0], repo: k.split("/").slice(1).join("/"), root: root(k) })),
+        repos: async () => Object.keys(chain).map((k) => ({ owner: k.split("/")[0], repo: k.split("/").slice(1).join("/"), root: root(k) })),
         readRepo: async function (o, repo) { this.reads++; const c = chain[`${o}/${repo}`]; return { tip: c ? root(`${o}/${repo}`) : null, contents: { records: c?.records ?? [] } }; },
     };
 }
@@ -285,26 +281,26 @@ const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 /**
  * Bring the view up to date with what the app presents. `fangorn` is an SDK client (reads
  * only); `schema` is app.json's { types, relations } (a type it leaves out is guessed); the view goes to `store`, or the directory `out`. `repos` narrows it to those repo
- * names (every publisher's); without it, every repo the app presents. `fromBlock` must be
+ * names (every publisher's); without it, every repo. `fromBlock` must be
  * at or before the first update to a repo the app presents, or a repo the scan misses is left out;
  * left out, the SDK's deployment start. `embedBatch(texts)` embeds many at once where the
  * encoder batches (a Worker's AI binding); `embedder` is what the manifest records.
- * `presented` replaces the `appRepos` scan with a list the caller keeps itself
- * ([{owner, repo, root}], exclusions already applied), as a Worker does across runs.
+ * `presented` replaces the `repos` scan with a list the caller keeps itself
+ * ([{owner, repo, root}]), as a Worker does across runs.
  * Returns per-domain counts of what changed.
  */
 export async function publishView({ fangorn, app, schema, repos, out, store = fsStore(out), fromBlock, presented, rebake = false,
                                     embed = embedDocumentDirect, embedBatch = (ts) => Promise.all(ts.map(embed)),
-                                    embedder = EMBEDDER, log = console.log, shardRows = 20000, concurrency = 4, open = (p) => p }) {
-    fangorn.setAppId(app);
-    const appId = fangorn.getAppId();
+                                    embedder = EMBEDDER, log = console.log, shardRows = 20000, concurrency = 4 }) {
     schema = schemaOf(schema);
     const declared = Object.keys(schema.types);
     log(`schema: ${declared.length ? declared.join(", ") : "no declared types"}`);
     const schemaHash = sha256(JSON.stringify(schema));
 
-    // Every repo the app presents, at its accepted head: one log scan, exclusions applied.
-    const listed = (presented ?? await retry(() => fangorn.appRepos(fromBlock == null ? {} : { fromBlock: BigInt(fromBlock) })))
+    // Every repo the app presents, at its latest head: one log scan.
+    // ponytail: open: any publisher's repo of a listed name, and with no names, every repo.
+    // Read the app's repo of citations instead once the SDK reads citations.
+    const listed = (presented ?? await retry(() => fangorn.repos(fromBlock == null ? {} : { fromBlock: BigInt(fromBlock) })))
         // ponytail: "fangorn.schema" is where apps shipped before 2026-10-22 committed their schema; never data.
         .filter((t) => t.repo !== "fangorn.schema" && (!repos?.length || repos.includes(t.repo)));
     log(`${listed.length} repo(s) presented${repos?.length ? ` of ${repos.join(", ")}` : ""}`);
@@ -316,19 +312,19 @@ export async function publishView({ fangorn, app, schema, repos, out, store = fs
     const queue = [...listed];
     const worker = async () => {
         for (let t; (t = queue.shift()) !== undefined;) {
-            const domain = domainFor(appId, t.owner, t.repo);
+            const domain = domainFor(t.owner, t.repo);
             live.add(domain);
             // One repo failing (unreadable, the encoder out for the day) keeps its last view and
             // does not stop the others; the next run tries it again.
             const r = await publishDomain({ fangorn, store, schema, schemaHash, publisher: t.owner, repo: t.repo, head: t.root, domain,
-                dir: `cdn/domains/${domain}`, rebake, embedBatch, embedder, log, shardRows, open })
+                dir: `cdn/domains/${domain}`, rebake, embedBatch, embedder, log, shardRows })
                 .catch((e) => { log(`${domain}: ✗ ${e.message}; left as it was`); return { added: 0, removed: 0, error: e.message }; });
             if (r) report[domain] = r;
         }
     };
     await Promise.all(Array.from({ length: concurrency }, worker));
 
-    // What the app no longer presents (excluded, or its publisher banned) is not served.
+    // What the app no longer presents is not served.
     for (const d of await store.list("cdn/domains")) {
         if (live.has(d)) continue;
         const m = await readJson(store, `cdn/domains/${d}/manifest`, null);
@@ -353,7 +349,7 @@ async function retry(f, tries = 6) {
 }
 
 const CHECKPOINT = 2048;   // rows embedded between saves; a killed run redoes at most this many
-async function publishDomain({ fangorn, store, schema, schemaHash, publisher, repo, head, domain, dir, rebake, embedBatch, embedder, log, shardRows, open }) {
+async function publishDomain({ fangorn, store, schema, schemaHash, publisher, repo, head, domain, dir, rebake, embedBatch, embedder, log, shardRows }) {
     // The head the domain was built from, and the schema it was built under: neither moved,
     // nothing to read. This is what keeps a cron run with nothing new to one read per repo.
     const was = rebake ? null : await readJson(store, `${dir}/manifest`, null);
@@ -369,9 +365,11 @@ async function publishDomain({ fangorn, store, schema, schemaHash, publisher, re
         ? await retry(() => fangorn.engine.repoDiff(was.head, head)).catch((e) => { log(`${domain}: diff from ${was.head} failed (${e.message}); reading it whole`); return null; })
         : null;
     const got = diff?.superseded ? diff.puts : (await retry(() => fangorn.readRepo(publisher, repo))).contents.records;
-    // `open`: a private app's rows are sealed on chain (x402.js's sealRow); the Worker opens them here.
-    const records = new Map(await Promise.all(got.filter((r) => r.payload && typeof r.payload === "object")
-        .map(async (r) => [r.cid, { id: r.id, fields: { ...(await open(r.payload)), entityType: r.type } }])));
+    // `@`-ids (`@card`, `@deposit/<generation>`) are the protocol's records, not the publisher's data.
+    const records = new Map(got.filter((r) => r.payload && typeof r.payload === "object" && !String(r.id).startsWith("@"))
+        .map((r) => [r.cid, { id: r.id, fields: { ...r.payload, entityType: r.type,
+            // A record its publisher sells (`fangorn commit --paid`): what a buyer quotes it by, and its price.
+            ...(r.payload["@terms"]?.terms ? { sale: { publisher, repo, id: r.id, price: String(r.payload["@terms"].terms.price) } } : {}) } }]));
     linkRelations(records, schema);
     const fieldsOf = (cid) => records.get(cid).fields;
 
@@ -563,11 +561,11 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     const manifestOf = (dir, d) => JSON.parse(readFileSync(`${dir}/cdn/domains/${d}/manifest`, "utf8"));
     const rec = (cid, type, payload, id = cid) => ({ id, cid, type, payload });
 
-    // quickbeam's own outputs, pinned: the contract, not an approximation of it.
-    eq(domainFor(`0x${"7e1497af".padEnd(64, "0")}`, "0x55cf6bd2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "media"), "7e1497af-55cf6bd2-media", "domain name = quickbeam's");
+    // The contract, pinned: domain names and embedded text never drift.
+    eq(domainFor("0x55cf6bd2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "media"), "55cf6bd2-media", "domain name: owner prefix and repo");
     eq(composeText({ name: "Oak", family: "Fagaceae", description: "big", entityType: "t" },
                    completeRoles({ title: "name", tags: ["family"], text: ["description"] })),
-       "Title: Oak. Tags: Fagaceae. big", "embedded text = quickbeam's compose_document_text");
+       "Title: Oak. Tags: Fagaceae. big", "embedded text is pinned");
 
     const APP = `0x${"ab".repeat(32)}`, OWNER = `0x${"11".repeat(20)}`, PUB = `0x${"22".repeat(20)}`;
     const TAG = "shop.item.v1";
@@ -580,7 +578,7 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
             rec("c3", "shop.note.v1", { title: "Note", body: "an undeclared type, with a body long enough to count as its text field" }),
         ] },
     };
-    const fangorn = localFangorn(chain, { appId: APP, owner: OWNER });
+    const fangorn = localFangorn(chain);
     const embedded = [];
     const embed = async (t) => { embedded.push(t); const v = new Array(EMBED_DIM).fill(0); for (const w of t.split(/\W+/)) if (w) v[w.length % EMBED_DIM] += 1; const n = Math.hypot(...v) || 1; return v.map((x) => x / n); };
     const out = mkdtempSync(`${tmpdir()}/view-`);
@@ -594,7 +592,7 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     embedded.length = 0; rmSync(`${out}/vectors.ndjson`);
     const run = () => publishView({ fangorn, app: APP, schema, out, embed, log: () => {} });
 
-    const d = domainFor(APP, PUB, "shop");
+    const d = domainFor(PUB, "shop");
     const split = mkdtempSync(`${tmpdir()}/view-`);
     await publishView({ fangorn, app: APP, schema, out: split, embed, log: () => {}, shardRows: 2 });
     eq(manifestOf(split, d).shards.map((s) => s.count), [2, 1], "rows past shardRows go to the next shard");
@@ -640,13 +638,13 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     const { rolesFrom } = await import("../core/roles.js");
     eq(getRow(got, "b2", rolesFrom([m]))?.id, "c2b", "get by the publisher's own id, not the CID");
 
-    // An exclusion: the app stops presenting the repo, and its domain stops being served.
+    // The app stops presenting the repo, and its domain stops being served.
     const shop = chain[`${PUB}/shop`];
     delete chain[`${PUB}/shop`];
     eq((await run())[d], { added: 0, removed: 2, dropped: true }, "a repo the app no longer presents is dropped");
     eq([existsSync(`${out}/cdn/domains/${d}`), JSON.parse(readFileSync(`${out}/cdn/catalog`, "utf8")).domains], [false, []], "with its files and its catalog entry");
     chain[`${PUB}/shop`] = shop;
-    eq((await run())[d], { added: 2, removed: 0 }, "and a restore brings it back");
+    eq((await run())[d], { added: 2, removed: 0 }, "and presenting it again brings it back");
 
     const setEmbedder = (e) => { const x = manifestOf(out, d); x.embedder = e; x.head = "moved"; writeFileSync(`${out}/cdn/domains/${d}/manifest`, JSON.stringify(x)); };
     setEmbedder({ ...EMBEDDER, runtime: "transformers.js cuda" });
@@ -660,7 +658,7 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     chain[BIG] = { records: Array.from({ length: 80 }, (_, i) => ({ id: `r${i}`, cid: `big${i}`, type: "shop.item.v1", payload: { sku: `r${i}`, name: `Thing ${i}` } })) };
     let budget = 40;
     const capped = (ts) => (budget -= ts.length) < 0 ? Promise.reject(new Error("daily allowance used")) : Promise.all(ts.map(embed));
-    const bd = domainFor(APP, PUB, "big");
+    const bd = domainFor(PUB, "big");
     eq((await publishView({ fangorn, app: APP, schema, out: big, repos: ["big"], embedBatch: capped, log: () => {} }))[bd],
        { added: 32, removed: 0, partial: true }, "an encoder that gives out keeps what it embedded");
     eq([manifestOf(big, bd).count, manifestOf(big, bd).head], [32, null], "served, and the head not taken");
@@ -730,8 +728,8 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
                 rec("i1", T, { item_id: "a#1", heading: "Rezone, committee", part_of: { local: "m" } }),
                 rec("i2", T, { item_id: "b#4", heading: "Rezone, council", cites: { local: "m" } }),
                 rec("m1", M, { matter_id: "plover:7", title: "Rezone" }, "m")] } };
-        const o = mkdtempSync(`${tmpdir()}/view-`), dr = domainFor(APP, PUB, "civic");
-        const go = () => publishView({ fangorn: localFangorn(rel, { appId: APP, owner: OWNER }), app: APP, schema: relSchema, out: o, embed, log: () => {} });
+        const o = mkdtempSync(`${tmpdir()}/view-`), dr = domainFor(PUB, "civic");
+        const go = () => publishView({ fangorn: localFangorn(rel), app: APP, schema: relSchema, out: o, embed, log: () => {} });
         const rows = async () => Object.fromEntries([...(await loadDomain(fsStore(o), `cdn/domains/${dr}`)).rows.values()]
             .map((r) => [r.fields.heading ?? r.fields.title, r.fields.part_of ?? r.fields.cites ?? null]));
         await go();
@@ -767,5 +765,5 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         await r2.del(`cdn/domains/${d}`);
         eq([...objs.keys()].filter((k) => k.includes(d)), [], "del removes a folder and everything under it");
     }
-    console.log("view.js self-check ok — domain names and embedded text match quickbeam's, the schema is applied, an unmoved head reads nothing, additions ship as delta shards, removals compact the domain, an excluded repo is dropped and a restored one returns, the real reader sees exactly the live records by the publisher's id, another encoder's view is refused, declared references land on their source rows, and the view builds the same into R2");
+    console.log("view.js self-check ok — domain names and embedded text are stable, the schema is applied, an unmoved head reads nothing, additions ship as delta shards, removals compact the domain, an excluded repo is dropped and a restored one returns, the real reader sees exactly the live records by the publisher's id, another encoder's view is refused, declared references land on their source rows, and the view builds the same into R2");
 }

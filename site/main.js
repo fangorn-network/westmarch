@@ -17,7 +17,7 @@ import { registerAgent } from "./agent.js";
 import { detail, facetField, facetValues, occasions } from "./feed.js";
 import { createStore, snapshot, toCSV, toMarkdown } from "./store.js";
 import { createMap } from "./map.js";
-import { agentPanel, gate, heldPass, whatsInside } from "./access.js";
+import { agentPanel } from "./access.js";
 
 const $ = (s) => document.querySelector(s);
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat(Infinity).filter((k) => k != null && k !== false)); return e; };
@@ -30,19 +30,12 @@ const described = new Promise((ok) => { rolesReady = ok; });
 configure({ onManifests: (ms) => { ctx.roles = rolesFrom(ms); rolesReady(); }, rowText: (f) => textOf(f, ctx.roles) });
 
 const card = await fetch("./.well-known/agent-card.json").then((r) => r.json()).catch(() => ({}));
-// Buy from the origin this page is on: a custom domain serves the same worker, and a reader
-// whose network can't reach pages.dev (or the card's host) still can.
-const offer = (card.capabilities?.extensions ?? []).map((x) => x.params?.paid).find(Boolean) ?? null;
-const paid = offer && { ...offer, url: offer.url.replace(/^https?:\/\/[^/]+/, location.origin) };
-// A private app (the card's `access`): its view and tools need a pass, bought at POST /pass.
-const access0 = (card.capabilities?.extensions ?? []).map((x) => x.params?.access).find(Boolean) ?? null;
-const access = access0 && { ...access0, pass_url: access0.pass_url.replace(/^https?:\/\/[^/]+/, location.origin) };
-// A dollar stablecoin is priced in dollars: readers see "$0.01", never the token.
-const money = (n) => (/^USDC?$/i.test(paid?.symbol ?? "USDC") ? `$${n.toFixed(2)}` : `${n} ${paid.symbol}`);
-const PRICE_N = paid ? Number(paid.price) / 10 ** (paid.decimals ?? 6) : 0, PRICE = paid ? money(PRICE_N) : "";
+// Records whose publishers sell them carry `sale` ({publisher, repo, id, price}); the app quotes
+// them at its card's `paid` URL. Buying is an agent's job (fangorn-mcp's buy); the page shows the price.
+const paid = (card.capabilities?.extensions ?? []).some((x) => x.params?.paid);
+const priceOf = (r) => `$${(Number(r.sale.price) / 1e6).toFixed(2)}`;
 const NAME = card.name ?? "Fangorn app";
 document.title = NAME;
-if (paid) $("#accountlink").hidden = false;
 $("#name").textContent = NAME;
 
 // Links to the app's own pages (app.json site.nav), after Saved and History.
@@ -64,25 +57,7 @@ input.disabled = false;
 const SLUG = NAME.toLowerCase().replace(/\W+/g, "-");
 const store = createStore({ local: globalThis.localStorage, session: globalThis.sessionStorage, app: SLUG });
 ctx.session = () => store.bundle({ name: NAME, url: location.origin });
-// A private app: with a pass, every read of the view carries it; without one, the front page
-// says what is inside, what a pass costs and how to reach it from an agent, and nothing below runs.
-const pass = access ? heldPass(SLUG) : null;
-if (pass) configure({ fetch: (url, init = {}) => fetch(url, { ...init, headers: { ...init.headers, authorization: `Bearer ${pass.token}` } }) });
-const agents = () => agentPanel({ el, origin: location.origin, name: NAME, access, pass });
-if (access && !pass) {
-    input.disabled = true;
-    input.placeholder = "Get a pass to search";
-    const inside = await whatsInside(location.origin);
-    const showGate = (...kids) => { $("#view").replaceChildren(...kids.flat().filter(Boolean)); window.scrollTo(0, 0); };
-    const front = () => (location.hash.startsWith("#/agents") ? showGate(agents())
-        : gate({ el, show: showGate, origin: location.origin, name: NAME, description: card.description ?? "", slug: SLUG, access, inside, examples,
-                 wallet: async () => (await import("./wallet.js")).wallet(access) }));
-    window.addEventListener("hashchange", front);
-    front();
-    // ponytail: the rest of this module is the page over the data, and without a pass there is
-    // none to draw; it waits here for good. The pass reloads the page.
-    await new Promise(() => {});
-}
+const agents = () => agentPanel({ el, origin: location.origin, name: NAME, paid });
 // The page draws as the shards arrive (a view can be tens of MB), rather than after the last.
 const VIEW = new URL("view", location.href).href;
 const total = await fetch(`${VIEW}/cdn/catalog`).then((r) => r.json()).then((c) => c.domains.reduce((n, d) => n + (d.count ?? 0), 0)).catch(() => 0);
@@ -171,11 +146,11 @@ const row = (r, { terms = [], also = 0, meta = true } = {}) => {
             meta ? el("small", {}, [placeOf(r), subtitleOf(r, R)].filter(Boolean).join(" · ")) : null,
             d ? el("p", { className: "detail" }, marked(clip(d), terms)) : null,
             also ? el("small", { className: "also" }, `and ${also} more record${also > 1 ? "s" : ""} of the same item`) : null,
-            forSale(r) ? el("small", { className: "forsale" }, `Decision record · ${PRICE}`) : null),
+            forSale(r) ? el("small", { className: "forsale" }, `For sale · ${priceOf(r)}`) : null),
         votes(r));
 };
 
-const forSale = (r) => paid && r.paid_ct;
+const forSale = (r) => paid && r.sale;
 
 // ── threads: one matter (say) followed across meetings, from the `thread` role ──
 const allThreads = () => {
@@ -232,7 +207,7 @@ function occasionCard(g) {
 // decision record of its latest step that has one, bought per card.
 function signalCard(t) {
     const last = byId.get(t.steps.at(-1).id), head = t.head && byId.get(t.head.id);
-    const sold = paid ? t.steps.map((s) => byId.get(s.id)).reverse().find((r) => r?.paid_ct) : null;
+    const sold = paid ? t.steps.map((s) => byId.get(s.id)).reverse().find((r) => r?.sale) : null;
     const d = detail(last, R);
     return el("article", { className: "signal" },
         el("div", { className: "meta" }, el("span", {}, placeOf(last)), el("span", {}, head ? subtitleOf(head, R) : meetingOf(last)),
@@ -240,7 +215,7 @@ function signalCard(t) {
         el("h3", {}, el("a", { href: itemHref(head ?? last), className: "title" }, calm(t.title))),
         d ? el("p", { className: "detail" }, clip(d)) : null,
         t.steps.length > 1 ? timeline(t) : null,
-        sold ? decision(sold) : null,
+        sold ? forSaleBox(sold) : null,
         el("div", { className: "acts" }, votes(head ?? last), t.url ? el("a", { href: t.url, target: "_blank", rel: "noopener", className: "act" }, "Official record ↗") : null));
 }
 
@@ -386,61 +361,19 @@ function item(key) {
             d ? el("p", {}, d) : el("p", { className: "hint" }, "No decision is recorded under this item (it may be on an agenda, before the meeting)."),
             facts.length ? el("dl", {}, facts.map(([k, v]) => [el("dt", {}, k.replace(/_/g, " ")), el("dd", {}, String(v))])) : null,
             el("div", { className: "acts" }, votes(r), docBtn, src ? el("a", { href: src, target: "_blank", rel: "noopener", className: "act" }, "Source ↗") : null),
-            paid && r.paid_ct ? decision(r) : null,
+            forSale(r) ? forSaleBox(r) : null,
             frame),
         thread && thread.steps.length > 1 ? el("section", {}, el("h2", {}, "Followed across meetings"), timeline(thread)) : null,
         siblings.length ? el("section", {}, el("h2", {}, "Same meeting"), el("ul", { className: "list" }, siblings.slice(0, 12).map((x) => row(x, { meta: false })))) : null,
         near.length ? el("section", {}, el("h2", {}, "Similar"), el("ul", { className: "list" }, near.map((x) => row(x)))) : null);
 }
 
-// The item's paid record: what was decided, as fields. Bought with the reader's account (a
-// wallet underneath, paying over x402 as an agent does; none of that is said on the page), and
-// checked against the sha256 the app published. A record once bought
-// is kept on this device, so opening the item again never charges twice.
-const bought = { get(k) { try { return JSON.parse(localStorage.getItem(`${SLUG}:paid:${k}`)); } catch { return null; } },
-                 set(k, v) { try { localStorage.setItem(`${SLUG}:paid:${k}`, JSON.stringify(v)); } catch { /* not kept */ } } };
-function decision(r) {
-    const key = r[R.identity] ?? r.id, box = el("section", { className: "paid" });
-    const fields = (got) => {
-        const x = got.record;
-        // The DOM's own replaceChildren writes null as "null"; el() is what skips it.
-        box.replaceChildren(...[el("h3", {}, "Decision record"),
-            x.summary ? el("p", {}, x.summary) : null,
-            el("dl", {}, [["Action", x.action], ["Outcome", x.outcome], ["Vote", x.vote && `${x.vote.for}–${x.vote.against}`]]
-                .filter(([, v]) => v).map(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
-            x.steps?.length > 1 ? el("ol", {}, x.steps.map((st) => el("li", {}, st.result ? `${st.motion} · ${st.result}` : st.motion))) : null,
-            x.amounts?.length ? el("ul", {}, x.amounts.map((a) => el("li", {}, typeof a === "string" ? a : [a.amount, a.for ? ` · ${a.for}` : ""]))) : null,
-            x.organizations?.length ? el("p", {}, "Organizations: ", x.organizations.map((o) => typeof o === "string" ? o : `${o.name}${o.role !== "other" ? ` (${o.role})` : ""}`).join(", ")) : null,
-            el("small", { title: got.receipt?.transaction ?? "" }, got.verified ? "✓ Verified: matches the record this app published" : got.verified === false ? "✗ Does not match the record this app published" : "",
-               got.receipt?.transaction ? ` · Bought for ${PRICE}` : "")].filter(Boolean));
-    };
-    const have = bought.get(key);
-    if (have) { fields(have); return box; }
-    const status = el("small", {}), btn = el("button", { type: "button", className: "act" }, `Buy the decision record · ${PRICE}`);
-    btn.onclick = async () => {
-        btn.disabled = true; status.textContent = "Signing you in…";
-        try {
-            const w = await (await import("./wallet.js")).wallet(paid);
-            await w.signIn();
-            const bal = await w.balance().catch(() => null);
-            if (bal != null && bal < PRICE_N) {
-                btn.disabled = false;
-                return status.replaceChildren(`Your account balance is ${money(bal)}. `, el("a", { href: "#/account" }, "Add credit"), ` to buy this record.`);
-            }
-            status.textContent = "Buying…";
-            const got = await w.buy(key, r.paid_sha256, r.paid_ct);
-            if (got.error) throw new Error(got.error);
-            bought.set(key, got); fields(got);
-        } catch (e) {
-            btn.disabled = false;
-            status.replaceChildren(`The purchase did not go through: ${e.message}. `, el("a", { href: "#/account" }, "Your account"));
-        }
-    };
-    box.append(el("h3", {}, "Decision record"),
-        el("p", { className: "hint" }, r.paid_includes ? `Summarized from the minutes. Includes ${r.paid_includes}.`
-            : "Summarized from the minutes: the action, the outcome, the vote, dollar amounts and who receives them, and the organizations involved."),
-        el("div", { className: "acts" }, btn, status));
-    return box;
+// A record its publisher sells: the price, and how an agent buys it.
+function forSaleBox(r) {
+    const { publisher, repo, id } = r.sale;
+    return el("section", { className: "paid" }, el("h3", {}, `For sale · ${priceOf(r)}`),
+        el("p", { className: "hint" }, "Its publisher sells the sealed fields of this record. An agent with a wallet buys it with fangorn-mcp's buy tool:"),
+        el("pre", {}, el("code", {}, JSON.stringify({ app: NAME, publisher, repo, id }))));
 }
 
 function download(name, text, type) {
@@ -501,36 +434,6 @@ function saved() {
         })));
 }
 
-// The reader's account: who they are signed in as, their credit, and adding to it. A wallet
-// underneath (Privy's, one across every Fangorn app); the page says account and credit.
-async function accountView() {
-    show(el("p", { className: "empty" }, "Opening your account…"));
-    let w;
-    try { w = await (await import("./wallet.js")).wallet(paid); } catch (e) { return show(el("p", { className: "empty" }, `Accounts are unavailable: ${e.message}`)); }
-    const draw = async () => {
-        if (!location.hash.startsWith("#/account")) return;
-        if (!w.authenticated) return show(el("h2", { className: "page" }, "Account"),
-            el("p", {}, `Sign in to read decision records (${PRICE} each). Use your email or Google: nothing to install, no password, and the same account works in every Fangorn app.`),
-            el("div", { className: "acts" }, el("button", { type: "button", className: "act", onclick: () => w.signIn() }, "Sign in")));
-        const bal = w.address ? await w.balance().catch(() => null) : null;
-        const copy = el("button", { type: "button", className: "linkish", onclick: async () => { await navigator.clipboard.writeText(w.address); copy.textContent = "Copied"; } }, "Copy");
-        show(el("h2", { className: "page" }, "Account"),
-            el("dl", {}, el("dt", {}, "Signed in as"), el("dd", {}, w.email ?? "you"),
-               el("dt", {}, "Credit"), el("dd", {}, !w.address ? "setting up your account…" : bal == null ? "…" : `${money(bal)} · ${Math.floor(bal / PRICE_N + 1e-9).toLocaleString()} record${Math.floor(bal / PRICE_N + 1e-9) === 1 ? "" : "s"}`)),
-            el("div", { className: "acts" },
-                el("button", { type: "button", className: "act", onclick: async (e) => {
-                    e.target.disabled = true;
-                    try { await w.addFunds(); draw(); }
-                    catch (err) { e.target.textContent = `Could not add credit: ${err.message}`; }
-                } }, w.faucet ? "Get free test credit" : "Add credit"),
-                el("button", { type: "button", className: "act", onclick: () => w.logout() }, "Sign out")),
-            w.faucet && w.address ? el("section", {}, el("p", { className: "hint" }, `${NAME} is in testing, so credit is free. The button opens Circle's test-credit page: choose USDC on ${w.chain.name}, paste your account number below, and send.`),
-                el("p", {}, el("small", {}, "Account number: "), el("code", {}, w.address), " ", copy)) : null,
-            el("p", { className: "hint" }, "Records you buy are saved on this device."));
-    };
-    w.onChange(() => { draw(); });
-}
-
 // ── routing ──
 // This session's searches come back as the search box's own suggestions, in place of a History page.
 function counts() {
@@ -549,7 +452,6 @@ function route() {
     if (name === "signals" && R.thread) return signals();
     if (name === "saved") return saved();
     if (name === "for-you") return forYou();
-    if ((name === "account" || name === "wallet") && paid) return accountView();
     if (name === "agents") return show(agents());
     if (name === "map" && geo) return (mapView ??= createMap(geo, { el, show, row, placeOf, ctx })).render(...arg.split("/").map(decodeURIComponent));
     return feed();

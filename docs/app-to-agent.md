@@ -31,14 +31,9 @@ which anything can produce: a scraper, a database export, a converted spreadshee
  fangorn-mcp: open-app my-app ─► reads the binding, verifies the card, searches the view
 ```
 
-**Two tiers, one format.**
-- **Free, local:** `westmarch-view` (step 7). It turns your commits into a view on your
-  own machine or CI. It embeds on CPU, ~14 records/s, only what changed since the last
-  run, and you host the files with your site.
-- **Hosted:** quickbeam watches apps on chain, embeds on a GPU, and serves the view
-  itself. It will also do things one app's files can't, such as state across apps. It
-  writes the same files, so moving an app to it means changing the `views` URL in its
-  card.
+**One format.** `westmarch-view` (step 7) turns your commits into a view on your own
+machine or CI: it embeds on CPU, ~14 records/s, only what changed since the last run, and
+you host the files with your site. The app's Worker writes the same files from its cron.
 
 It runs on Base Sepolia (new apps) or Arbitrum Sepolia (apps claimed there before the move).
 `"network"` in `app.json` is required: `"baseSepolia"`, or the network the app was claimed on.
@@ -69,7 +64,7 @@ update: each step checks the chain (or Cloudflare) first and acts only on a diff
 ```
 
 ```sh
-npx westmarch-ship app.json            # claim, join, crawl + publish, view, site, card, deploy, agent
+npx westmarch-ship app.json            # claim, crawl + publish, view, site, card, deploy, agent
 npx westmarch-ship app.json --dry-run  # every step, printed, none done
 npx westmarch-ship app.json --no-crawl # rebuild view, site and card from what is on chain
 npx westmarch-ship app.json --replace  # each source's crawl becomes its namespace's whole state
@@ -79,10 +74,9 @@ npx westmarch-ship app.json --index    # build the deployed app's view once, on 
 The app is one Cloudflare Worker: a cron that indexes the chain into R2 (embedding with
 Workers AI), the view, `/mcp`, and the page. What `ship` does, in order:
 
-1. **claim** the app on the first run, and record the claim block (the card's `fromBlock`);
-   the claimer is the app's first member;
+1. **claim** the app on the first run (free), and record the claim block (the card's `fromBlock`);
 2. **run each source**: a command that publishes into `--namespace` when given `--publish`.
-   Every quickbeam scraper Source does. A source with `"each": "rows.json"` is a template,
+   A source with `"each": "rows.json"` is a template,
    one source per row (`{field}`, `{field|slug}`, `{args...}`), so adding a town, a feed or
    an account is adding a row;
 3. **the site** in `.ship/site`: the stock page (search, plus a feed of what is coming up and
@@ -104,9 +98,7 @@ and commit `.ship/state.json`; Quorum's `.github/workflows/ship.yml` is a workin
 **What was run:** all of it, for Quorum (`https://quorum-bua.pages.dev`, agent `421614:245`):
 five towns' meetings crawled, published, embedded and deployed by `westmarch-ship`, then
 searched and bought (x402, settled on Arbitrum Sepolia) from `fangorn-mcp` in a fresh
-session. FAR Desk (`https://far-desk.quickbeam.workers.dev`, agent `84532:10323`) is the
-private one: 3,113 sealed FAR sections, registered on Base Sepolia and selling in real USDC on
-Base, searched per call and with a pass; its `search` tool is in PayAI's Bazaar.
+session.
 Kingsfoil, the reference at the end, predates `ship` and was built by hand.
 
 ## A private app: the data is the product
@@ -207,7 +199,7 @@ What `ship` does, one step at a time: for understanding it, or for doing one ste
 ### What you need
 
 - Node 22.
-- The Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.10.20-dev` (gives `fangorn`).
+- The Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.11.3` (gives `fangorn`).
 - A wallet on the app's network (Base Sepolia, or Arbitrum Sepolia for older apps) with a little ETH. **It owns the app forever**, so use the
   wallet that will publish the data.
 - A Pinata JWT. Registering the ERC-8004 agent (step 11) pins a file to IPFS.
@@ -250,23 +242,12 @@ Then claim the name:
 
 ```sh
 fangorn app info     # "unclaimed", and the wallet you expect
-fangorn app claim    # first come, first served; permanent
+fangorn app claim    # first come, first served; permanent; free
 ```
-
-With no flags, `claim` uses placeholder terms. Publish real ones later with
-`fangorn app terms <hash> <uri>`; anyone who joined under the old terms has to accept again.
-`--fee <wei>` sets what joining costs other publishers.
 
 ## 3. Become a publisher in it
 
-Owning the app makes you its first publisher. You still need global standing:
-
-```sh
-fangorn register     # DataRegistry.register(), then joins this app
-fangorn app info     # DataRegistry: registered · This app: joined
-```
-
-Without the join, every push reverts with `NotRegisteredForApp`.
+There is nothing to join: any wallet with gas publishes, with or without an app.
 
 ## 4. Your data, as a graph
 
@@ -515,7 +496,7 @@ import { agentCard, captureTools } from "@fangorn-network/westmarch/agent-card";
 import { registerAgent } from "../app/agent.js";
 
 const SITE = "https://my-app.pages.dev";
-const VIEW = `${SITE}/view`;   // step 7; a hosted quickbeam view's URL goes here instead
+const VIEW = `${SITE}/view`;   // step 7
 
 const card = agentCard({
     name: "My App",
@@ -774,7 +755,6 @@ const { contents } = await fangorn.readNamespace(timelines[0].owner, namespaces[
 
 | symptom | cause |
 |---|---|
-| push reverts `NotRegisteredForApp` | registered globally but not joined; `fangorn register` does both |
 | `not bound to app … on-chain agent_uri is …` | URLs must match exactly. A trailing slash, `http` vs `https`, or a different path counts as a different card. |
 | card rejected after a rebuild | the build dropped the `fangorn` block or changed `fromBlock`/`url`; keep them fixed |
 | discovery works in Node, fails in a browser | no `Access-Control-Allow-Origin` on the card |
@@ -790,7 +770,7 @@ const { contents } = await fangorn.readNamespace(timelines[0].owner, namespaces[
 | `search` ignores what records say, or titles are ids | the type isn't declared in the schema, so its roles were guessed; declare it (step 5) |
 | a schema change didn't change search results | records keep the text they were embedded with; only newly embedded records use the new `text` role |
 | the view is empty after a push | `westmarch-view` wasn't rerun, `--from-block` is after your commits, or the push hasn't landed (`fangorn status`) |
-| `westmarch-view`: "vectors from two encoders are not comparable" | the view was built by another embedder (e.g. quickbeam); `--rebake`, or keep publishing it with that tool |
+| `westmarch-view`: "vectors from two encoders are not comparable" | the view was built by another embedder; `--rebake`, or keep publishing it with that tool |
 | `westmarch-view` runs for minutes before doing anything | `--from-block` is far too early; the log scan is 1000 blocks per call |
 | lint: "nowhere to go" | no `presentation.externalUrl` in the schema, so a hit links nowhere |
 | `fangorn-mcp`: "this browser has no WebMCP" | page tools only: the browser lacks `document.modelContext`; it needs Chrome 150+ with `--enable-features=WebMCP` |
@@ -801,8 +781,8 @@ const { contents } = await fangorn.readNamespace(timelines[0].owner, namespaces[
 
 ## Reference: Kingsfoil
 
-Kingsfoil has 60,760 clinical trials in 23 views. It predates the schema and quickbeam
-path: it embeds and bakes its own views (`kingsfoil/pipeline/bake.mjs`) and serves them
+Kingsfoil has 60,760 clinical trials in 23 views. It predates the schema and
+`westmarch-ship`: it embeds and bakes its own views (`kingsfoil/pipeline/bake.mjs`) and serves them
 from its own site. That works, but every update is a manual rebake and redeploy.
 
 | | |

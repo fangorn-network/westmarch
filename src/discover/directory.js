@@ -62,7 +62,7 @@ export async function survey(sources = [], { timeoutMs = 8000 } = {}) {
             for (const d of cat.domains ?? []) {
                 corpora.push({
                     view,
-                    publisher: typeof src === "string" ? null : (src.name ?? src.appId ?? null),
+                    publisher: typeof src === "string" ? null : (src.name ?? src.id ?? null),
                     owner: typeof src === "string" ? null : (src.owner ?? null),
                     domain: d.name,
                     description: d.description || "",
@@ -164,7 +164,7 @@ export async function findCorpora(query, { sources = [], embed, model, limit = 1
  *  modules to run a survey. Rejected cards come back beside the sources. */
 export async function sourcesFromChain(fangorn, opts) {
     const { apps, rejected } = await listApps(fangorn, opts);
-    return { sources: apps.flatMap((a) => a.views.map((view) => ({ view, name: a.name, appId: a.appId }))), rejected };
+    return { sources: apps.flatMap((a) => a.views.map((view) => ({ view, name: a.name, id: a.id }))), rejected };
 }
 
 // ── self-check: `node src/discover/directory.js` ─────────────────────────────────

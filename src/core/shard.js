@@ -1,4 +1,4 @@
-// Reading a quickbeam VIEW's Semantic CDN shards, in the consumer's own process.
+// Reading a VIEW's Semantic CDN shards (view.js's layout), in the consumer's own process.
 //
 // One view → one manifest per watched (owner, namespace) domain → N gzipped
 // NDJSON shards, downloaded once, kept in memory, ranked locally — no index
@@ -139,7 +139,7 @@ export function setDomains(only) {
 const wanted = (name) => !_only || _only.some((e) =>
     name === e || name.split("/").pop() === e || name.startsWith(e));
 
-const NO_VIEW = "no quickbeam view configured — pass a view base, or wire one with configure({ resolveView })";
+const NO_VIEW = "no view configured — pass a view base, or wire one with configure({ resolveView })";
 
 /** Fetch + parse a view's shards. Cached PER VIEW; concurrent callers share one
  *  fetch. Keyed by the resolved base, so two apps on screen in one session can't
@@ -347,7 +347,7 @@ async function load(view, onRows) {
     // A view with nothing baked yet is the normal state of a brand-new one, not an
     // error. Say which it is, or "search finds nothing" is indistinguishable from
     // a URL pointing at the wrong view.
-    if (!domains.length) console.warn(`shard: quickbeam view ${cdn} has no baked domains yet — nothing to read until the watcher bakes one.`);
+    if (!domains.length) console.warn(`shard: view ${cdn} has no baked domains yet — nothing to read until its indexer bakes one.`);
 
     const byId = new Map();
     const dead = new Set();
@@ -666,7 +666,7 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     }
 
     // ── the bake's packed vector (`v`), the form shipped today ──
-    // Pinned against pack_vec in quickbeam/vectors.py: [0,1,-1] -> "AH+B". A
+    // Pinned: [0,1,-1] -> "AH+B" (packVec in embed.js writes it). A
     // drift here is not a crash, it is cosine ranking on noise.
     {
         await serveView({ d0: [[{ track_id: "p1", owner: "0xa", v: "AH+B", fields: { entityType: "file", name: "packed.md", path: "packed.md" } },
