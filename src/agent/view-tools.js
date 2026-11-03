@@ -176,60 +176,6 @@ export function viewTools(app, { fetchCatalog = fetch, queryVector: embedQ = que
         { name: "threads", description: `One thing followed across records of a ${n} view (a matter from committee to council): steps in date order, the latest-moving first. Views that declare no thread say so.`,
           inputSchema: { type: "object", properties: { view: str("View name from describe"), id: str("One thread, by a step's thread field"), limit: num("default 20"), offset: num("default 0"), where: WHERE }, required: ["view"] } },
     ];
-    // Records the app sells over x402 (its card's `paid`). Paid from this server's wallet,
-    // never above FANGORN_MCP_MAX_PRICE, and checked against the sha256 the app published
-    // for that record, so what was paid for is what was committed.
-    if (app.paid) {
-        const p = app.paid, dec = p.decimals ?? 6;
-        const price = `${(Number(p.price) / 10 ** dec).toFixed(dec).replace(/0+$/, "").replace(/\.$/, "")} ${p.symbol ?? "USDC"}`;
-        const cap = BigInt(Math.round(Number(process.env.FANGORN_MCP_MAX_PRICE ?? "0.10") * 10 ** dec));
-        const resolve = (id) => {
-            const hit = loadedRows().find(({ r, view }) => r.id === id || r[rolesOf(view).identity] === id);
-            return { key: hit ? hit.r[rolesOf(hit.view).identity] ?? id : id, want: hit?.r.paid_sha256, ct: hit?.r.paid_ct };
-        };
-        run.buy = async ({ id, ids }) => {
-            const { buyBatch, withLock } = await import("./x402.js");
-            const rs = (ids?.length ? ids : id ? [id] : []).map(resolve);
-            const ct = Object.fromEntries(rs.filter((r) => r.ct).map((r) => [r.key, r.ct]));
-            const want = Object.fromEntries(rs.filter((r) => r.want).map((r) => [r.key, r.want]));
-            const verdict = (records) => { const bad = records.filter((x) => x.verified === false).map((x) => x.id);
-                return bad.length ? `MISMATCH for ${bad.join(", ")}` : "every record opened matches its published sha256"; };
-            if (ids?.length) {
-                // Many at once, one price: from the allowance file (FANGORN_MCP_VOUCHERS, vouchers the
-                // person's wallet signed) if there is one, else one payment from the wallet key.
-                const fs = await import("node:fs");
-                const vf = process.env.FANGORN_MCP_VOUCHERS;
-                const opts = { ct, want, privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap * BigInt(rs.length) };
-                // The file is read, spent from and saved under one lock, and saved even when the
-                // purchase fails: buyBatch drops the vouchers the seller settled or refused either way.
-                const r = vf
-                    ? await withLock(vf, async () => {
-                        const vouchers = JSON.parse(fs.readFileSync(vf, "utf8"));
-                        try { return await buyBatch(p, rs.map((r) => r.key), { ...opts, vouchers }); }
-                        finally { fs.writeFileSync(vf, JSON.stringify(vouchers)); }
-                    })
-                    : await buyBatch(p, rs.map((r) => r.key), opts);
-                return { bought: r.records.length, missing: r.missing, verified: verdict(r.records),
-                         ...(r.undelivered.length ? { not_bought: r.undelivered, why: r.error } : {}),
-                         manifest: r.manifest, records: r.records.map(({ id, record, error }) => ({ id, record, error })) };
-            }
-            if (!id) throw new Error("id or ids is required");
-            const { key, want: w, ct: c } = resolve(id);
-            if (!c) return { id: key, error: "search for the record first: its sealed copy (paid_ct) comes from the row, and nothing is bought without it" };
-            const { buyRecord } = await import("./x402.js");
-            const r = await buyRecord(p, key, { ct: c, want: w, privateKey: process.env.FANGORN_MCP_WALLET_KEY, maxPrice: cap });
-            if (r.error) return r;
-            return { id: key, paid: r.price ? price : "free", transaction: r.receipt?.transaction ?? null, network: r.receipt?.network ?? p.network,
-                     verified: w ? (r.verified ? "matches the published sha256" : `MISMATCH: published ${w}, got ${r.digest}`) : "not checked (the row has no paid_sha256)",
-                     record: r.record };
-        };
-        tools.push({ name: "buy", description: `Buy one ${n} record's paid detail for ${price} (x402 on ${p.network}): ${p.description || "the structured record"}. ` +
-                "Pass an id from search, or ids for up to 1000 at once (one price, one manifest of hashes and transactions). " +
-                "The record is already in the row, sealed; this buys its key and opens it. " +
-                "Paid from the allowance (FANGORN_MCP_VOUCHERS) or this server's wallet (FANGORN_MCP_WALLET_KEY), never above FANGORN_MCP_MAX_PRICE a record.",
-            inputSchema: { type: "object", properties: { id: str("A record id from search or get"), ids: { type: "array", items: { type: "string" }, description: "Several record ids, bought together" } } } });
-    }
-
     return { tools, call: async (name, args = {}) => {
         if (!run[name]) throw new Error(`no tool ${name}`);
         return text(await run[name](args));

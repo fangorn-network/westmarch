@@ -165,7 +165,7 @@ hr{border:0;border-top:1px solid var(--rule);margin:56px 0}
 
   <p>A catalogue of media is held by a publisher who wishes to sell access to it. A reader wishes to find things in it worth their attention, and does not wish to be surveilled while doing so. Between them sits an <em>index</em>, which knows what exists and what it costs, and — by construction — cannot know what anyone asked.</p>
 
-  <p>The system has three parts, and it matters that they are separable. <strong>quickbeam</strong> ingests a publisher's graph and bakes it into immutable, content-addressed shards. <strong>westmarch</strong> is the client library and the index: it pulls shards, ranks them locally, and holds the reader. <strong>fangorn</strong> is the on-chain graph and registry where publishers commit, resources are priced, and payments settle. Applications — a television app, a music app — are lenses over the index and own nothing about the reader.</p>
+  <p>The system has three parts, and it matters that they are separable. <strong>The indexer</strong> (an app's Worker) ingests a publisher's graph and bakes it into immutable, content-addressed shards. <strong>westmarch</strong> is the client library and the index: it pulls shards, ranks them locally, and holds the reader. <strong>fangorn</strong> is the on-chain graph and registry where publishers commit, resources are priced, and payments settle. Applications — a television app, a music app — are lenses over the index and own nothing about the reader.</p>
 
   <div class="block">
     <span class="lab">The thesis</span>
@@ -461,7 +461,7 @@ the (free) source corpus by cosine:
 
   <ol>
     <li><strong>Declare.</strong> A domain specification names its source collection, a filter over entity types and payload fields, a <code>role_map</code>, a <code>presentation</code> block (icons, external URLs, actions, an optional launch template), and optionally a paywall.</li>
-    <li><strong>Bake.</strong> quickbeam scrolls the collection into content-addressed shards, fits the coverage centroids, and writes the manifest and catalogue entry.</li>
+    <li><strong>Bake.</strong> The indexer scrolls the collection into content-addressed shards, fits the coverage centroids, and writes the manifest and catalogue entry.</li>
     <li><strong>Publish.</strong> Content is encrypted client-side, uploaded to the publisher's own store, minted as a resource, and committed to the graph. One <code>commitStateRoot</code> covers a graph of any size, so bulk ingest costs one transaction rather than one per file.</li>
     <li><strong>Lint.</strong> A publisher-facing check reads the served view as a reader would and reports what blocks discovery and what degrades it.</li>
   </ol>

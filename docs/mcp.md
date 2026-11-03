@@ -39,9 +39,6 @@ Claude Code starts in, so set them in your shell, not in a config file. It leave
     npx -y -p @fangorn-network/westmarch -p @huggingface/transformers fangorn-mcp
 ```
 
-For the apps still on Arbitrum Sepolia instead of Base Sepolia, add `-e FANGORN_NETWORK=arbitrumSepolia`
-before `--`. One server reads one network.
-
 Then run `/mcp` in Claude Code and check that `fangorn` shows as connected.
 
 - `@huggingface/transformers` lets `find-apps` rank apps by meaning. It is about 500 MB.
@@ -101,7 +98,7 @@ Here is an example of what you can ask:
 
 | Env var / flag | Default | What it does |
 |---|---|---|
-| `FANGORN_NETWORK` | `baseSepolia` | The network whose apps to list and open: `baseSepolia` or `arbitrumSepolia`. |
+| `FANGORN_NETWORK` | `baseSepolia` | The network whose apps to list and open: `baseSepolia`, the only one. |
 | `FANGORN_MCP_WALLET_KEY` | none | A private key (with or without `0x`) to pay x402 prices with, in USDC on the network each app names. Unset, a paid call returns its price instead. |
 | `FANGORN_MCP_MAX_PRICE` | `0.10` | The most it pays for one call, in USDC. |
 | `FANGORN_MCP_MAX_PASS` | never | The most it pays for a pass, in USDC; under it, it buys the pass instead of paying per call. |

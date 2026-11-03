@@ -4,23 +4,54 @@
 // scripts/e2e-worker.mjs run an app against, with nothing leaving the machine.
 //
 // Needs forge and anvil, and the contracts' source (FANGORN_CONTRACTS_DIR, default
-// ../contracts/solidity next to westmarch).
+// ../contracts next to westmarch). USDC and Semaphore are the contracts' mocks: payments
+// aren't checked and any proof is accepted.
+//
+// The services a deployment runs are here too, each its own Worker under `wrangler dev`, wired
+// to this chain: `keyServer()` and `relay()` from the webworker checkout (FANGORN_WEBWORKER_DIR,
+// default ../webworker), and `worker()` for any other, such as an app's.
 
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTestClient, encodeFunctionData, getAddress, http, parseEther, publicActions, walletActions } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { APP_REGISTRY_ABI, DATA_REGISTRY_ABI, Fangorn, FangornConfig } from "@fangorn-network/sdk";
+import { bytesToHex } from "viem";
+import { DATA_REGISTRY_ABI, SETTLEMENT_REGISTRY_ABI, Fangorn, FangornConfig } from "@fangorn-network/sdk";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ADMIN_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";   // anvil's first account
+/**
+ * The Worker in `dir` under `wrangler dev` with `vars`, on a free port: `{ url, kill }` once `probe`
+ * answers. Its own process group, so `kill` takes workerd down with wrangler. Local bindings only.
+ */
+export async function wranglerDev(dir, vars = {}, { config, probe = "/", name = dir, log = () => {} } = {}) {
+    const port = await new Promise((ok) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => ok(p)); }); });
+    const w = spawn("npx", ["wrangler", "dev", ...(config ? ["--config", config] : []), "--port", String(port), "--ip", "127.0.0.1",
+        "--persist-to", mkdtempSync(join(tmpdir(), "devnet-wrangler-")), ...Object.entries(vars).flatMap(([k, v]) => ["--var", `${k}:${v}`])],
+        { cwd: dir, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, NO_D1_WARNING: "true" } });
+    let out = "";
+    w.stdout.on("data", (c) => { out += c; }); w.stderr.on("data", (c) => { out += c; });
+    const kill = () => { try { process.kill(-w.pid); } catch { /* gone */ } };
+    process.on("exit", kill);
+    const url = `http://127.0.0.1:${port}`;
+    for (const t0 = Date.now(); ; await new Promise((r) => setTimeout(r, 500))) {
+        if (w.exitCode !== null) throw new Error(`${name}: wrangler dev exited\n${out.slice(-2000)}`);
+        if (Date.now() - t0 > 120_000) { kill(); throw new Error(`${name}: no answer at ${url}${probe} in 2 minutes\n${out.slice(-2000)}`); }
+        if (await fetch(`${url}${probe}`).then(() => true, () => false)) break;
+    }
+    log(`${name} at ${url}`);
+    return { url, kill };
+}
+
 const listen = (server) => new Promise((ok) => server.listen(0, "127.0.0.1", () => ok(`http://127.0.0.1:${server.address().port}`)));
 
-export async function devnet({ contracts = process.env.FANGORN_CONTRACTS_DIR ?? resolve(HERE, "../../../contracts/solidity"), log = () => {} } = {}) {
+export async function devnet({ contracts = process.env.FANGORN_CONTRACTS_DIR ?? resolve(HERE, "../../../contracts"),
+                               webworker = process.env.FANGORN_WEBWORKER_DIR ?? resolve(HERE, "../../../webworker"), log = () => {} } = {}) {
     const kids = [], servers = [];
     const stop = () => { for (const k of kids) k.kill(); for (const s of servers) s.close(); };
     process.on("exit", stop);
@@ -32,17 +63,18 @@ export async function devnet({ contracts = process.env.FANGORN_CONTRACTS_DIR ?? 
     const rpcUrl = await new Promise((ok) => { let out = ""; anvil.stdout.on("data", (c) => { out += c; const m = /Listening on (\S+)/.exec(out); if (m) ok(`http://${m[1]}`); }); });
     const chain = createTestClient({ mode: "anvil", chain: FangornConfig.chain, transport: http(rpcUrl) }).extend(publicActions).extend(walletActions);
     const admin = privateKeyToAccount(ADMIN_KEY);
-    const artifact = (n) => { const j = JSON.parse(readFileSync(`${contracts}/out/${n}.sol/${n}.json`, "utf8")); return { abi: j.abi, bytecode: j.bytecode.object }; };
-    const deploy = async (n, args) => getAddress((await chain.waitForTransactionReceipt({ hash: await chain.deployContract({ account: admin, ...artifact(n), args }) })).contractAddress);
+    // `file`: the .sol it is in, when that isn't `n`.sol.
+    const artifact = (n, file = n) => { const j = JSON.parse(readFileSync(`${contracts}/out/${file}.sol/${n}.json`, "utf8")); return { abi: j.abi, bytecode: j.bytecode.object }; };
+    const deploy = async (n, args, file) => getAddress((await chain.waitForTransactionReceipt({ hash: await chain.deployContract({ account: admin, ...artifact(n, file), args }) })).contractAddress);
     const proxied = async (n, init) => deploy("ERC1967Proxy", [await deploy(n, []), init]);
-    const apps = await proxied("AppRegistry", encodeFunctionData({ abi: APP_REGISTRY_ABI, functionName: "initialize",
-        args: [admin.address, "0x000000000000000000000000000000000000dEaD", 0n, 30n * 24n * 3600n] }));
-    const data = await proxied("DataRegistry", encodeFunctionData({ abi: DATA_REGISTRY_ABI, functionName: "initialize", args: [admin.address, apps] }));
-    await chain.waitForTransactionReceipt({ hash: await chain.writeContract({ account: admin, address: apps, abi: APP_REGISTRY_ABI, functionName: "setDataRegistry", args: [data] }) });
+    const data = await proxied("DataRegistry", encodeFunctionData({ abi: DATA_REGISTRY_ABI, functionName: "initialize", args: [admin.address] }));
+    const usdc = await deploy("MockUSDC", [], "Mocks");
+    const settlement = await proxied("SettlementRegistry", encodeFunctionData({ abi: SETTLEMENT_REGISTRY_ABI, functionName: "initialize",
+        args: [admin.address, usdc, await deploy("MockSemaphore", [], "Mocks")] }));
     // As a Worker's CONFIG.deployment takes it: strings, no BigInt.
-    const deployment = { appRegistryContractAddress: apps, dataRegistryContractAddress: data, appRegistryFromBlock: "0" };
-    const config = { ...FangornConfig, ...deployment, appRegistryFromBlock: 0n, rpcUrl };
-    log(`anvil ${rpcUrl}, AppRegistry ${apps}, DataRegistry ${data}`);
+    const deployment = { dataRegistryContractAddress: data, settlementRegistryContractAddress: settlement, fromBlock: "0" };
+    const config = { ...FangornConfig, ...deployment, fromBlock: 0n, rpcUrl };
+    log(`anvil ${rpcUrl}, DataRegistry ${data}, SettlementRegistry ${settlement}`);
 
     // ── storage: a content-addressed store, and the gateway that serves it ────
     // multiformats, from the SDK's own dependencies.
@@ -65,10 +97,10 @@ export async function devnet({ contracts = process.env.FANGORN_CONTRACTS_DIR ?? 
     servers.push(gateway);
     const gatewayUrl = await listen(gateway);
 
-    /** A funded publisher, under `app` (or none). */
-    const client = async (app, privateKey = generatePrivateKey()) => {
+    /** A funded client. */
+    const client = async (privateKey = generatePrivateKey()) => {
         await chain.setBalance({ address: privateKeyToAccount(privateKey).address, value: parseEther("1") });
-        return Fangorn.create({ privateKey, config, appId: app, storage: { backend } });
+        return Fangorn.create({ privateKey, config, storage: { backend } });
     };
 
     /** An encoder on localhost that answers as the AI binding does: POST {text} → {data}; GET → the embedder it is. */
@@ -91,5 +123,22 @@ export async function devnet({ contracts = process.env.FANGORN_CONTRACTS_DIR ?? 
         return listen(server);
     };
 
-    return { rpcUrl, deployment, config, chain, backend, gatewayUrl, client, encoder, stop, kids };
+    // ── Workers, wired to this chain ─────────────────────────────────────────
+    const worker = (dir, vars, opts) => wranglerDev(dir, vars, { log, ...opts }).then(({ url, kill }) => (kids.push({ kill }), url));
+
+    /** The key server (fangorn-access-worker), with a fresh X25519 secret. */
+    const keyServer = () => worker(join(webworker, "fangorn-access-worker"),
+        { WORKER_X25519_SECRET: bytesToHex(crypto.getRandomValues(new Uint8Array(32))), SETTLEMENT_REGISTRY: settlement, RPC_URL: rpcUrl },
+        { probe: "/pubkey", name: "key server" });
+
+    /** Barliman, paying gas from a funded treasury key; `treasury` is the referrer on every register. */
+    const relay = async (treasury = privateKeyToAccount(generatePrivateKey()).address) => {
+        const key = generatePrivateKey();
+        await chain.setBalance({ address: privateKeyToAccount(key).address, value: parseEther("10") });
+        const url = await worker(join(webworker, "barliman"), { TREASURY_KEY: key, TREASURY: treasury, RPC_URL: rpcUrl,
+            DATA_REGISTRY: data, SETTLEMENT_REGISTRY: settlement }, { probe: "/supported", name: "relay (Barliman)" });
+        return { url, treasury };
+    };
+
+    return { rpcUrl, deployment, config, chain, usdc, backend, gatewayUrl, client, encoder, worker, keyServer, relay, stop, kids };
 }

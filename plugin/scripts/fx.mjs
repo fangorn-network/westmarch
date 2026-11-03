@@ -92,14 +92,14 @@ const sources = async () => {
     return chainSources();
 };
 
-// Every app bound on chain, the scan fangorn-mcp's list-apps runs, on FANGORN_NETWORK
-// (default arbitrumSepolia). From its AppRegistry's deployment; --from-block overrides.
+// Every app with a verified card, the scan fangorn-mcp's list-apps runs, on FANGORN_NETWORK
+// (default baseSepolia). From the DataRegistry's deployment; --from-block overrides.
 async function chainSources() {
     const [{ Fangorn }, { generatePrivateKey }, { network }] = await Promise.all([
         import("@fangorn-network/sdk"), import("viem/accounts"), import("../../src/publish/view.js")]);
     const config = await network();
     const fangorn = Fangorn.create({ privateKey: generatePrivateKey(), config });   // reads only
-    const { sources } = await sourcesFromChain(fangorn, { fromBlock: BigInt(flag("from-block", String(config.appRegistryFromBlock))) });
+    const { sources } = await sourcesFromChain(fangorn, { fromBlock: BigInt(flag("from-block", String(config.fromBlock))) });
     return sources;
 }
 

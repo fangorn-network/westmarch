@@ -2,37 +2,24 @@
 // ERC-8004 registries say about it — read live, with no bake of its own.
 //
 // Everything here is already published by someone else:
-//   AppRegistry `AppAgentChanged`   which apps exist and where their cards are
-//   each card                       name, tools, views; checked against the chain
-//   each view's catalog             rows, domains, and coverage centroids (what it is about)
-//   ERC-8004 identity `Registered`  the agent minted for the app
-//   ERC-8004 reputation             feedback count and average per agent
+//   the update log + each repo's @card   which apps exist and where their cards are (apps.js)
+//   each card                            name, tools, views; checked by discoverCard
+//   each view's catalog                  rows, domains, and coverage centroids (what it is about)
+//   ERC-8004 identity `Registered`       the agent minted for the app
+//   ERC-8004 reputation                  feedback count and average per agent
 //
-// Both registries are scanned from their first event in windows as wide as the
-// chain's RPC allows (`chainOf`), in parallel, so the page and the MCP tool read
-// the same chain the same way, and a new app shows up on the next read.
-//
-// `client` is a viem PublicClient (getLogs, readContract): passed in, so this
-// runs in a tab and in node, and the self-check needs no chain.
-//
-// Windows grow with the chain. Pass `store` (apps.js cachedLogs) and only the
-// blocks since the last read are scanned; the page passes none.
+// `fangorn` is an SDK client and `client` a viem PublicClient: passed in, so the self-check
+// needs no chain. Pass `store` and only what changed since the last read is read again.
 
 import { parseAbi, parseAbiItem } from "viem";
 // The config module alone (viem only), not the SDK's root: this runs in a tab too.
 import { BaseSepoliaConfig } from "@fangorn-network/sdk/lib/config.js";
-import { APP_EXTENSION, cachedLogs } from "./apps.js";
+import { cachedLogs, listApps } from "./apps.js";
 import { survey, comparable } from "./directory.js";
 import { rankDomains, zFloor, lexScore } from "../core/rank.js";
 
-// The ERC-8004 registries per chain id, where `fangorn app agent` mints (agent0-sdk's
-// defaults, and the CLI's override for Arbitrum Sepolia, which agent0-sdk lacks).
+// The ERC-8004 registries per chain id (agent0-sdk's defaults), where `fangorn card` registers.
 const ERC8004 = {
-    421614: { identity: "0x8004A818BFB912233c491871b3d84c89A494BD9e", reputation: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
-              // The identity registry's first event (2026-10-05). Its public RPC takes 10M-block windows.
-              identityFrom: 241_557_787n, window: 10_000_000n, scan: "arbitrum-sepolia" },
-    // ponytail: identity read from the AppRegistry's deployment, since an app's agent is minted after it.
-    // An agent minted before then and rebound with --skip-register is missed; scan earlier if that happens.
     84532: { identity: "0x8004A818BFB912233c491871b3d84c89A494BD9e", reputation: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
              scan: "base-sepolia" },
 };
@@ -42,9 +29,10 @@ export function chainOf(net = BaseSepoliaConfig) {
     const e = ERC8004[net.caip2];
     if (!e) throw new Error(`explore: no ERC-8004 registries known for chain ${net.caip2}`);
     return {
-        chainId: net.caip2, appRegistry: net.appRegistryContractAddress, identity: e.identity, reputation: e.reputation,
-        // Nothing to read before the registry's deployment; from 0 a scan is mostly empty windows.
-        appRegistryFrom: net.appRegistryFromBlock, identityFrom: e.identityFrom ?? net.appRegistryFromBlock,
+        chainId: net.caip2, identity: e.identity, reputation: e.reputation,
+        // ponytail: identity read from the DataRegistry's deployment, since an app's agent is
+        // registered after its repo exists. An agent minted earlier is missed; scan earlier if that happens.
+        identityFrom: e.identityFrom ?? net.fromBlock,
         window: e.window ?? net.logWindow ?? 1000n,
         scan: (agentId) => `https://8004scan.io/agents/${e.scan}/${agentId}`,
     };
@@ -52,9 +40,7 @@ export function chainOf(net = BaseSepoliaConfig) {
 
 export const CHAIN = chainOf();
 
-const APP_AGENT_CHANGED = parseAbiItem("event AppAgentChanged(bytes32 indexed app_id, string agent_uri)");
 const REGISTERED = parseAbiItem("event Registered(uint256 indexed agentId, string agentURI, address indexed owner)");
-const APPS = parseAbi(["function getAppOwner(bytes32) view returns (address)"]);
 const REP = parseAbi([
     "function getClients(uint256) view returns (address[])",
     "function getSummary(uint256, address[], string, string) view returns (uint64, int128, uint8)",
@@ -64,51 +50,20 @@ const REP = parseAbi([
 const https = (u) => { try { const x = new URL(String(u)); return x.protocol === "https:" ? x.href : null; } catch { return null; } };
 const slug = (name) => String(name).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "app";
 
-/** A card is listed only if it names this chain's AppRegistry and the app that
- *  bound it — the checks `discoverApp` makes. The binding itself is the log we
- *  read it from: we scanned to `latest`, so the last write per app is current. */
-export function verifyCard(card, appId, chain = CHAIN) {
-    const p = card?.capabilities?.extensions?.find((e) => e.uri === APP_EXTENSION)?.params;
-    if (!p) return "no fangorn app extension";
-    if (String(p.appId).toLowerCase() !== appId.toLowerCase()) return "card names another app";
-    if (p.chainId !== chain.chainId || String(p.appRegistry).toLowerCase() !== chain.appRegistry.toLowerCase()) return "card is for another registry";
-    if (!/^\d+$/.test(String(p.fromBlock))) return "bad fromBlock";
-    return null;
-}
-
 /**
- * The agent an app registered. `fangorn app agent` mints it and then binds the
- * card, from the owner's wallet, so it is the owner's latest `Registered` at or
- * before the binding.
+ * The agent an app registered: its publisher's latest `Registered` at or before `block`.
  *
- * ponytail: paired by owner and block, not by reading the registration file
- * (IPFS gateways are too slow and flaky for a page load). An owner that
- * rebinds with --skip-register after minting another app's agent gets that
- * agent; fetch tokenURI and match its A2A endpoint if that starts happening.
+ * ponytail: paired by owner, not by reading the registration file (IPFS gateways are too
+ * slow and flaky for a page load). A publisher with two apps gets its latest agent for both;
+ * fetch tokenURI and match the card if that starts happening.
  */
-export function pairAgent(registered, owner, bindBlock) {
+export function pairAgent(registered, owner, block) {
     let best = null;
     for (const r of registered) {
-        if (r.owner.toLowerCase() !== owner.toLowerCase() || r.block > bindBlock) continue;
+        if (r.owner.toLowerCase() !== owner.toLowerCase() || r.block > block) continue;
         if (!best || r.block > best.block || (r.block === best.block && r.agentId > best.agentId)) best = r;
     }
     return best?.agentId ?? null;
-}
-
-/** Retried: dropping a verified app over a blip hides it from everyone who
- *  loads the page in that second. Seen 2026-09-28: headless Chrome in WSL got
- *  intermittent net::ERR_SSL_PROTOCOL_ERROR from one pages.dev host (curl never
- *  did); three tries do not always get past that one. */
-async function json(url, timeoutMs = 8000, tries = 3) {
-    try {
-        const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return await res.json();
-    } catch (e) {
-        if (tries <= 1) throw e;
-        await new Promise((ok) => setTimeout(ok, 600 * (4 - tries)));   // 600ms, then 1.2s
-        return json(url, timeoutMs, tries - 1);
-    }
 }
 
 async function reputation(client, agentId, chain) {
@@ -131,63 +86,41 @@ async function getLogsSince(client, start, filter, window, store) {
             const to = from + window - 1n < head ? from + window - 1n : head;
             windows.push(client.getLogs({ ...filter, fromBlock: from, toBlock: to }));
         }
-        // In window order: oldest first still holds. Only what readDirectory reads, so a store stays small.
         return (await Promise.all(windows)).flat().map(({ args, blockNumber }) => ({ args, blockNumber }));
     };
     return store ? cachedLogs(store, `${filter.address}:${filter.event.name}:${start}`, start, head, read) : read(start, head);
 }
 
 /**
- * Every verified app, with its 8004 agent, reputation, and catalog.
- * Unverified apps are dropped, not listed; `dropped` says why, for debugging.
- *
- * `onUpdate({ apps, pending })`, if given, is called once the bindings are read
- * and again as each app lands or drops, so a page can show apps as they arrive.
- * `pending` counts the bound apps not yet settled.
- * `store`, if given, keeps the logs read (apps.js cachedLogs), so the next read
- * scans only the blocks since.
+ * Every verified app, with its 8004 agent, reputation, and catalog. Apps whose cards don't
+ * verify are dropped; `dropped` says why. `onUpdate({ apps, pending })` is called as each
+ * app lands, so a page can show them as they arrive.
  */
-export async function readDirectory(client, { chain = CHAIN, onUpdate = () => {}, store } = {}) {
-    const [bindLogs, regLogs] = await Promise.all([
-        getLogsSince(client, chain.appRegistryFrom ?? 0n, { address: chain.appRegistry, event: APP_AGENT_CHANGED }, chain.window ?? 1000n, store),
+export async function readDirectory(fangorn, client, { chain = CHAIN, onUpdate = () => {}, store } = {}) {
+    const [{ apps: verified, rejected }, regLogs, head] = await Promise.all([
+        listApps(fangorn, { store }),
         getLogsSince(client, chain.identityFrom ?? 0n, { address: chain.identity, event: REGISTERED }, chain.window ?? 1000n, store),
+        client.getBlockNumber(),
     ]);
     const registered = regLogs.map((l) => ({ agentId: l.args.agentId, owner: l.args.owner, block: l.blockNumber }));
-    const latest = new Map();   // logs come oldest first: the last write wins
-    for (const l of bindLogs) latest.set(l.args.app_id, { uri: l.args.agent_uri, block: l.blockNumber });
-    const bound = [...latest].filter(([, { uri }]) => uri);   // an empty uri is unbound on purpose
+    const dropped = rejected.map((r) => ({ card: r.card, why: r.why }));
 
-    // One pipeline per app, so the quick ones need not wait on Quorum's 1.7 MB
-    // catalog. Only a card failure drops an app; an owner or catalog that fails
-    // leaves it listed with less to say about it.
-    const apps = [], dropped = [];
-    let pending = bound.length;
+    // One pipeline per app, so the quick ones need not wait on a big catalog.
+    const apps = [];
+    let pending = verified.length;
     const settle = () => { pending--; apps.sort((a, b) => a.name.localeCompare(b.name)); onUpdate({ apps: [...apps], pending }); };
     onUpdate({ apps: [], pending });
-    await Promise.all(bound.map(async ([appId, { uri, block }]) => {
-        let card;
-        try {
-            if (!/^https:\/\//.test(uri)) throw new Error("card is not https");
-            card = await json(uri);
-            const why = verifyCard(card, appId, chain);
-            if (why) throw new Error(why);
-        } catch (e) { dropped.push({ card: uri, why: e?.message ?? String(e) }); return settle(); }
-
-        const p = card.capabilities.extensions.find((e) => e.uri === APP_EXTENSION).params;
-        const [[owner, agentId, rep], { corpora, unreachable }] = await Promise.all([
-            client.readContract({ address: chain.appRegistry, abi: APPS, functionName: "getAppOwner", args: [appId] }).catch(() => null)
-                .then(async (owner) => {
-                    const agentId = owner && pairAgent(registered, owner, block);
-                    return [owner, agentId, agentId == null ? null : await reputation(client, agentId, chain)];
-                }),
-            survey((p.views ?? []).filter((v) => /^https:\/\//.test(v))),
+    await Promise.all(verified.map(async (a) => {
+        const agentId = pairAgent(registered, a.publisher, head);
+        const [rep, { corpora, unreachable }] = await Promise.all([
+            agentId == null ? null : reputation(client, agentId, chain),
+            survey(a.views.filter((v) => /^https:\/\//.test(v))),
         ]);
-        const name = typeof card.name === "string" && card.name.trim() ? card.name.trim() : `App ${appId.slice(0, 10)}`;
         apps.push({
-            app: slug(name), name, description: typeof card.description === "string" ? card.description : "",
-            site: https(card.url), card: uri, appId, owner,
-            boundAt: Number(block), fromBlock: Number(p.fromBlock),
-            tools: (card.skills ?? []).map((s) => s.id),
+            app: slug(a.name), name: a.name, description: a.desc,
+            site: https(a.url), card: a.card, id: a.id, owner: a.publisher, repo: a.repo,
+            fromBlock: a.fromBlock == null ? null : Number(a.fromBlock),
+            tools: a.tools,
             agent: agentId == null ? null : { id: Number(agentId), scan: chain.scan(agentId) },
             reputation: rep,
             // null, not 0, when no catalog answered: "0 records" would claim it was counted.
@@ -261,13 +194,16 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     eq(pairAgent(reg, P.toUpperCase().replace("0X", "0x"), 50n), 2n, "owner compared case-insensitively");
     eq(pairAgent(reg, O, 5n), null, "no agent before the binding");
 
-    const A = "0x" + "a".repeat(64);
-    const card = (params) => ({ capabilities: { extensions: [{ uri: APP_EXTENSION, params }] } });
-    const good = { appId: A, chainId: CHAIN.chainId, appRegistry: CHAIN.appRegistry.toUpperCase().replace("0X", "0x"), fromBlock: "7" };
-    eq(verifyCard(card(good), A), null, "a good card verifies");
-    eq(verifyCard(card({ ...good, appId: "0x" + "b".repeat(64) }), A), "card names another app", "wrong app");
-    eq(verifyCard(card({ ...good, chainId: 1 }), A), "card is for another registry", "wrong chain");
-    eq(verifyCard({}, A), "no fangorn app extension", "no extension");
+    const fangorn = {
+        repos: async () => [{ owner: O, repo: "tunes", root: "0x1" }],
+        cardOf: async () => "https://t.test/card",
+        discoverCard: async (url) => ({ card: { name: "Tunes", description: "music", url: "https://t.test/", capabilities: { extensions: [
+            { uri: "https://fangorn.network/a2a/repo/v1", params: { publisher: O, repo: "tunes", fromBlock: "7", views: [] } }] } }, publisher: O, repo: "tunes" }),
+    };
+    const client = { getBlockNumber: async () => 30n, getLogs: async () => [{ args: { agentId: 3n, owner: O }, blockNumber: 20n }],
+                     readContract: async () => [] };
+    const dir = await readDirectory(fangorn, client, { chain: { ...CHAIN, identityFrom: 0n, window: 100n } });
+    eq(dir.apps.map((a) => [a.name, a.owner, a.repo, a.agent?.id, a.fromBlock]), [["Tunes", O, "tunes", 3, 7]], "an app is a carded repo, paired with its publisher's agent");
 
     const cov = (v) => ({ vectors: [v] });
     const apps = [
@@ -287,5 +223,5 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     eq(rankApps(apps, "").map((a) => a.score), [null, null, null, null], "no query: listed, not ranked");
     eq([https("javascript:alert(1)"), https("http://x.test"), https("https://x.test/a")], [null, null, "https://x.test/a"], "only https links reach a reader");
     eq(brief({ name: "x", domains: [{ name: "d", coverage: 1 }] }), { name: "x", domains: 1 }, "brief drops centroids");
-    console.log("explore.js self-check ok — cards verified, agents paired by owner and block, apps ranked by coverage or words");
+    console.log("explore.js self-check ok — apps from carded repos, agents paired by owner, apps ranked by coverage or words");
 }

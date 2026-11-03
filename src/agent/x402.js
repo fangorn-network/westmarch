@@ -1,31 +1,33 @@
-// Paying for a resource over x402 (v2, "exact" scheme on an EVM chain): the buyer's half.
+// Buying a record over x402 (v2, scheme "fangorn"): the buyer's half.
 //
-//   const { body, receipt, price } = await payAndFetch(url, { privateKey, maxPrice: 50000n });
+//   const { fields, price, tx } = await buyRecord(quoteUrl, { privateKey, fangorn, maxPrice: 50000n });
 //
-// 1. GET url → 402 with its PaymentRequired in the PAYMENT-REQUIRED header (base64 JSON):
-//    `accepts` says what it costs, in which token, on which chain ("eip155:84532"), to whom.
-// 2. Sign an EIP-3009 transferWithAuthorization for exactly that (EIP-712, the token's own
-//    domain, named in `extra`). Nothing is sent on chain by the buyer: the seller's facilitator
-//    submits it.
-// 3. GET url again with PAYMENT-SIGNATURE: the seller verifies, settles, and returns the
-//    resource, with the settlement (the tx hash) in PAYMENT-RESPONSE.
+// `quoteUrl` is an app's GET /paid/<publisher>/<repo>/<id> (site/worker.js). The publisher signed
+// the record's price (its terms); paying is SettlementRegistry.register, sent by the facilitator.
+//   1. GET → 402: the requirement (the terms, paid to the registry in USDC), the sealed fields'
+//      handles, the repo's deposit, and the relay
+//   2. a Semaphore identity from one wallet signature, and an ERC-3009 receiveWithAuthorization to
+//      the registry for exactly the price. Its nonce binds the subject, the identity's commitment,
+//      the referrer and a salt, so nobody can reuse it for anything else.
+//   3. GET again with PAYMENT-SIGNATURE: the app has the facilitator verify it and send `register`
+//   4. a Semaphore proof that some identity that paid names `reader` (message = reader, scope =
+//      subject), sent to the relay's /relay/settle. `reader` is derived from the identity, so the
+//      chain doesn't link it to the paying wallet (the relay could, by timing: PLAN.md, Known gaps).
+//   5. each field's key from the deposit's key server, asked as `reader`; each field decrypted (JSON)
+// A retry picks up where the last one stopped: a registered identity doesn't pay again, and a
+// reader that can already read doesn't settle again.
 //
-// `maxPrice` (token base units) is checked BEFORE signing: a seller cannot ask for more
-// than the caller agreed to, whatever its 402 says.
+// `maxPrice` (USDC base units) is checked before anything is signed.
+
+import { concat, createPublicClient, http, keccak256, parseAbiItem, parseSignature, toHex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { openField, recordKey, registerNonce, repoId, subjectOf } from "@fangorn-network/sdk";
 
 const b64 = (s) => (typeof btoa === "function" ? btoa(s) : Buffer.from(s, "utf8").toString("base64"));
 const unb64 = (s) => (typeof atob === "function" ? atob(s) : Buffer.from(s, "base64").toString("utf8"));
-const EVM = /^eip155:(\d+)$/;
-
-/** The one requirement we can pay: exact scheme, an EVM chain, within `maxPrice`. */
-export function choose(accepts = [], { maxPrice } = {}) {
-    const ok = accepts.filter((a) => a.scheme === "exact" && EVM.test(a.network));
-    if (!ok.length) throw new Error(`no payable option: ${JSON.stringify(accepts.map((a) => `${a.scheme}/${a.network}`))}`);
-    const cheapest = ok.sort((a, b) => (BigInt(a.amount) < BigInt(b.amount) ? -1 : 1))[0];
-    if (maxPrice != null && BigInt(cheapest.amount) > BigInt(maxPrice))
-        throw new Error(`price ${cheapest.amount} exceeds the cap ${maxPrice} (token base units)`);
-    return cheapest;
-}
+const semaphore = () => import("@semaphore-protocol/core").catch(() => {
+    throw new Error("buying needs @semaphore-protocol/core: npm i @semaphore-protocol/core");
+});
 
 /** A 402's PaymentRequired, from its PAYMENT-REQUIRED header. */
 export function paymentRequired(res) {
@@ -34,368 +36,181 @@ export function paymentRequired(res) {
     return JSON.parse(unb64(h));
 }
 
-/** The PAYMENT-SIGNATURE header value for requirement `req`, signed by `account` (a viem account). */
-export async function paymentHeader(req, account, opts) {
-    return b64(JSON.stringify(await signPayment(req, account, opts)));
+/** The requirement we can pay: scheme "fangorn" on an EVM chain, within `maxPrice`. */
+export function choose(accepts = [], { maxPrice } = {}) {
+    const r = accepts.find((a) => a.scheme === "fangorn" && /^eip155:\d+$/.test(a.network));
+    if (!r) throw new Error(`no payable option: ${JSON.stringify(accepts.map((a) => `${a.scheme}/${a.network}`))}`);
+    if (maxPrice != null && BigInt(r.amount) > BigInt(maxPrice)) throw new Error(`price ${r.amount} exceeds the cap ${maxPrice} (USDC base units)`);
+    return r;
 }
 
-/** A PaymentPayload for `req` (one of a 402's `accepts`), for the 402's `resource`. */
-export async function signPayment(req, account, { resource, now = Math.floor(Date.now() / 1000) } = {}) {
-    const chainId = Number((EVM.exec(req.network) ?? [])[1]);
-    if (!chainId) throw new Error(`not an EVM network: ${req.network}`);
-    const nonce = `0x${[...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
-    const authorization = {
-        from: account.address, to: req.payTo, value: String(req.amount),
-        validAfter: String(now - 600), validBefore: String(now + (req.maxTimeoutSeconds ?? 120)), nonce,
-    };
-    // The token's EIP-712 name differs by chain (Base Sepolia's USDC is "USDC", Base's "USD
-    // Coin"), so a seller that names none is refused rather than guessed at.
-    if (!req.extra?.name || !req.extra?.version) throw new Error(`${req.network}: the seller names no EIP-712 domain for ${req.asset} (extra.name, extra.version)`);
+/** The Semaphore identity and reading account a wallet derives: the same on any machine, from one signature. */
+export async function identityOf(account) {
+    const sig = await account.signMessage({ message: "fangorn:identity:v1" });
+    const { Identity } = await semaphore();
+    return { identity: new Identity(sig), reader: privateKeyToAccount(keccak256(concat([toHex("fangorn:reader:v1"), sig]))) };
+}
+
+/** An ERC-3009 receiveWithAuthorization from `account` to `req.payTo` for exactly `req.amount`, bound to this purchase. */
+export async function signPayment(req, account, { subject, commitment, salt, now = Math.floor(Date.now() / 1000) }) {
+    const message = { from: account.address, to: req.payTo, value: BigInt(req.amount), validAfter: 0n,
+                      validBefore: BigInt(now + (req.maxTimeoutSeconds ?? 300)), nonce: registerNonce(subject, commitment, req.extra.referrer, salt) };
     const signature = await account.signTypedData({
-        domain: { name: req.extra.name, version: req.extra.version, chainId, verifyingContract: req.asset },
-        types: { TransferWithAuthorization: [
-            { name: "from", type: "address" }, { name: "to", type: "address" }, { name: "value", type: "uint256" },
+        domain: { name: req.extra.name, version: req.extra.version, chainId: Number(req.network.split(":")[1]), verifyingContract: req.asset },
+        types: { ReceiveWithAuthorization: [{ name: "from", type: "address" }, { name: "to", type: "address" }, { name: "value", type: "uint256" },
             { name: "validAfter", type: "uint256" }, { name: "validBefore", type: "uint256" }, { name: "nonce", type: "bytes32" }] },
-        primaryType: "TransferWithAuthorization",
-        message: { ...authorization, value: BigInt(authorization.value), validAfter: BigInt(authorization.validAfter), validBefore: BigInt(authorization.validBefore) },
+        primaryType: "ReceiveWithAuthorization", message,
     });
-    return { x402Version: 2, ...(resource ? { resource } : {}), accepted: req, payload: { signature, authorization } };
+    const { v, r, s, yParity } = parseSignature(signature);
+    return { from: message.from, value: req.amount, validAfter: "0", validBefore: String(message.validBefore), nonce: message.nonce,
+             v: Number(v ?? 27n + BigInt(yParity)), r, s };
 }
 
-/** GET `url` (or `method` it), paying once if it answers 402. Returns { status, body, price, receipt }. */
-export async function payAndFetch(url, { privateKey, account, maxPrice, fetchImpl = fetch, method = "GET" } = {}) {
-    const first = await fetchImpl(url, { method });
-    if (first.status !== 402) return { status: first.status, body: await first.text(), price: null, receipt: null };
-    const offer = paymentRequired(first);
-    const req = choose(offer.accepts, { maxPrice });
-    if (!account) {
-        if (!privateKey) throw new Error(`${url} costs ${req.amount} (base units of ${req.asset} on ${req.network}); no wallet configured to pay`);
-        account = (await import("viem/accounts")).privateKeyToAccount(privateKey);
+const REGISTERED = parseAbiItem("event Registered(bytes32 indexed subject, address indexed publisher, address indexed referrer, uint256 commitment, uint256 price, uint256 referrer_cut)");
+
+/** Every commitment registered for `subject`, in the order the contract added them to its group. */
+async function membersOf(pub, registry, subject, { fromBlock, window = 1000n }) {
+    const head = await pub.getBlockNumber(), out = [];
+    for (let from = BigInt(fromBlock); from <= head; from += window) {
+        const to = from + window - 1n < head ? from + window - 1n : head;
+        out.push(...await pub.getLogs({ address: registry, event: REGISTERED, args: { subject }, fromBlock: from, toBlock: to }));
     }
-    const paid = await fetchImpl(url, { method, headers: { "PAYMENT-SIGNATURE": await paymentHeader(req, account, { resource: offer.resource }) } });
-    const receiptHeader = paid.headers.get("PAYMENT-RESPONSE");
-    const body = await paid.text();
-    if (paid.status === 402) throw new Error(`payment refused: ${paymentRequired(paid).error ?? body}`);
-    return { status: paid.status, body, price: req.amount, receipt: receiptHeader ? JSON.parse(unb64(receiptHeader)) : null };
+    return out.map((l) => l.args.commitment);
 }
 
-// ── Sealed records ────────────────────────────────────────────────────────────────────────
-// An app's paid record is in its committed rows already, sealed: `paid_ct` is
-// base64(nonce[12] ‖ AES-256-GCM(key, record)), with key = HMAC-SHA256(PAID_SECRET, id), and
-// `paid_sha256` is the sha256 of the record itself. A purchase buys the key, never the data,
-// so the buyer has the ciphertext (and so knows the record exists) before paying, and checks
-// what it decrypts against the committed hash after. Sources seal with the same derivation.
-
-const hex = (u8) => [...u8].map((b) => b.toString(16).padStart(2, "0")).join("");
-const unhex = (h) => Uint8Array.from(h.match(/../g).map((x) => parseInt(x, 16)));
-const fromB64 = (s) => Uint8Array.from(unb64bytes(s));
-function unb64bytes(s) { return typeof atob === "function" ? [...atob(s)].map((c) => c.charCodeAt(0)) : [...Buffer.from(s, "base64")]; }
-const toB64 = (u8) => (typeof btoa === "function" ? btoa(String.fromCharCode(...u8)) : Buffer.from(u8).toString("base64"));
-const sha256 = async (bytes) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
-
-/** A record's key, hex: HMAC-SHA256(secret, id). The worker's keyFor; here for sources and tests. */
-export async function paidKey(secret, id) {
-    const k = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-    return hex(new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(id))));
+/** A Semaphore proof that `identity` is in the group, naming `reader`, scoped to `subject`, as `settle` checks it. */
+async function prove({ identity, members, reader, subject }) {
+    const { Group, generateProof } = await semaphore();
+    const p = await generateProof(identity, new Group(members), BigInt(reader), BigInt(subject));
+    return { merkleTreeDepth: String(p.merkleTreeDepth), merkleTreeRoot: String(p.merkleTreeRoot), nullifier: String(p.nullifier), points: p.points.map(String) };
 }
 
-/** Seal `text` under `keyHex`: what a source writes as `paid_ct`. */
-export async function sealPaid(keyHex, text, nonce = crypto.getRandomValues(new Uint8Array(12))) {
-    const k = await crypto.subtle.importKey("raw", unhex(keyHex), "AES-GCM", false, ["encrypt"]);
-    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, k, new TextEncoder().encode(text)));
-    const out = new Uint8Array(12 + ct.length);
-    out.set(nonce); out.set(ct, 12);
-    return toB64(out);
-}
+/**
+ * Buy one record and open its sealed fields. `fangorn` is an SDK client on the record's chain:
+ * it reads the registry and the ciphertext. `deps` replaces the chain reads and the proof in tests.
+ */
+export async function buyRecord(quoteUrl, { privateKey, account = privateKeyToAccount(privateKey), fangorn, maxPrice, fetchImpl = fetch, deps = {} } = {}) {
+    const first = await fetchImpl(quoteUrl);
+    if (first.status !== 402) throw new Error(`${quoteUrl}: expected a 402 quote, got HTTP ${first.status} ${(await first.text()).slice(0, 200)}`);
+    const req = choose(paymentRequired(first).accepts, { maxPrice });
+    const { record, fields, deposit, relay } = await first.json();
+    const terms = req.extra.terms;
+    // The quote is the app's word; the terms are the publisher's, and must be this record's.
+    if (terms.publisher.toLowerCase() !== record.publisher.toLowerCase() || terms.repo !== repoId(record.repo) || terms.key !== recordKey(record.id))
+        throw new Error("the quote's terms are for another record");
+    const subject = subjectOf(terms.publisher, terms.repo, terms.key);
 
-/** Open a sealed record and check it against the committed sha256 (`want`, if known). */
-export async function openPaid(ct, keyHex, want) {
-    const bytes = fromB64(ct);
-    const k = await crypto.subtle.importKey("raw", unhex(keyHex), "AES-GCM", false, ["decrypt"]);
-    const plain = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.slice(0, 12) }, k, bytes.slice(12)));
-    const sha = await sha256(plain);
-    return { sha256: sha, verified: want ? want === sha : null, record: JSON.parse(new TextDecoder().decode(plain)) };
-}
+    const config = fangorn.getConfig(), settlement = fangorn.getSettlementRegistry();
+    const pub = deps.pub ?? createPublicClient({ transport: http(config.rpcUrl) });
+    const members = deps.members ?? ((s) => membersOf(pub, settlement.getAddress(), s, { fromBlock: config.fromBlock, window: config.logWindow ?? 1000n }));
+    const { identity, reader } = await identityOf(account);
 
-/** A private app's pass (its card's `access`): one payment at POST `pass_url`, a bearer token back. */
-export async function buyPass(access, { account, privateKey, maxPrice = access.pass, fetchImpl } = {}) {
-    const r = await payAndFetch(access.pass_url, { method: "POST", account, privateKey, maxPrice, fetchImpl });
-    if (r.status !== 200) throw new Error(`no pass: HTTP ${r.status} ${r.body.slice(0, 200)}`);
-    return { ...JSON.parse(r.body), price: r.price, receipt: r.receipt };
-}
-
-// ── Private apps ──────────────────────────────────────────────────────────────────────────
-// A private app's rows are sealed whole before they reach IPFS: the payload on chain is
-// `{sealed}`, base64(nonce[12] ‖ AES-256-GCM(rowKey, JSON(payload))), with rowKey =
-// HMAC-SHA256(PAID_SECRET, "fangorn.row.v1"). The app's Worker holds the secret, opens the rows
-// in its cron and serves the view only to those who pay. The nonce is the first 12 bytes of
-// HMAC(rowKey, plaintext): an unchanged row seals to the same bytes, so the same CID, and is not
-// embedded again; two different rows never share a nonce. (Equal rows look equal: that is all.)
-
-const ROW = "fangorn.row.v1";
-async function rowNonce(keyHex, text) {
-    const k = await crypto.subtle.importKey("raw", unhex(keyHex), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-    return new Uint8Array(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(text))).slice(0, 12);
-}
-
-/** The payload a private app commits for `payload`. */
-export async function sealRow(secret, payload) {
-    const key = await paidKey(secret, ROW), text = JSON.stringify(payload);
-    return { sealed: await sealPaid(key, text, await rowNonce(key, text)) };
-}
-
-/** A row as committed, opened; a payload that is not sealed comes back as it is. */
-export async function openRow(secret, payload) {
-    if (typeof payload?.sealed !== "string") return payload;
-    return (await openPaid(payload.sealed, await paidKey(secret, ROW))).record;
-}
-
-/** Open every record a seller sent a key for. `ct[id]` is the row's paid_ct, `want[id]` its paid_sha256. */
-async function openAll(keys, ct, want) {
-    const out = [];
-    for (const [id, key] of Object.entries(keys ?? {})) {
-        if (!ct[id]) { out.push({ id, key, error: "no sealed record for this id in the rows read" }); continue; }
-        try { out.push({ id, ...(await openPaid(ct[id], key, want[id])) }); }
-        catch (e) { out.push({ id, key, error: `could not open: ${e.message}` }); }
-    }
-    return out;
-}
-
-/** Buy one record an app sells (its agent card's `paid`): pay for its key, open `ct` (the
- *  row's paid_ct) and check it against `want` (its paid_sha256). Shared by fangorn-mcp and the page. */
-export async function buyRecord(paid, key, { ct, want, account, privateKey, maxPrice = paid.price, fetchImpl } = {}) {
-    if (!ct) return { id: key, error: "this row carries no sealed record (paid_ct): nothing to buy" };
-    const r = await payAndFetch(paid.url.replace("{id}", encodeURIComponent(key)), { account, privateKey, maxPrice, fetchImpl });
-    if (r.status !== 200) return { id: key, error: `HTTP ${r.status}: ${r.body.slice(0, 200)}` };
-    const opened = await openPaid(ct, JSON.parse(r.body).key, want);
-    return { id: key, price: r.price, receipt: r.receipt, digest: opened.sha256, verified: opened.verified, record: opened.record };
-}
-
-// ── Batches and vouchers ──────────────────────────────────────────────────────────────────
-// `POST <app>/paid {ids}` answers 402 with one price for every record it has; PAYMENT-SIGNATURE may then
-// carry several payments (a JSON array) that add up to exactly that price. A payment signs
-// payee, amount and expiry but not the resource (checked against the PayAI facilitator,
-// 2026-10-07), so a person's wallet can sign a stack of them ahead of time ("vouchers") and an
-// agent spends them later with no key: each pays only the app, for a fixed amount, until it
-// expires. Holding them is holding the right to that much of the person's money, nothing more.
-
-/** Sign vouchers worth `total` (base units) in `denominations` (ascending), payable to `req.payTo`
- *  for `days`. Enough of each small one to make any multiple of the smallest up to `total`. */
-export async function signVouchers(req, account, { total, denominations, days = 30 } = {}) {
-    const out = [], ds = denominations.map(BigInt);
-    let left = BigInt(total);
-    for (let i = 0; i < ds.length; i++) {
-        let n = left / ds[i];
-        if (i < ds.length - 1) {   // keep a full set of this size, the rest in multiples of the next
-            const keep = ds[i + 1] / ds[i] - 1n;   // ponytail: assumes each denomination divides the next
-            n = (left - (left - (keep < n ? keep : n) * ds[i]) / ds[i + 1] * ds[i + 1]) / ds[i];
+    let tx = null;
+    if (!(await settlement.canRead(reader.address, terms.publisher, terms.repo, terms.key))) {
+        if (!(await settlement.isRegistered(subject, identity.commitment))) {
+            const salt = toHex(crypto.getRandomValues(new Uint8Array(32)));
+            const payment = await signPayment(req, account, { subject, commitment: identity.commitment, salt });
+            const payload = { commitment: identity.commitment.toString(), salt, payment };
+            const paid = await fetchImpl(quoteUrl, { headers: { "PAYMENT-SIGNATURE": b64(JSON.stringify({ x402Version: 2, accepted: req, payload })) } });
+            if (!paid.ok) throw new Error(`payment refused: ${(await paid.json().catch(() => ({}))).error ?? `HTTP ${paid.status}`}`);
+            tx = JSON.parse(unb64(paid.headers.get("PAYMENT-RESPONSE") ?? b64("{}"))).transaction || null;
+            if (tx) await pub.waitForTransactionReceipt({ hash: tx });
         }
-        for (let k = 0n; k < n; k++)
-            out.push(await signPayment({ ...req, amount: String(ds[i]), maxTimeoutSeconds: days * 86400 }, account));
-        left -= n * ds[i];
-    }
-    return out;
-}
-
-/** Vouchers adding up to exactly `amount`, largest first; null if they cannot. */
-export function pick(vouchers, amount) {
-    let left = BigInt(amount);
-    const out = [];
-    for (const v of [...vouchers].sort((a, b) => { const x = BigInt(a.payload.authorization.value), y = BigInt(b.payload.authorization.value); return x > y ? -1 : x < y ? 1 : 0; })) {   // largest first; equal ones keep their order
-        const x = BigInt(v.payload.authorization.value);
-        if (x <= left) { out.push(v); left -= x; }
-    }
-    return left === 0n ? out : null;   // ponytail: greedy; exact for denominations that divide each other
-}
-
-/** Run `fn` holding `<path>.lock` (Node only): two fangorn-mcp processes sharing one allowance
- *  file would otherwise pick the same vouchers and race. A lock older than `staleMs` belongs to
- *  a crashed purchase and is taken over.
- *  ponytail: a takeover can race a third process for the same stale lock; add a pid check if
- *  more than two servers ever share a file. */
-export async function withLock(path, fn, { staleMs = 120_000, waitMs = 30_000 } = {}) {
-    const fs = await import("node:fs"), lock = `${path}.lock`, start = Date.now();
-    for (;;) {
-        try { fs.closeSync(fs.openSync(lock, "wx")); break; } catch (e) {
-            if (e.code !== "EEXIST") throw e;
-            let age = 0;
-            try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch { continue; }   // released meanwhile
-            if (age > staleMs) { fs.rmSync(lock, { force: true }); continue; }
-            if (Date.now() - start > waitMs) throw new Error(`the allowance is in use by another purchase (${lock})`);
-            await new Promise((ok) => setTimeout(ok, 100));
+        // A load-balanced RPC can answer getLogs from a node behind the one that mined `register`:
+        // our commitment is registered, so read until it shows up.
+        const has = (g) => !!deps.members || g.some((c) => BigInt(c) === identity.commitment);
+        let group = await members(subject);
+        for (let i = 0; i < 10 && !has(group); i++) {
+            await new Promise((r) => setTimeout(r, 3000));
+            group = await members(subject);
         }
+        if (!has(group)) throw new Error("our commitment is registered but the RPC's logs don't show it yet; retry the purchase");
+        const proof = await (deps.prove ?? prove)({ identity, members: group, reader: reader.address, subject });
+        const res = await fetchImpl(`${relay}/relay/settle`, { method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ subject, reader: reader.address, ...proof }) });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(`settle refused: ${out.error ?? `HTTP ${res.status}`}`);
+        await pub.waitForTransactionReceipt({ hash: out.tx });
     }
-    try { return await fn(); } finally { fs.rmSync(lock, { force: true }); }
+
+    const opened = {};
+    for (const [field, handle] of Object.entries(fields)) {
+        const bytes = await openField({ handle, deposit, key: terms.key, field, signer: reader, storage: fangorn.getStorage(), fetch: fetchImpl });
+        opened[field] = JSON.parse(new TextDecoder().decode(bytes));
+    }
+    return { record, fields: opened, price: req.amount, tx };
 }
 
-/** Buy many records at once. Pays from `vouchers` (spent ones are removed from the array) or
- *  signs one exact payment with `account`/`privateKey`. Each key opens `ct[id]` (the row's
- *  paid_ct), checked against `want[id]` (its paid_sha256). Returns the records and a manifest a
- *  third party can check. */
-export async function buyBatch(paid, allIds, { ct = {}, want = {}, vouchers, account, privateKey, maxPrice, fetchImpl = fetch } = {}) {
-    const url = paid.url.replace(/\/\{id\}$/, "");
-    // Only ids whose sealed record is in hand are bought: anything else would pay for nothing.
-    const ids = allIds.filter((id) => ct[id]), unsealed = allIds.filter((id) => !ct[id]);
-    if (!ids.length) throw new Error(`none of these rows carries a sealed record (paid_ct): ${unsealed.join(", ")}`);
-    const post = (headers = {}) => fetchImpl(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ ids }) });
-    const first = await post();
-    const body0 = await first.json();
-    if (first.status !== 402) throw new Error(`expected a price, got HTTP ${first.status}: ${JSON.stringify(body0).slice(0, 200)}`);
-    const offer = { ...body0, ...paymentRequired(first) };
-    const req = choose(offer.accepts, { maxPrice });
-    let payments;
-    if (vouchers) {
-        payments = pick(vouchers, req.amount);
-        if (!payments) throw new Error(`the allowance cannot pay exactly ${req.amount} (base units); add funds or buy fewer records`);
-    } else {
-        account ??= privateKey ? (await import("viem/accounts")).privateKeyToAccount(privateKey) : null;
-        if (!account) throw new Error(`${offer.found.length} record(s) cost ${req.amount} (base units); no wallet or allowance to pay`);
-        payments = [await signPayment(req, account, { resource: offer.resource })];
-    }
-    const res = await post({ "PAYMENT-SIGNATURE": b64(JSON.stringify(payments)) });
-    const body = await res.json();
-    // Drop every voucher the seller says it settled (`paid`) or could not (`rejected`: spent, or
-    // the wallet cannot cover it), on success, partial delivery and refusal alike, so a dead
-    // voucher is never offered twice. A seller that names none: all of them on a 200.
-    const nonce = (p) => p.payload.authorization.nonce;
-    const paidNonces = new Set(body.paid ?? (res.status === 200 ? payments.map(nonce) : []));
-    if (vouchers) for (const n of [...paidNonces, ...(body.rejected ?? [])]) {
-        const k = vouchers.findIndex((v) => nonce(v) === n);
-        if (k >= 0) vouchers.splice(k, 1);
-    }
-    if (res.status !== 200) throw new Error(`payment refused: ${body.error ?? JSON.stringify(body).slice(0, 200)}`);
-    const spent = payments.filter((p) => paidNonces.has(nonce(p))).reduce((s, p) => s + BigInt(p.payload.authorization.value), 0n);
-    const records = await openAll(body.keys, ct, want);
-    // `undelivered` + `error`: a payment failed after others settled; these ids were not paid for.
-    return { records, missing: [...unsealed, ...(body.missing ?? [])], undelivered: body.undelivered ?? [], error: body.error ?? null,
-        manifest: { app: url, bought: new Date().toISOString(), price: String(spent),
-        asset: req.asset, network: req.network, transactions: body.receipts.map((r) => r.transaction),
-        records: records.map(({ id, sha256 }) => ({ id, sha256 })) } };
-}
-
-// ── self-check: `node src/agent/x402.js` — a stand-in seller that checks the signature ──
+// ── self-check: `node src/agent/x402.js` — a stand-in app, relay and key server; no chain ──
 if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/x402.js")) {
-    const { privateKeyToAccount, generatePrivateKey } = await import("viem/accounts");
-    const { verifyTypedData } = await import("viem");
-    const buyer = privateKeyToAccount(generatePrivateKey());
-    // Base Sepolia's USDC, whose EIP-712 name is "USDC" (Base's is "USD Coin").
-    const USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e", SELLER = `0x${"5e".repeat(20)}`, CHAIN = 84532, DOMAIN = { name: "USDC", version: "2" };
-    const req = { scheme: "exact", network: `eip155:${CHAIN}`, amount: "10000", payTo: SELLER, asset: USDC, maxTimeoutSeconds: 120, extra: DOMAIN };
-    let settled = null;
-    const seller = async (url, init = {}) => {
-        const h = init.headers?.["PAYMENT-SIGNATURE"];
-        if (!h) return new Response("{}", { status: 402, headers: { "PAYMENT-REQUIRED": b64(JSON.stringify({ x402Version: 2, resource: { url }, accepts: [req] })) } });
-        const sent = JSON.parse(unb64(h)), p = sent.payload, a = p.authorization;
-        if (sent.x402Version !== 2 || sent.resource?.url !== url || sent.accepted?.amount !== "10000") return new Response("{}", { status: 400 });
-        const ok = await verifyTypedData({ address: a.from, signature: p.signature,
-            domain: { ...DOMAIN, chainId: CHAIN, verifyingContract: USDC },
-            types: { TransferWithAuthorization: [{ name: "from", type: "address" }, { name: "to", type: "address" }, { name: "value", type: "uint256" },
-                { name: "validAfter", type: "uint256" }, { name: "validBefore", type: "uint256" }, { name: "nonce", type: "bytes32" }] },
-            primaryType: "TransferWithAuthorization",
-            message: { ...a, value: BigInt(a.value), validAfter: BigInt(a.validAfter), validBefore: BigInt(a.validBefore) } });
-        if (!ok || a.to !== SELLER || a.value !== "10000") return new Response("{}", { status: 402, headers: { "PAYMENT-REQUIRED": b64(JSON.stringify({ x402Version: 2, error: "bad payment", accepts: [req] })) } });
-        settled = a;
-        return new Response('{"secret":42}', { status: 200, headers: { "PAYMENT-RESPONSE": b64(JSON.stringify({ success: true, transaction: "0xabc" })) } });
-    };
-    const r = await payAndFetch("https://x/paid/1", { account: buyer, maxPrice: 10000n, fetchImpl: seller });
-    if (r.body !== '{"secret":42}' || r.receipt.transaction !== "0xabc" || settled.from !== buyer.address) throw new Error(`paid fetch: ${JSON.stringify(r)}`);
-    let refused = false;
-    try { await payAndFetch("https://x/paid/1", { account: buyer, maxPrice: 9999n, fetchImpl: seller }); } catch (e) { refused = /exceeds the cap/.test(e.message); }
-    if (!refused) throw new Error("a price over the cap must be refused before signing");
+    const { x25519 } = await import("@noble/curves/ed25519");
+    const { generatePrivateKey } = await import("viem/accounts");
+    const { recoverTypedDataAddress } = await import("viem");
+    const sdk = await import("@fangorn-network/sdk");
+    const { testKeyServer } = await import("@fangorn-network/sdk/lib/test/key-server.js");
+    const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} != ${JSON.stringify(b)}`); };
 
-    // Batches through the real worker (CONFIG as ship deploys it), a stand-in facilitator
-    // that checks signatures and refuses a nonce settled twice, and vouchers signed ahead.
-    const { mkdtempSync, writeFileSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const sale = { price: "100000", network: `eip155:${CHAIN}`, asset: USDC, payTo: SELLER, facilitator: "https://fac", ...DOMAIN, description: "" };
-    // Not a literal: the page bundles this module, and a bundler would follow it into the Worker.
-    const WORKER = "../../site/worker.js";
-    const worker = (await import(/* @vite-ignore */ WORKER)).default;
-    // The rows as a buyer reads them: each record sealed under its key, with the plaintext's sha256.
-    const SECRET = "s3cret", ct = {}, want = {};
-    for (const id of ["a", "b", "c"]) {
-        const plain = JSON.stringify({ id, amount: 1 });
-        ct[id] = await sealPaid(await paidKey(SECRET, id), plain);
-        want[id] = await sha256(new TextEncoder().encode(plain));
-    }
-    const env = { PAID_SECRET: SECRET, CONFIG: { name: "Test", paid: sale } };
-    const spent = new Set(), facilitated = [];
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = async (u, init) => {
-        const { x402Version, paymentPayload: p, paymentRequirements: q } = JSON.parse(init.body), a = p.payload.authorization;
-        if (x402Version !== 2 || p.x402Version !== 2) throw new Error("the facilitator is spoken to in v2");
-        facilitated.push(p);
-        if (u.endsWith("/verify")) {
-            const ok = await verifyTypedData({ address: a.from, signature: p.payload.signature,
-                domain: { ...DOMAIN, chainId: CHAIN, verifyingContract: USDC },
-                types: { TransferWithAuthorization: [{ name: "from", type: "address" }, { name: "to", type: "address" }, { name: "value", type: "uint256" },
-                    { name: "validAfter", type: "uint256" }, { name: "validBefore", type: "uint256" }, { name: "nonce", type: "bytes32" }] },
-                primaryType: "TransferWithAuthorization",
-                message: { ...a, value: BigInt(a.value), validAfter: BigInt(a.validAfter), validBefore: BigInt(a.validBefore) } });
-            return new Response(JSON.stringify({ isValid: ok && a.value === q.amount, invalidReason: "bad" }));
+    const publisher = privateKeyToAccount(generatePrivateKey()), buyer = privateKeyToAccount(generatePrivateKey());
+    const REGISTRY = `0x${"e0".repeat(20)}`, USDC = `0x${"aa".repeat(20)}`, REFERRER = `0x${"fe".repeat(20)}`;
+    const repo = sdk.repoId("notes"), key = sdk.recordKey("a");
+    const scope = { chainId: 84532, registry: REGISTRY, publisher: publisher.address, repo, generation: 0n };
+    const ksSecret = x25519.utils.randomSecretKey(), kRepo = sdk.newRepoKey();
+    const deposit = sdk.makeDeposit({ kRepo, keyServerPubkey: x25519.getPublicKey(ksSecret), keyServer: "https://keys.test", scope });
+    const files = new Map();
+    const storage = { putFile: async (b) => { const cid = `bafy${files.size}`; files.set(cid, b); return cid; }, getFile: async (cid) => files.get(cid) };
+    const body = await sdk.sealField({ plaintext: new TextEncoder().encode(JSON.stringify({ text: "the body" })), kRepo, scope, key, field: "body", storage });
+    const terms = { publisher: publisher.address, repo, key, price: "10000", shareBps: 500, generation: "0", deadline: "2000000000" };
+    const req = { scheme: "fangorn", network: "eip155:84532", amount: "10000", asset: USDC, payTo: REGISTRY, maxTimeoutSeconds: 300,
+                  extra: { terms, signature: "0x12", referrer: REFERRER, name: "USDC", version: "2" } };
+
+    // The chain as the buyer sees it: settled once the relay has the proof.
+    let settled = false, registered = false, signed = null, proven = null;
+    const fangorn = { getConfig: () => ({ rpcUrl: "http://unused", fromBlock: 0n }), getStorage: () => storage,
+        getSettlementRegistry: () => ({ getAddress: () => REGISTRY, canRead: async () => settled, isRegistered: async () => registered }) };
+    const pub = { waitForTransactionReceipt: async () => ({}) };
+    const quoteUrl = `https://app.test/paid/${publisher.address}/notes/a`;
+    const fetchImpl = async (url, init = {}) => {
+        if (url === quoteUrl) {
+            const pay = init.headers?.["PAYMENT-SIGNATURE"];
+            if (!pay) return new Response(JSON.stringify({ record: { publisher: publisher.address, repo: "notes", id: "a" }, fields: { body }, deposit, relay: "https://relay.test" }),
+                { status: 402, headers: { "PAYMENT-REQUIRED": b64(JSON.stringify({ x402Version: 2, accepts: [req] })) } });
+            signed = JSON.parse(unb64(pay)).payload;
+            registered = true;
+            return new Response("{}", { headers: { "PAYMENT-RESPONSE": b64(JSON.stringify({ success: true, transaction: "0xabc" })) } });
         }
-        if (spent.has(a.nonce)) return new Response(JSON.stringify({ success: false, errorReason: "nonce used" }));
-        spent.add(a.nonce);
-        return new Response(JSON.stringify({ success: true, transaction: `0x${spent.size}` }));
+        if (url === "https://relay.test/relay/settle") { proven = JSON.parse(init.body); settled = true; return new Response(JSON.stringify({ tx: "0xdef" })); }
+        if (url === "https://keys.test/access") return testKeyServer(JSON.parse(init.body), { secret: ksSecret, chainId: 84532, registry: REGISTRY,
+            canRead: async (r) => settled && r === proven.reader });
+        throw new Error(`unexpected fetch ${url}`);
     };
-    const viaWorker = (u, init) => worker.fetch(new Request(u, init), env);
-    const paidCard = { url: "https://x/paid/{id}", price: sale.price };
-    try {
-        // One record, one payment: the key opens the row's sealed record, which matches its hash.
-        const single = await buyRecord(paidCard, "a", { ct: ct.a, want: want.a, account: buyer, maxPrice: 100000n, fetchImpl: viaWorker });
-        if (single.verified !== true || single.record.id !== "a") throw new Error(`single key: ${JSON.stringify(single)}`);
-        if (facilitated.some((p) => p.extensions)) throw new Error("GET /paid/<id> must not ask to be listed: its URL differs per record");
-        // A probe with no body (x402scan, a Bazaar crawler) gets a 402 for one record, Bazaar extension and all.
-        const probe = await viaWorker("https://x/paid", { method: "POST" });
-        const asked = paymentRequired(probe);
-        if (probe.status !== 402 || asked.accepts[0].amount !== sale.price || asked.extensions?.bazaar?.info?.input?.method !== "POST")
-            throw new Error(`probe: ${probe.status} ${JSON.stringify(asked)}`);
-        // One exact payment from a wallet: 2 of 3 ids are sealed in the rows, 2 × $0.10, the
-        // third is never quoted (no ciphertext in hand, nothing to pay for).
-        const one = await buyBatch(paidCard, ["a", "b", "zz"], { account: buyer, maxPrice: 200000n, ct, want, fetchImpl: viaWorker });
-        if (one.records.length !== 2 || one.missing[0] !== "zz" || one.manifest.price !== "200000" || !one.records.every((r) => r.verified === true))
-            throw new Error(`batch with a wallet: ${JSON.stringify(one)}`);
-        // The facilitator lists what it settles with the Bazaar extension: every batch payment carries it.
-        const batchSent = facilitated.slice(-2);   // its one payment: verify, settle
-        if (!batchSent.every((p) => p.extensions?.bazaar && p.resource.url === "https://x/paid" && p.accepted.amount === "200000"))
-            throw new Error(`batch payloads: ${JSON.stringify(batchSent.map((p) => [p.resource?.url, p.accepted?.amount, !!p.extensions]))}`);
-        // $2 of vouchers in $0.10 / $1, 30 days: any multiple of $0.10 can be paid exactly.
-        const vs = await signVouchers({ ...paidCard, scheme: "exact", network: sale.network, payTo: SELLER, asset: USDC, extra: DOMAIN },
-            buyer, { total: 2000000n, denominations: [100000n, 1000000n] });
-        if (vs.length !== 11 || pick(vs, 1700000n).length !== 8 || pick(vs, 2100000n) !== null) throw new Error(`vouchers: ${vs.length}`);
-        const before = [...vs];
-        const three = await buyBatch(paidCard, ["a", "b", "c"], { vouchers: vs, ct, want, fetchImpl: viaWorker });
-        if (three.records.length !== 3 || vs.length !== 8 || three.manifest.transactions.length !== 3) throw new Error(`batch with vouchers: ${JSON.stringify(three.manifest)}`);
-        // A spent $0.10 voucher riding along with a fresh one: both verify, settle refuses, nothing sent.
-        const usedOne = before.find((v) => !vs.includes(v) && v.payload.authorization.value === "100000");
-        const fresh = vs.find((v) => v.payload.authorization.value === "100000");
-        const replay = await viaWorker("https://x/paid", { method: "POST", body: JSON.stringify({ ids: ["a", "b"] }), headers: { "PAYMENT-SIGNATURE": b64(JSON.stringify([usedOne, fresh])) } });
-        if (replay.status !== 402 || (await replay.json()).keys) throw new Error("a spent voucher must not buy anything");
-        const short = await viaWorker("https://x/paid", { method: "POST", body: JSON.stringify({ ids: ["a", "b"] }), headers: { "PAYMENT-SIGNATURE": b64(JSON.stringify([fresh])) } });
-        if (short.status !== 402) throw new Error("payments short of the price must be refused");
-        // A spent voucher still in the stack, behind a fresh one (a crash before the file was
-        // saved): the fresh one settles and buys one record, the spent one is refused, and both
-        // leave the stack so neither is offered again.
-        const fresh2 = vs.find((v) => v !== fresh && v.payload.authorization.value === "100000");
-        const stack = [fresh2, usedOne];
-        const half = await buyBatch(paidCard, ["a", "b"], { vouchers: stack, ct, want, fetchImpl: viaWorker });
-        if (half.records.length !== 1 || half.undelivered[0] !== "b" || !half.error || half.manifest.price !== "100000" || stack.length !== 0)
-            throw new Error(`partial settle: ${JSON.stringify({ ...half, stack: stack.length })}`);
-        // The spent voucher first: nothing settles, nothing is sent, and it is dropped.
-        const stack2 = [usedOne, fresh];
-        let threw = false;
-        try { await buyBatch(paidCard, ["a", "b"], { vouchers: stack2, ct, want, fetchImpl: viaWorker }); } catch { threw = true; }
-        if (!threw || stack2.length !== 1 || stack2[0] !== fresh) throw new Error(`refused batch must drop only the spent voucher: ${stack2.length}`);
-        // The allowance lock: two purchases at once take turns; a crashed one's lock is taken over.
-        const vfile = `${mkdtempSync(`${tmpdir()}/wm-`)}/vouchers.json`, order = [];
-        const turn = (name) => withLock(vfile, async () => { order.push(`${name}+`); await new Promise((ok) => setTimeout(ok, 50)); order.push(`${name}-`); });
-        await Promise.all([turn("a"), turn("b")]);
-        if (order.join() !== "a+,a-,b+,b-" && order.join() !== "b+,b-,a+,a-") throw new Error(`lock interleaved: ${order}`);
-        writeFileSync(`${vfile}.lock`, "");
-        const { utimesSync, existsSync } = await import("node:fs");
-        utimesSync(`${vfile}.lock`, new Date(Date.now() - 300_000), new Date(Date.now() - 300_000));
-        if (await withLock(vfile, async () => 7) !== 7 || existsSync(`${vfile}.lock`)) throw new Error("a stale lock must be taken over and released");
-    } finally { globalThis.fetch = realFetch; }
-    console.log("x402.js batch self-check ok — keys, not records: each opens the row's sealed record and matches its hash; one price for the ids sealed in the rows, paid by one signature or by vouchers signed ahead, spent vouchers removed and refused if replayed, short payment refused, a half-settled batch delivers what was paid and drops spent vouchers, the allowance file is locked per purchase");
-    console.log("x402.js self-check ok — a signed EIP-3009 authorization the seller can verify, exactly the asked amount to the asked payee, the receipt read back, and a price over the cap refused before signing");
+    const deps = { pub, members: async () => [1n], prove: async ({ reader, subject }) => ({ merkleTreeDepth: "1", merkleTreeRoot: "1", nullifier: "1", points: Array(8).fill("0"), reader, subject }) };
+
+    await buyRecord(quoteUrl, { account: buyer, fangorn, fetchImpl, deps, maxPrice: 9999n }).then(() => { throw new Error("over the cap must refuse"); },
+        (e) => { if (!/exceeds the cap/.test(e.message)) throw e; });
+    eq(signed, null, "nothing is signed over the cap");
+
+    const got = await buyRecord(quoteUrl, { account: buyer, fangorn, fetchImpl, deps, maxPrice: 10000n });
+    eq([got.fields, got.price, got.tx], [{ body: { text: "the body" } }, "10000", "0xabc"], "paid, settled, and the field opens as JSON");
+    const { identity, reader } = await identityOf(buyer);
+    eq([signed.commitment, proven.reader, proven.subject], [identity.commitment.toString(), reader.address, subjectOf(publisher.address, repo, key)], "the payment carries the identity; the proof names the reader");
+    if (reader.address === buyer.address) throw new Error("the reader must not be the paying wallet");
+    const p = signed.payment;
+    const from = await recoverTypedDataAddress({ domain: { name: "USDC", version: "2", chainId: 84532, verifyingContract: USDC },
+        types: { ReceiveWithAuthorization: [{ name: "from", type: "address" }, { name: "to", type: "address" }, { name: "value", type: "uint256" },
+            { name: "validAfter", type: "uint256" }, { name: "validBefore", type: "uint256" }, { name: "nonce", type: "bytes32" }] },
+        primaryType: "ReceiveWithAuthorization", message: { from: p.from, to: p.payTo ?? REGISTRY, value: BigInt(p.value), validAfter: 0n, validBefore: BigInt(p.validBefore), nonce: p.nonce },
+        signature: concat([p.r, p.s, toHex(p.v, { size: 1 })]) });
+    eq([from, p.value, p.nonce], [buyer.address, "10000", registerNonce(subjectOf(publisher.address, repo, key), identity.commitment, REFERRER, signed.salt)],
+        "an ERC-3009 authorization from the buyer for exactly the price, its nonce bound to this purchase and referrer");
+
+    signed = null;
+    const again = await buyRecord(quoteUrl, { account: buyer, fangorn, fetchImpl, deps });
+    eq([again.fields.body.text, signed, again.tx], ["the body", null, null], "a reader that can already read pays nothing again");
+
+    const other = { ...req, extra: { ...req.extra, terms: { ...terms, key: sdk.recordKey("b") } } };
+    const lying = async (url, init) => url === quoteUrl && !init?.headers ? new Response(JSON.stringify({ record: { publisher: publisher.address, repo: "notes", id: "a" }, fields: { body }, deposit, relay: "https://relay.test" }),
+        { status: 402, headers: { "PAYMENT-REQUIRED": b64(JSON.stringify({ x402Version: 2, accepts: [other] })) } }) : fetchImpl(url, init);
+    await buyRecord(quoteUrl, { account: privateKeyToAccount(generatePrivateKey()), fangorn, fetchImpl: lying, deps }).then(() => { throw new Error("must refuse"); },
+        (e) => { if (!/another record/.test(e.message)) throw e; });
+    console.log("x402.js self-check ok — the cap holds before signing, the payment is an ERC-3009 authorization bound to this purchase, the proof names a reader that isn't the wallet, a retry pays nothing, a quote for another record is refused, and the field opens");
 }

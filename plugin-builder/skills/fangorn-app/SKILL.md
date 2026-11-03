@@ -6,31 +6,30 @@ description: Build, publish and register a Fangorn app with @fangorn-network/wes
 # Building a Fangorn app with westmarch
 
 A Fangorn app is a database with no server. Its records are committed to the owner's
-namespace on Base Sepolia (`"network": "baseSepolia"` in `app.json`, required; older apps stay on Arbitrum Sepolia); a view of them (content-addressed shards with embeddings)
-is hosted as static files on Cloudflare Pages; a page searches them in the reader's tab;
+repo, `<wallet>:<app>`, on Base Sepolia (`"network": "baseSepolia"` in `app.json`, required); a view of them (content-addressed shards with embeddings)
+is served by the app's Cloudflare Worker; a page searches them in the reader's tab;
 an agent card bound on chain lets any agent find, verify and drive it. It improves by a
 loop the owner runs: new records always ship, and a change to *how* records are made
 ships only if the owner's questions are answered no worse.
 
 ```
- register (minutes):  claim ─► join ─► empty site on Pages ─► card bound on chain
+ register (minutes):  repo ─► empty site on its Worker ─► card bound on chain
                                                                  │ the app exists, at its URL
  build (hours):       crawl, snapshot ─► .ship/stage ─► recipe ─► local view ─► westmarch-eval
                                          (plaintext)    (app.json  (--local)    (eval/golden.jsonl)
                                                          types)                       │ pass
- go live:             schema, records ─► chain ─► view ─► Pages ─► agent minted ◄──────┘
+ go live:             schema, records ─► chain ─► view ─► Worker ─► agent minted ◄──────┘
  live: other wallets publish into the app ──► chain
 ```
 
 Two paths, in this order. **Register is fast**: as soon as the person knows what the app
-is and what to call it, claim the name, put an empty page at its address and bind its
+is and what to call it, create its repo, put an empty page at its address and bind its
 card, so something real exists within minutes. **Build is slow**: questions, then sources,
 then a local build graded against the questions, and only then does any record go on
 chain. Nothing in the build is permanent until *Go live*. `westmarch-ship` does both from
-one `app.json` (`--register` for the first); building by hand (the last part of this
-skill) is for what it does not fit.
+one `app.json` (`--register` for the first).
 
-The full walkthrough with every file's source is the guide. Read the sections named
+The guide has the details: `app.json`, private apps, grading, discovery. Read the sections named
 below when you reach them; do not read it whole up front.
 
 - online: https://github.com/fangorn-network/westmarch/blob/main/docs/app-to-agent.md
@@ -61,37 +60,36 @@ conversation; do not collect it with a form.
 Roughly this order. Loop back freely: a failing question in step 5 often sends you back to
 step 3 or 4.
 
-**0. What already exists.** Many people claim the app at fangorn.network and press its
-Deploy to Cloudflare button before they ever open this skill. They arrive with the name
-claimed, a GitHub repo made from westmarch's template, a Worker running, and maybe the
-card bound. Check before asking anything, and never redo what is done:
+**0. What already exists.** Some people start from fangorn.network's Deploy to Cloudflare
+button before they open this skill. They arrive with a GitHub repo made from westmarch's
+template, a Worker running, and maybe the card bound. Check before asking anything, and
+never redo what is done:
 
 - Is the working directory a repo with `app.json` and `wrangler.json`? If `"app"` still
-  says `my-app`, ask which name they claimed and set it.
+  says `my-app`, ask what the app is called and set it.
 - `fangorn wallet` shows the signing wallet. `npx westmarch-ship app.json --register --dry-run`
-  reads the chain and says whether the name is claimed, by whom, and what card is bound.
-  It writes nothing to the chain or Cloudflare, only `.ship/` locally.
+  reads the chain and says whether this wallet's repo `<wallet>:<app>` exists and what card
+  its `@card` points at. It writes nothing to the chain or Cloudflare, only `.ship/` locally.
+  Repo names are per wallet, so there is nothing to claim and no one else can take the name.
 
 Then:
 
-- **Claimed by this wallet, with the Deploy button's Worker running.** The name and the
-  site are settled: skip *What is permanent* for them, `westmarch init` and *Register the
-  app*, and go from step 1 to step 3. This app deploys by `git push`: Workers Builds runs
+- **The repo exists, with the Deploy button's Worker running.** The name and the site are
+  settled: skip *What is permanent* for them, `westmarch init` and *Register the app*, and
+  go from step 1 to step 3. This app deploys by `git push`: Workers Builds runs
   `westmarch build` on every push to `main`. **Never run `westmarch-ship` here without
   `--no-deploy`**, or it deploys a second copy over the Worker. Sources publish with
-  `npx westmarch-ship app.json --no-deploy`, members push with the `fangorn` CLI, and
+  `npx westmarch-ship app.json --no-deploy`, publishers push with the `fangorn` CLI, and
   `--local` grades as usual. The Deploy button builds free apps only. Selling records
   (`paid`) or the data (`private`) means moving its deploys to `westmarch-ship`, which
   sets the secret: say so before they choose a price.
-- **Claimed by this wallet, but no repo or Worker yet.** `westmarch init <app>`, then
-  *Register the app*. `westmarch-ship` finds the claim and never claims twice.
-- **Claimed by another wallet.** Stop. Either `fangorn init` was given a different key
-  from the wallet they used at fangorn.network (the hub exports it), or the name belongs
-  to someone else and they need another.
-- **Unclaimed.** Start at step 1.
+- **A Worker from the Deploy button, but `fangorn wallet` is not the wallet whose repo it
+  names.** Stop: `fangorn init` was given a different key from the one they used at
+  fangorn.network (the hub exports it).
+- **Nothing yet.** Start at step 1.
 
-An app that is already claimed still goes through step 1.5. The claim is spent, but the
-answer still decides what to build into it.
+An app whose repo already exists still goes through step 1.5: the answer still decides
+what to build into it.
 
 **1. What it is, and who it is for.** Open with one broad question: what they want to make
 and who would use it. Reflect back a short sketch (the user, what they ask, what they get)
@@ -184,11 +182,11 @@ A source is one kind of input:
 - **snapshot**: a file, dump or export (CSV, a database export, a bucket), read whole
   each run and replacing the last;
 - **live**: people, agents or devices submitting. There is no ingest server: they
-  register as publishers in the app and push into its namespace from their own wallets,
+  push into its namespace from their own wallets,
   and the view reads every publisher's commits (one domain per publisher). An app with no
-  `sources` already presents every member's repo. An app with sources narrows its view
-  to their namespaces, so name the ones members push to in `"live": ["readings"]` (or
-  `"live": true` for any). `--local` then reads what members have already committed to
+  `sources` presents every repo. An app with sources narrows its view
+  to their namespaces, so name the ones publishers push to in `"live": ["readings"]` (or
+  `"live": true` for any). `--local` then reads what publishers have already committed to
   those namespaces from the chain (reads only, no gas), beside what the sources staged,
   so contributions are graded too. Give each device its own repo name: one writer per
   repo.
@@ -217,7 +215,7 @@ versioned (`my-app.thing.v1`) so a later shape can be a new type.
 Settle these with the person one at a time, each with a proposed default: the name and
 the site just before *Register the app*, what each type costs just before *Go live*.
 
-- **The app name.** Permanent once claimed. Do not assume it matches the data's name.
+- **The app name.** The repo name, and the prefix of every tool agents call; permanent once the card is bound. Do not assume it matches the data's name.
 - **What each type costs to read.** Anything committed is permanent:
   - **public**: every field of a record is committed (to IPFS, anchored on chain) and
     served in the view. Anyone can read it forever.
@@ -233,23 +231,20 @@ the site just before *Register the app*, what each type costs just before *Go li
     counts and timing stay visible on chain. Sources must stage (`--output-dir`). Not
     for data only *named* people may read: anyone who pays reads it.
 - **Where the site will live.** The card's `url` is permanent once bound. The default is
-  Cloudflare Pages at `<project>.pages.dev`; otherwise a domain they own.
+  the Worker's `<project>.<account>.workers.dev`; otherwise a domain they own (`site.url`).
   `fangorn.network` is not available to app builders — never offer or assume a hostname
   under it.
 
 ## What the person must have
 
-Do not open with this list. Check what you can yourself (`node -v`, `fangorn --version`,
-`python3 -c "import quickbeam"`), and raise a missing piece when the next step needs it:
-Node, the Fangorn CLI, the wallet and Cloudflare to register; quickbeam before the first
-local build; Pinata before *Go live*.
+Do not open with this list. Check what you can yourself (`node -v`, `fangorn --version`), and raise a missing piece
+when the next step needs it: Node, the Fangorn CLI, the wallet and Cloudflare to register;
+whatever the sources run on before the first local build; Pinata before *Go live*.
 
-- Node 22 and the Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.10.20-dev`, or whatever
+- Node 22 and the Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.11.3`, or whatever
   newer version westmarch's `package.json` lists as its `@fangorn-network/sdk` peer.
-- Python 3 with quickbeam, whose harness every source runs on. Quorum pins it in
-  `sources/requirements.txt` as
-  `quickbeam @ git+https://github.com/fangorn-network/embeddings@tony/dev`.
-- A wallet on the app's network (Arbitrum Sepolia or Base Sepolia) with a little ETH. **It owns the app forever**, so it
+- Whatever the app's sources are written in: a source is any command (see step 2).
+- A wallet on Base Sepolia with a little ETH. **It owns the app forever**, so it
   must be the wallet that will publish the data. Never generate a key for a real app;
   throwaway keys are only for read-only paths. Needed to register.
 - A Pinata JWT, because commits and the ERC-8004 agent pin files to IPFS. Not needed
@@ -264,25 +259,23 @@ npx @fangorn-network/westmarch init <app>   # the repo, npm installed, first com
 ```
 
 ```
-app.json            the app: types (role maps), sources (none: it presents what members commit), site, paid
+app.json            the app: types (role maps), sources (none: it presents every repo), site, paid
 sources/*.py        one module per source, if the app crawls anything
 eval/goals.md       the bet
 eval/golden.jsonl   the questions
 wrangler.json       the Worker, for the deploy button (`westmarch build` fills CONFIG); westmarch-ship writes its own
-.ship/              stage, cache, vectors (ignored); state.json (committed: claim block, URL, agent id)
+.ship/              stage, cache, vectors (ignored); state.json (committed: the repo's first block, URL, agent id)
 ```
 
-The repo is the recipe, never the data, so it can be public. If they claimed the name on
-fangorn.network, `westmarch-ship` finds the claim block on chain; it never claims twice.
+The repo is the recipe, never the data, so it can be public. If the app's on-chain repo
+already exists, `westmarch-ship` finds it; it never creates it twice.
 
 ## Chain writes and deploys are the person's call
 
-Several steps cost money or cannot be undone: `fangorn app claim` (first come, first
-served, permanent), `fangorn register` (pays the registration fee), every `fangorn repo
-init` and `fangorn push` (gas), `wrangler pages project create` and `pages deploy`, and
-`fangorn app agent` (pins to IPFS, mints an agent; with `--skip-register` it only binds
-the card). `westmarch-ship --register` does the claim, register, Pages deploy and bind;
-without `--local` it does all of these. Show the exact command and what it does, then run it only when they
+Several steps cost money or cannot be undone: every `fangorn repo init` and `fangorn push`
+(gas), every deploy, and `fangorn card` (pins to IPFS, mints an ERC-8004 agent; with
+`--skip-register` it only commits the repo's `@card`). `westmarch-ship --register` creates the
+repo, deploys and binds the card; without `--local` it does all of these. Show the exact command and what it does, then run it only when they
 say so. Everything else — the questions, the sources, local builds, the eval — is free
 and reversible, so just do it.
 
@@ -305,17 +298,15 @@ Then show the plan, and run it on their go-ahead:
 
 ```sh
 npx westmarch-ship app.json --register --dry-run   # every step, printed, none done
-npx westmarch-ship app.json --register             # claim, join, empty site, deploy, bind the card
+npx westmarch-ship app.json --register             # repo, empty site, deploy, bind the card
 ```
 
-It claims the name (the claim block becomes the card's `fromBlock`), joins as a publisher,
-deploys the stock page over an empty view ("registered and being built"), and binds the
+It creates the app's repo (its block becomes the card's `fromBlock`), deploys the stock page over an empty view ("registered and being built"), and binds the
 card URL on chain. It does **not** mint the ERC-8004 agent. The mint copies the card's
 skills into a registration file once, for good, so it waits for the first full ship, when
 the card describes the app as built. Back up `.ship/state.json`.
 
-Open the URL with the person. A fresh `pages.dev` hostname answers `522` for the first
-minute; retry rather than debug.
+Open the URL with the person.
 
 ## Build locally until the questions pass
 
@@ -325,52 +316,28 @@ minute; retry rather than debug.
 (`presentation.externalUrl`). Declare every type: an undeclared type gets its roles
 guessed from field names, which works for display and often fails for search.
 
-**2. One source per input.** A source is a Python module on quickbeam's harness. Start
-from a working one — Quorum's `sources/dnr_wells.py` is a snapshot, `sources/legistar.py`
-a crawl with a cursor. The shape:
+**2. One source per input.** A source is any command, in any language. `westmarch-ship`
+runs it two ways, and it must answer both:
 
-```python
-import json, sys
-from quickbeam import SourceBase
-
-TAG = "my-app.thing.v1"
-
-class ThingsSource(SourceBase):
-    name = "things"
-    stems = {TAG: "things"}           # tag → the staged file, volume_1_things.json
-    snapshot_stems = {"things"}       # snapshot: each run replaces the last; omit for a crawl
-
-    def add_source_args(self, p):
-        p.add_argument("--file", required=True)
-
-    def read(self, cursor, args):     # raw rows since `cursor`
-        with open(args.file) as f:
-            return json.load(f)
-
-    def build_graph(self, records):   # raw rows → records (the recipe)
-        return {TAG: [{"name": f"things:{r['sku']}", "fields": {
-            "entityType": TAG, "thing_id": f"my-app:thing:{r['sku']}", "title": r["name"],
-            "text": f"{r['name']}: {r['about']}", **r}} for r in records]}, []
-
-    def next_cursor(self, records, prev):
-        return prev                   # a crawl returns where the next run resumes
-
-if __name__ == "__main__":
-    from quickbeam.ingest.scrapers.harness import run_source
-    run_source(ThingsSource(), sys.argv[1:])
-```
+- **Stage:** with `--output-dir <dir>` (and `--volume <n>`, default 1), write its records as
+  `volume_<n>_<stem>.json`: a JSON array of `{"name": "<record id>", "fields": {…}}`, with
+  `fields.entityType` set to the record's declared type. References between records go in
+  `volume_<n>_edges.json`: `[{"from": "<id>", "rel": "<relation>", "to": "<id>"}]`.
+  `--local` reads only these files.
+- **Publish:** with `--publish --namespace <ns> --fangorn-bin "<cli>"`, commit the same
+  records to the repo `<ns>` through that `fangorn` CLI (`fangorn commit` then `fangorn push`).
+  `--replace` means a snapshot: the run replaces the repo's records instead of adding to them.
 
 Its entry in `app.json` must pass `--output-dir .ship/stage/<namespace>`: that directory
-is the stage, and `--local` reads nothing else. A crawl also takes `--cache-dir
-.ship/cache/<namespace>` and `--checkpoint-file .ship/stage/<namespace>/checkpoint.json`.
-A source with `"each": "rows.json"` is a template, one source per row (`{field}`,
-`{field|slug}`, `{args...}`), so adding a town or a feed is adding a row.
+is the stage. A crawl also keeps its own cache and checkpoint (under `.ship/`), so the next
+run resumes where this one stopped. A source with `"each": "rows.json"` is a template, one
+source per row (`{field}`, `{field|slug}`, `{args...}`), so adding a town or a feed is
+adding a row.
 
-Withholding (names, addresses) belongs in `build_graph`, before anything is staged, so
-every record passes through it. For a paid tier: the source takes `--paid-dir`, writes one
-JSON per record there, and puts that file's sha256 on the record as `paid_sha256`; its
-`app.json` entry names `paid_dir`. Quorum's `write_paid` in `sources/civicplus.py` is the
-pattern.
+Withholding (names, addresses) belongs in the source, before anything is staged, so every
+record passes through it. To sell a record, its publisher seals and prices it when
+committing: `fangorn commit records.json --paid <field> --price 0.01`. The app then quotes
+it (`"paid": true` and `"facilitator"` in `app.json`).
 
 **3. Build and grade:**
 
@@ -388,8 +355,8 @@ A big corpus on an NVIDIA GPU: `WESTMARCH_EMBED_DEVICE=cuda` runs the same q8 en
 the GPU (same stamp; ~0.99 cosine to CPU vectors, closer than the browser's queries get).
 One-time setup: `ONNXRUNTIME_NODE_INSTALL=cuda12 node script/install.js` inside
 `node_modules/onnxruntime-node`, and the CUDA 12 runtime, cuBLAS and cuDNN on
-`LD_LIBRARY_PATH` (on WSL, add `/usr/lib/wsl/lib`). Not quickbeam: its fastembed fp32
-vectors are a different encoder and a q8 view refuses them.
+`LD_LIBRARY_PATH` (on WSL, add `/usr/lib/wsl/lib`). Another encoder's vectors (fastembed
+fp32, say) are a different encoder, and a q8 view refuses them.
 
 **4. Read the result with the person.** For each failing check:
 
@@ -430,12 +397,11 @@ npx westmarch-ship app.json --dry-run   # every step, printed, none done
 npx westmarch-ship app.json             # crawl + publish, view, site, card, deploy, mint the agent
 ```
 
-The claim and join are already done (skipped *Register*? the same command does them
-first). It runs each source with `--publish`
+The repo already exists (skipped *Register*? the same command creates it first). It runs each source with `--publish`
 (one push per namespace), builds the view, writes the stock page, card and `_headers`
 (and `_worker.js` with `paid`), deploys, and mints the ERC-8004 agent from the finished
 card. Every step checks the chain or Cloudflare first, so rerunning it is how the app is
-updated. State lives in `.ship/`; `.ship/state.json` holds the claim block, the URL and
+updated. State lives in `.ship/`; `.ship/state.json` holds the repo's first block, the URL and
 whether the agent is still to be minted — back it up.
 
 ## The page: fangorn shape, the app's paint
@@ -574,7 +540,7 @@ The class decides cost, what must be rerun, and whether the person approves firs
 |---|---|---|---|---|
 | **a. page only** | chips, sort, detail panel, more-like-this | `app/` | build, card, deploy | deploy |
 | **b. schema only** | a new facet, `externalUrl`, `presentation.types` labels, a `measures` field | `app.json` `types` | ship (redeploys the Worker; its next cron applies the spec with no re-embed) | deploy |
-| **c. data** | a new field on records, new records | `pipeline/graph.mjs` | data commit + push, `westmarch-view`, build, card, deploy | push + deploy, stating the re-embed cost |
+| **c. data** | a new field on records, new records | `pipeline/graph.mjs` | `westmarch-ship` (sources publish; the Worker's cron embeds) | push + deploy, stating the re-embed cost |
 | **d. out of scope** | login, payments, writes | — | — | tell them why |
 
 For class c, spell out the cost first. A record's identity in the view is its vertex
@@ -711,7 +677,7 @@ for (const k of new Set([...Object.keys(a),...Object.keys(b)])) if (!["skills","
 
 - **Never change** `url`, `fromBlock`, `name` (`fangorn-mcp` derives the app's tool prefix
   from it; `Audius Search` → `audius-search__…`), `namespaces`, `views` or the extension.
-- **Do not rerun `fangorn app agent` without `--update`.** Bare, it always mints a *new*
+- **Do not rerun `fangorn card` without `--update`.** Bare, it always mints a *new*
   agent, so rerunning leaves two agents for one app. The ERC-8004 registration file is a
   snapshot of the card: name, description, card URL, `a2aSkills` (the union of the skills'
   **tags**, not tool names), and `x402Support` (whether any skill is tagged `x402`). New
@@ -719,7 +685,7 @@ for (const k of new Set([...Object.keys(a),...Object.keys(b)])) if (!["skills","
   `a2aSkills` stale, and a first `x402` tag makes `x402Support` wrong. After deploying such a
   card, refresh the existing agent from it, with the person's go-ahead (a pin and one
   transaction from the owner wallet, nothing minted):
-  `fangorn app agent <card url> --update <agentId>` (the id is in `.ship/state.json`).
+  `fangorn card <card url> --repo <app> --update <agentId>` (the id is in `.ship/state.json`).
   If a bind fails on "replacement transaction underpriced" after a mint, the agent exists:
   rebind with `--skip-register`, never rerun the mint.
 - `find site -size +25M` is still empty. Then deploy, with the person's go-ahead.
@@ -736,237 +702,6 @@ Then repeat *Before saying it is done* against the deployed site, and add:
 Give the person one table: feature → UI control → tool name → its sample call → how
 each was verified (harness, browser, deployed). Name anything left unverified (for
 example, "page tools not exercised in a WebMCP browser") rather than implying it
-
-## By hand, step by step
-
-`westmarch-ship` does all of this. Build by hand only for what it does not fit: a page
-written from scratch, or a large public corpus baked yourself with one vertex per shard
-carrying its sha256, so the chain anchors a digest instead of hundreds of MB of rows
-(Kingsfoil: 60,760 trials; its `pipeline/bake.mjs` and `chain/graph-commit.mjs`, and the
-layout in *The view on disk*). `westmarch-view` embeds locally on CPU; hosted quickbeam
-watches the chain and embeds on a GPU. Both write the same files, so an app moves between
-them by changing one URL in its card.
-
-Each step names the guide section that holds its code and the check that proves it worked.
-
-**1. CLI setup** (guide §1)
-
-```sh
-fangorn init          # ~/.fangorn/config.json: key, Pinata JWT, gateway
-fangorn wallet        # confirm which address will sign
-fangorn set-app my-app
-```
-
-The config file beats `ETH_PRIVATE_KEY` in the environment. If `fangorn wallet` shows
-the wrong address, that is why.
-
-The gateway must belong to the **same Pinata account as the JWT**. Uploads go to the
-JWT's account, and a dedicated gateway is restricted to its own account's pins, so a
-gateway from another account 403s on everything you just wrote and the first `commit`
-fails. Check before any chain write — the configured host must be listed:
-
-```sh
-curl -s https://api.pinata.cloud/v3/ipfs/gateways -H "Authorization: Bearer $JWT"   # rows[].domain
-```
-
-Instead of `set-app`, `--app my-app` on every command leaves the person's stored app
-alone, which matters if they already publish another one from this wallet.
-
-**2. Note the block, then claim** (guide §2)
-
-Record the current block number *before* claiming; it becomes the card's `fromBlock`,
-where readers start scanning the chain for this app. Then `fangorn app info` (expect
-"unclaimed") and `fangorn app claim`. Placeholder terms are fine at first; real ones
-come later with `fangorn app terms <hash> <uri>`.
-
-**3. Become a publisher** (guide §3)
-
-`fangorn register` does the global registration and joins this app. Both are needed:
-a push from a wallet that registered but did not join reverts `NotRegisteredForApp`.
-Check with `fangorn app info`.
-
-**4. Data as a graph** (guide §4)
-
-Write `pipeline/graph.mjs` that turns the source rows into
-`{ vertices: [{ id, tag, payload }], edges?: [{ rel, from, to }] }` at `data/graph.json`.
-One tag per kind of thing. Keep fields worth filtering on (category, region, date) as
-their own keys; agents use them with `where` and `count`.
-
-The vertex `id` exists only in this file — the chain addresses vertices by CID, and edges
-are resolved to CIDs at commit time. What readers key rows by is the **payload's** `id`:
-`loadShard` builds `{ id: <CID>, ...payload }`, so a payload `id` replaces the CID as the
-row id that `search` returns and `get` looks up. It must therefore be unique across
-**every type** in the namespace. Source ids often are not (a genre and a tag both called
-`electronic`); make the payload `id` the namespaced key (`audius:genre:electronic`), keep
-the source's own id under another name, and declare `identity: "id"` in the schema.
-
-**5. Declare the schema** (guide §5)
-
-`app.json`'s `types` holds one entry per data type tag: `description`, `role_map` and
-`presentation` (and `relations` the references allowed between them). Nothing is committed
-on chain: `westmarch-ship` passes it to the Worker in its CONFIG, and `westmarch-view` takes
-it with `--config app.json`. The role map decides what gets embedded (`text`, plus `title`,
-`subtitle`, `tags`), what readers see, and what agents can filter and count on. Declare
-every type you publish: an undeclared type gets its roles guessed from field names, which
-works for display and often fails for search.
-
-Records keep the text they were embedded with until re-embedded, so get the `text` role
-right before the first bake.
-
-**6. Commit and push the data** (guide §6)
-
-```sh
-node pipeline/graph.mjs
-fangorn repo init my-app
-fangorn commit data/graph.json -m "first data" --replace
-fangorn push
-```
-
-`--replace` makes the file the namespace's whole state, so removed records are removed.
-`fangorn status` compares the local tip with the chain.
-
-`commit` is local until `push`. To throw away an unpushed commit (a payload mistake found
-before pushing), set `head` in `.fangorn/repo.json` back to the on-chain tip that
-`fangorn status` shows and commit again; the abandoned commit's uploads stay pinned
-but nothing references them.
-
-**7. Publish the view** (guide §7)
-
-```sh
-npx westmarch-view --app my-app --namespace my-app --out site/view --from-block <block from step 2>
-```
-
-It reads the chain and writes files, needs no key, embeds only records the view does
-not hold yet, tombstones removed ones, and refits coverage once the view has doubled.
-The first run downloads the 131 MB model into `~/.cache/fangorn-mcp/models`. A second
-run with nothing new on chain changes nothing. It refuses to append to a view another
-encoder built; `--rebake` starts over.
-
-Check it the way a reader will:
-
-```sh
-(cd site && python3 -m http.server 8765 &)
-npx westmarch-lint http://127.0.0.1:8765/view
-```
-
-Lint has three levels: readers cannot find you (no coverage, foreign model), they find
-you and cannot read you (no text role), or they read you and cannot go anywhere (no
-`presentation.externalUrl`). Nearly every fix is in the schema.
-
-**8. The page** (guide §8 — read it for `app/main.js`, `app/agent.js`, `index.html`, `vite.config.js`)
-
-The page wires four things from westmarch and nothing else:
-
-```js
-import { configure, loadShard } from "@fangorn-network/westmarch/shard";
-import { rolesFrom, textOf } from "@fangorn-network/westmarch/roles";
-import { search, getRow } from "@fangorn-network/westmarch/tools";
-import { embedQuery } from "@fangorn-network/westmarch/embed";
-```
-
-The ordering that is silent when wrong: `rowText` runs per row while the shard is
-parsing, so the roles it depends on must exist before the first row. Hand
-`configure({ onManifests })` the manifests and derive roles there; the format puts every
-manifest on the wire before any shard. Register the WebMCP tools only after
-`loadShard` resolves — a tool called before its data loads answers "nothing" and no
-error says why.
-
-`vite.config.js` needs two lines that are easy to lose: `optimizeDeps.exclude:
-["@fangorn-network/westmarch"]` (pre-bundling breaks the embed worker's `new URL(…,
-import.meta.url)` and search silently drops to word matching) and `build.emptyOutDir:
-false` (so building the app does not delete `site/view`). Add `build.target: "es2022"`:
-the page uses top-level `await`.
-
-The build also emits onnxruntime's `ort-wasm-simd-threaded.asyncify-*.wasm`, about
-27 MB — over Cloudflare Pages' 25 MiB per-file limit, so the deploy fails. The page
-never fetches it: transformers.js points `wasmPaths` at jsDelivr unless told otherwise.
-Delete it as part of the build, and confirm in a browser that search still reports
-meaning rather than words:
-
-```sh
-npm pkg set scripts.build="cd app && vite build && rm -f ../site/assets/*.wasm"
-```
-
-Check `find site -size +25M` is empty before deploying; a view shard can cross the
-limit too (one shard held 26.6k rows in 12.5 MB, so the ceiling is roughly 50k rows).
-
-**9. The agent card** (guide §9)
-
-`pipeline/agent-card.mjs` captures the page's tools by running its register function
-against a recording stub, so the card lists exactly what the page registers:
-
-```js
-import { agentCard, captureTools } from "@fangorn-network/westmarch/agent-card";
-const card = agentCard({
-    name, description, url: `${SITE}/`,          // url = the page that REGISTERS the tools
-    version, tools: await captureTools(() => registerAgent({})),
-    fangorn: { app: "my-app", fromBlock, namespaces: ["my-app"], views: [`${SITE}/view`] },
-});
-```
-
-Write it to `site/.well-known/agent-card.json` and write `site/_headers` with
-`Access-Control-Allow-Origin: *` on the card and on `/view/*` — discovery runs from
-other origins, and a card the browser will not hand over is a card nobody can verify.
-`agentCard` validates the Fangorn block the way readers will, so a bad card fails the
-build instead of the first reader.
-
-**Before step 9: create the Pages project and read back its hostname.** The card's `url`
-is permanent once bound, and `<name>.pages.dev` is global — a taken name is silently
-given a suffix (`my-app-4xk.pages.dev`). Create the project first, from an **empty
-directory**, and write the card against the hostname it prints:
-
-```sh
-cd "$(mktemp -d)" && CLOUDFLARE_ACCOUNT_ID=<id> npx wrangler pages project create my-app --production-branch main --force
-```
-
-- `--force`, once: wrangler ≥ 4.138 otherwise delegates Pages to Workers. Run inside the
-  app it autoconfigures a Worker — writes `wrangler.jsonc`, a root `vite.config.js` with
-  `@cloudflare/vite-plugin`, `deploy`/`preview` scripts and two devDependencies — then
-  fails; from an empty directory it just fails. Once the project exists, later
-  `pages deploy` calls go straight to Pages; do not pass `--force` again. If the
-  autoconfig already ran, delete what it added.
-- `CLOUDFLARE_ACCOUNT_ID`: with more than one account on the login, non-interactive
-  wrangler refuses to pick. `npx wrangler whoami` lists them; ask which one.
-
-**10. Deploy and check** (guide §10)
-
-```sh
-CLOUDFLARE_ACCOUNT_ID=<id> npx wrangler pages deploy site --project-name my-app --branch main
-curl -sD - https://my-app.pages.dev/.well-known/agent-card.json -o /dev/null | grep -iE "^HTTP|access-control"
-```
-
-Expect `200` and `access-control-allow-origin: *`. The card must be live before step 11.
-A fresh `pages.dev` hostname answers `522` for the first minute or so; retry rather than
-debug. Check with `curl`: Cloudflare 403s Python's `urllib` user agent.
-
-**11. Register the agent and bind the card** (guide §11)
-
-```sh
-fangorn app agent https://my-app.pages.dev/.well-known/agent-card.json
-```
-
-This mints an ERC-8004 agent from the card and calls `setAppAgentUri`, whose event is
-the app directory `fangorn-mcp` reads. `discoverApp` accepts a card only if the app on
-chain points back at *exactly* that URL — a trailing slash or `http` for `https` is a
-different card. `--skip-register` only rebinds, for moving an already-registered card.
-
-**12. Use it as an agent would** (guide §12 and *Using Fangorn apps from an agent*)
-
-With `fangorn-mcp` registered in any MCP client: `open-app my-app` should report
-`verified: true, data_tools: true`, then `my-app__describe`, `my-app__search`,
-`my-app__get`. Data tools read the views directly with no browser; `page: true` adds
-the page's own WebMCP tools through a browser.
-
-**13. Updating** (guide §13) is three lines and nothing else changes:
-
-```sh
-node pipeline/graph.mjs && fangorn commit data/graph.json -m "…" --replace && fangorn push
-npx westmarch-view --app my-app --namespace my-app --out site/view --from-block <block>
-node pipeline/agent-card.mjs && npx wrangler pages deploy site --project-name my-app
-```
-
-Only what changed is embedded and uploaded. Rerun `fangorn app agent` only if the card
-URL moves.
 
 ## The API, as it actually returns
 
@@ -996,8 +731,7 @@ back with the wrong case still hits, and `comedy` never counts every `dark comed
 
 | pin | why |
 |---|---|
-| the app name | claimed once, permanent; its hash is the appId in every card and log |
-| namespace names | each data namespace is a timeline readers follow by name |
+| the app name | the repo name, in every card and every tool prefix |
 | the card's `url` and `fromBlock` | a rebuild that changes either publishes a card every reader rejects |
 | a record's `id` | the same thing under a new id is a delete and an insert, re-embedded at full cost |
 | for an app selling files through `src/publish/graph.js` and `envelope.js`: `ns`, `file`, `passages`, `pointerFields` | folded into every resourceId and vertex ever minted; the headers of those two files say why |
@@ -1024,23 +758,18 @@ never opened.
 
 | symptom | cause |
 |---|---|
-| push reverts `NotRegisteredForApp` | registered globally but not joined; `fangorn register` does both |
-| `not bound to app … on-chain agent_uri is …` | the card URL differs by a slash, scheme or path |
-| the view is empty after a push | `westmarch-view` not rerun, `--from-block` after the commits, or the push has not landed (`fangorn status`) |
-| `westmarch-view` runs for minutes before doing anything | `--from-block` far too early; the scan is 1000 blocks per RPC call |
+| card rejected as not bound | the card URL differs by a slash, scheme or path |
+| the view is empty after a push | the Worker's cron hasn't run yet (`westmarch-ship app.json --index`), or the push has not landed (`fangorn status`) |
 | search matches words, never meaning | the bundler pre-bundled westmarch; exclude it in `optimizeDeps` |
 | an agent's first call returns empty, later calls work | tools registered before the data loaded |
 | `search` ignores what records say, or titles are ids | the type is not in the schema, so roles were guessed |
 | a schema change did not change search | records keep the text they were embedded with; only new records use the new `text` role |
 | lint: "nowhere to go" | no `presentation.externalUrl` for that entity type |
-| `app agent`: registration needs IPFS | no Pinata JWT in `fangorn init` |
-| `app agent` signs as the wrong wallet | `~/.fangorn/config.json` beats `ETH_PRIVATE_KEY` |
+| `fangorn card`: registration needs IPFS | no Pinata JWT in `fangorn init` |
+| `fangorn card` signs as the wrong wallet | `~/.fangorn/config.json` beats `ETH_PRIVATE_KEY` |
 | IPFS reads say "switching to a service worker gateway" | ipfs.io no longer serves raw content; set a Pinata gateway in `fangorn init` |
 | `fangorn-mcp`: "this browser has no WebMCP" | page tools need Chrome 150+ with `--enable-features=WebMCP`; data tools never need a browser |
-| `commit` right after `repo init`: "owner of this gateway does not have this content pinned" (ERR_ID:00006) | the configured gateway belongs to a different Pinata account than the JWT (step 1) |
-| `get` returns the wrong record, or two types share search ids | payload `id` is not unique across types; it replaces the CID as the row id (step 4) |
-| `wrangler pages …` writes `wrangler.jsonc` / "Could not detect a directory containing static files" | wrangler ≥ 4.138 delegated Pages to Workers; create the project once with `--force` from an empty dir |
+| `commit` right after `repo init`: "owner of this gateway does not have this content pinned" (ERR_ID:00006) | the configured gateway belongs to a different Pinata account than the JWT; check `curl -s https://api.pinata.cloud/v3/ipfs/gateways -H "Authorization: Bearer $JWT"` lists it |
+| `get` returns the wrong record, or two types share search ids | payload `id` is not unique across types; it replaces the CID as the row id; make it the namespaced key (`audius:genre:electronic`) |
 | wrangler: "More than one account available" | set `CLOUDFLARE_ACCOUNT_ID` |
-| Pages deploy rejects a file over 25 MiB | onnxruntime's `.wasm` in `site/assets`; delete it after `vite build` (step 8) |
-| deployed site answers `522` | a new `pages.dev` hostname still propagating; wait a minute |
-| `app agent`: "agent … was minted but its registration file was not set" | the mint landed and the pin or `setAgentURI` failed; run the `--update` command it prints, never a bare rerun (that mints a second agent) |
+| `fangorn card`: "agent … was minted but its registration file was not set" | the mint landed and the pin or `setAgentURI` failed; run the `--update` command it prints, never a bare rerun (that mints a second agent) |
