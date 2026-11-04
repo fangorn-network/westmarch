@@ -12,7 +12,8 @@ browser and any agent can find, verify and query. By the end you have:
 - **a site**: the view, a page for people, and an MCP endpoint for agents (one Cloudflare
   Worker, deployed by `westmarch-ship`);
 - **an agent card** bound to the app on chain (the repo's `@card` record), and registered as an ERC-8004 agent;
-- **agents using it:** anyone running `fangorn-mcp` can `open-app` it by name.
+- **agents finding it:** the Fangorn explorer indexes every publisher, so `fangorn-mcp`'s
+  `search` finds your records and names you as their publisher.
 
 Where the data comes from is up to you. The guide starts from a JSON array of objects,
 which anything can produce: a scraper, a database export, a converted spreadsheet.
@@ -27,7 +28,7 @@ which anything can produce: a scraper, a database export, a converted spreadshee
  westmarch-ship ─► card at <site>/.well-known/agent-card.json
               └─► fangorn card <url> --repo <app> ─► the repo's @card = card URL, + ERC-8004 agent
                                       │
- fangorn-mcp: open-app ─► reads @card, checks the card points back, searches the view
+ the explorer (indexes every publisher) ◄── fangorn-mcp: search, publishers, get, buy
 ```
 
 Everything runs on Base Sepolia: `"network": "baseSepolia"` in `app.json`.
@@ -110,8 +111,7 @@ and commit `.ship/state.json`.
 - **Serving.** `/view/*` (but `cdn/catalog`) and every MCP tool but `describe` need access: a pass
   (`POST /pass`, x402 v2, a bearer token good for `days`) or one x402 payment per tool call over
   x402's MCP transport (`_meta["x402/payment"]`). A call that fails or misses is not charged.
-  `fangorn-mcp` pays by itself with `FANGORN_MCP_WALLET_KEY`: a pass at or under
-  `FANGORN_MCP_MAX_PASS`, else per call at or under `FANGORN_MCP_MAX_PRICE`.
+  An agent pays with any x402 client pointed at the app's `/mcp`.
 - **Discovery.** The card's Fangorn extension carries `access` (pass URL and prices), and its
   skills are tagged `x402`, so the ERC-8004 registration says `x402Support: true`.
   `/openapi.json` and `/.well-known/x402` list `POST /pass` for x402scan; the facilitator's Bazaar
@@ -177,75 +177,16 @@ or a PR can change the gate along with what it gates.
 What is not graded yet: a change to how a source *parses*. `--local` reads what the
 sources last staged; it does not replay their parsing over the raw documents.
 
-## Using Fangorn apps from an agent
+## How agents find your data
 
-`fangorn-mcp` is one MCP server for every Fangorn app: a new app needs no new
-registration. In Claude Code, the `fangorn-index` plugin installs it with the skill that uses it:
+Through the **Fangorn explorer** (`https://explorer.fangorn.network`), the app that indexes
+every publisher. Once your records are pushed, its next index run (every few minutes) picks
+them up, and anyone running `fangorn-mcp` finds them with `search`, sees your repos under
+`publishers`, and buys what you sell with `buy`. You register nothing for this: being a
+publisher is enough. [docs/mcp.md](mcp.md) has the setup.
 
-```sh
-claude plugin marketplace add fangorn-network/westmarch && claude plugin install fangorn-index@fangorn
-```
-
-App owners add `fangorn-builder@fangorn` (the `fangorn-app` and `fangorn-improve` skills).
-Without the plugin, install it through npm (node ≥ 20):
-
-```sh
-claude mcp add fangorn -- \
-  npx -y -p @fangorn-network/westmarch -p @huggingface/transformers fangorn-mcp
-```
-
-Without `-p @huggingface/transformers`, the install is ~500 MB lighter and `search` ranks by
-words, not meaning. For private apps, `FANGORN_MCP_WALLET_KEY` lets it pay
-(see [A private app](#a-private-app-the-data-is-the-product)); the plugin reads it from your
-environment, while `-e` stores it in `~/.claude.json` in plain text.
-
-[docs/mcp.md](mcp.md) has the full setup: other MCP clients, every setting, running from
-source, and troubleshooting. A single-file binary (`bun build-bin.js`) exists but is not
-published yet.
-
-It starts with three tools:
-- **`list-apps`** reads the apps off the chain and keeps the ones whose cards verify.
-- **`open-app <name>`** reads that app's `@card` (one call), verifies its card, and adds the
-  app's tools as `<name>__<tool>`.
-- **`call-app-tool`** reaches the same tools, for clients that don't refresh their tool list.
-
-**Two kinds of tools.**
-- **Data tools:** an app whose card names `views` gets these at once, with no browser:
-  `describe`, `search`, `get`, `similar`, `count`, `browse`. westmarch runs them over the
-  app's shards, checked against their manifests' sha256. `search` reads the 3 views whose
-  coverage sketch best matches the query and names the next candidates.
-- **Page tools:** `open-app` with `page: true` also opens `card.url` in a browser for the
-  page's own WebMCP tools. An app with no views gets only these.
-
-**How fast** (measured on a 60,760-record app in 23 views):
-
-| | time |
-|---|---|
-| `open-app` | 0.4–2 s |
-| `describe` | under 5 ms |
-| first `search`, caches warm | 0.4–1.8 s |
-| later searches | ~0.2–0.5 s |
-| first `search` from an empty machine (single file) | ~3.5 s, by words while the model downloads |
-| page tools (browser) | 5–15 s to open, ~2 GB of memory |
-
-On a new machine, the embedding model (131 MB, kept in `~/.cache/fangorn-mcp/models`)
-downloads in the background. Until it lands, `search` ranks by words and says so in
-`ranked_by`; then it switches to meaning. Shards are downloaded once and kept by content
-hash.
-
-**Where the browser comes from (page tools only).** Anything that speaks the Chrome DevTools
-Protocol and has WebMCP will do: a headless Chromium service, a hosted browser, or the local
-Chrome.
-
-| setting | browser |
-|---|---|
-| `FANGORN_MCP_CDP=http://host:9222` (or `--cdp`) | a running browser's DevTools address |
-| `FANGORN_MCP_CDP=ws://host:9222/devtools/browser/…` | a browser WebSocket endpoint, which is what hosted services hand out |
-| neither | the local Chrome 150+ (`CHROME=/path` if it isn't `google-chrome`), headless (`--headed` to watch) |
-
-A remote browser is never closed; only the tabs the server opened are. A local Chrome is
-shared by every session on the machine and closes when the last one exits. Its profile is
-`~/.cache/westmarch-mcp/`. `--from-block <n>` points the server at another deployment.
+Your app's own Worker still serves its page and its own MCP endpoint at `/mcp`, with your
+schema and your tools, for agents that come to your app directly.
 
 ## Discovering apps in code
 
@@ -264,14 +205,6 @@ import { generatePrivateKey } from "viem/accounts";
 // Fangorn.create needs a signer; a throwaway key is fine for reading.
 const fangorn = Fangorn.create({ privateKey: generatePrivateKey() });
 const { card, publisher, repo } = await fangorn.discoverCard(cardUrl);
-```
-
-**From the chain** (every Fangorn app; no index, no server):
-
-```js
-import { listApps } from "@fangorn-network/westmarch/apps";
-const { apps, rejected } = await listApps(fangorn);
-// apps: one per repo whose card verifies; rejected: [{ card, why }], reported rather than dropped
 ```
 
 **From ERC-8004** (for general-purpose agents that know nothing about Fangorn):
@@ -307,7 +240,6 @@ const { contents } = await fangorn.readRepo(publisher, repo);
 | card rejected as not bound | URLs must match exactly. A trailing slash, `http` vs `https`, or a different path counts as a different card. |
 | card rejected after a rebuild | the build dropped the `fangorn` block or changed `fromBlock`/`url`; keep them fixed |
 | discovery works in Node, fails in a browser | no `Access-Control-Allow-Origin` on the card |
-| `listApps` takes forever | `fromBlock` is too early; the scan is 1000 blocks per RPC call |
 | `fangorn card`: "ERC-8004 registration pins the registration file to IPFS" | no Pinata JWT in `fangorn init` |
 | `fangorn card` signs as the wrong wallet | `~/.fangorn/config.json` beats `ETH_PRIVATE_KEY` |
 | `fangorn card`: "replacement transaction underpriced" | a nonce race after the mint; the agent exists, so rerun with `--skip-register` |

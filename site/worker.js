@@ -374,8 +374,11 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     for (const t of ["describe", "search", "get", "similar", "count", "browse"]) if (!names.includes(t)) throw new Error(`missing tool ${t}: ${names}`);
     const described = JSON.parse((await call("tools/call", { name: "describe", arguments: {} })).result.content[0].text);
     eq(described.views.map((v) => v.rows), [2], "describe reads the catalog from R2");
+    eq(described.views[0].repos.map((r) => [r.publisher, r.repo, r.rows]), [[PUB, "shop", 2]], "describe names each repo's publisher");
     const found = JSON.parse((await call("tools/call", { name: "search", arguments: { query: "reading lamp", limit: 1 } })).result.content[0].text);
-    eq([found.ranked_by, found.hits[0].title], ["meaning", "Brass lamp"], "search ranks by meaning, the query embedded by the same runtime");
+    eq([found.ranked_by, found.hits[0].title, found.hits[0].publisher], ["meaning", "Brass lamp", PUB], "search ranks by meaning, the query embedded by the same runtime; a hit names its publisher");
+    const theirs = JSON.parse((await call("tools/call", { name: "search", arguments: { query: "lamp", where: { owner: OWNER } } })).result.content[0].text);
+    eq(theirs.hits.length, 0, "search narrows to one publisher with where.owner");
     if (!calls.at(-1).text[0].startsWith(QUERY)) throw new Error("the query goes to the AI binding with the query prompt");
     eq((await (await worker.fetch(new Request("https://shop.test/mcp", { method: "POST", body: '{"jsonrpc":"2.0","method":"notifications/initialized"}' }), env)).status), 202, "a notification is accepted, not answered");
 

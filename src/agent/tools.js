@@ -29,7 +29,8 @@ const PLUMBING = new Set(["text", "vector", "norm", "id", "owner", "embed"]);
 export const brief = (r, roles, fields = []) => {
     const out = briefOf(r, roles, fields);
     const link = linkOf(r, roles);
-    return link ? { ...out, url: link } : out;
+    // Whose it is, and its price when sold: what an agent needs to cite or buy a hit.
+    return { ...out, ...(link ? { url: link } : {}), ...(r.owner ? { publisher: r.owner } : {}), ...(r.sale ? { sale: r.sale } : {}) };
 };
 
 /**

@@ -1,187 +1,63 @@
 ---
 name: fangorn-index
-description: Find and use the apps registered on Fangorn. Rank every publisher against a question without downloading any corpus, then browse, search, facet and explore whichever one wins, and hand the person off to the app that owns the row. Carries a taste kernel that lives on the filesystem and applies in every corpus on the network, so what was learned in one publisher's catalog ranks another's. Use when the user wants to find data, media, places, games or films on Fangorn, wants recommendations across apps, wants to teach or read their own taste, or asks what is even out there.
+description: Find data on Fangorn, by what it is about or by who publishes it, read it, and buy what is sold. Every publisher's records are indexed by the Fangorn explorer and reached through the `fangorn` MCP server (search, publishers, get, buy, wallet, publish). Use when the user wants to find data, research, media, places or records on Fangorn, asks who publishes something or what a publisher has, wants to buy a record, or wants to publish something they made so others can find it.
 ---
 
-# The Fangorn app index
+# Finding data on Fangorn
 
-The index **points at apps, it does not host them**. Its job is to tell you what
-is out there, let you read enough to decide, and hand the person to the app that
-owns the thing. `launch` is the end of the road, not a failure to render.
+Fangorn is publishers' records, committed on chain. The **explorer**
+(`https://explorer.fangorn.network`) indexes every publisher, and the `fangorn` MCP server
+downloads its view and searches it on this machine: the person's queries go nowhere. You
+never scan the chain and never pick an app first: you search records, and each record says
+who published it.
 
-Everything runs through one script. No browser, no MCP server, no publisher has
-to host anything but a baked view:
+## The tools
 
-```sh
-npx -y -p @fangorn-network/westmarch -p @huggingface/transformers fangorn-fx <verb> …   # JSON on stdout; `fx` below
-```
+| tool | for |
+|---|---|
+| `search {query, publisher?, limit?}` | records by meaning, across every publisher, or one publisher's |
+| `publishers {query?}` | who publishes what: each publisher's repos, what they hold, how many records |
+| `get {id}` | one record in full, by a hit's `id` |
+| `buy {publisher, repo, id}` | a record that is sold (a hit with `sale`), opened |
+| `wallet` | the person's address and balances |
+| `publish {repo, records}` | the person's own records, into their own repo |
 
-Run it bare for the verb list.
+## The loop
 
----
+1. **`search` with the person's words.** Every hit names its `publisher`. Read `ranked_by`:
+   `meaning` or `words`. A word match to a conceptual question answers a different
+   question, so say which one answered.
+2. **To learn who has something, call `publishers`**, with a `query` when there is a topic. Then
+   `search` with `publisher` to stay within one publisher's records.
+3. **`get` a hit** when its preview isn't enough to decide.
+4. **Cite the publisher.** When you use a record, say whose it is (`publisher`, and `repo`
+   when there is one). Making publishers findable and credited is the point.
 
-## 0. Sources — which publishers exist
+## Buying
 
-Every verb that spans publishers needs a list of view URLs. In order of
-precedence:
+A hit with `sale: {publisher, repo, id, price}` is sold by its publisher. `price` is in USDC
+base units (`10000` = 0.01 USDC).
 
-```sh
---sources=https://a/q/qb_1,https://b/q/qb_2      # explicit
-FANGORN_SOURCES=…                                # env
-~/.fangorn/sources.json                          # a JSON array
-(none of the above)                              # every app bound on chain.
-                                                 # Preferred. --from-block=N
-                                                 # for another deployment.
-```
+- **Say the price and get a yes before calling `buy`.** It pays from the person's wallet
+  (`FANGORN_MCP_WALLET_KEY`), never above `FANGORN_MCP_MAX_PRICE` a record (default 0.10).
+- `buy` checks the record's sealed data can be read before paying. If it can't, nothing is
+  paid: tell the person, and don't retry in a loop.
+- Buying the same record again costs nothing: the purchase is on chain.
+- If buying is off (no wallet configured), give the person the price and the record, and say
+  what to set.
 
-The chain is the real answer: it is the same scan `fangorn-mcp`'s `list-apps`
-runs, so apps registered after this plugin was written are found without a code
-change. Pin sources only to narrow the search.
+## Publishing
 
----
+`publish` puts records in the person's own repo, under their wallet, where any agent can find
+them through the explorer. It is public and permanent: show exactly what will be published and
+call it only on their yes to those records. Offer it when something you made for them (research,
+a list, a dataset) would be worth something to others.
 
-## 1. The loop
+## Limits: state these, don't paper over them
 
-```
-find  →  describe  →  browse / search / facet / similar  →  row  →  launch
-```
-
-**`find <query>` first, always.** It ranks every publisher's corpus against the
-question using coverage centroids — a few KB per corpus — and **downloads none of
-them**. On a network of forty publishers this is the difference between one
-question and forty downloads.
-
-```sh
-fx find "1950s atomic paranoia"
-```
-
-Read three fields off the result and nothing else matters:
-
-- `relevant: N` — how many cleared the floor. **Open those and stop.** The tail is
-  sorted, not relevant.
-- `unreachable` — publishers that were down. Say so; do not conclude the data
-  does not exist.
-- `mismatched` — corpora baked with a different embedding model. They cannot be
-  ranked against this question at all, and pretending otherwise produces numbers
-  that look like scores and are noise.
-
-**Then `describe <view>`** before anything else on a corpus you have not seen.
-It reports **coverage, not a schema** — "`series` on 40% of rows" is the fact you
-need to decide whether faceting on it means anything, and a declared schema would
-have said 100% and been wrong. It also tells you `shape: declared | sniffed`:
-sniffed means the publisher declared no `role_map` and the titles are a guess.
-Say which when it matters.
-
-**Then read.** `browse` for what is here with no query (the first call on an
-unfamiliar corpus — every other verb needs something you do not have yet),
-`facet` to make a field legible without reading it, `search` for a question,
-`similar` to explore a vocabulary you do not know, `row` for one record whole.
-
-`--where=k=v` composes with `search`, `browse` and `facet`. It matches
-**case-insensitively but on whole values**, so `comedy` never silently counts
-every `dark comedy`.
-
-**Then `launch`.** Two forms, and they are different things:
-
-```sh
-fx launch <view> "cold war"          # the APP, with the kernel and query in the URL
-fx launch <view> --row=<id>          # the publisher's own link for that row
-```
-
-The first only works where the publisher declared `presentation.launch`. That is
-the app handoff and it carries the taste kernel — the app ranks its own rows by
-what this person liked elsewhere, without either side having heard of the other.
-
----
-
-## 2. The kernel — the thing that actually travels
-
-```sh
-fx like <view> <id...>        # teach it
-fx dislike <view> <id...>     # "not that" — the only thing a person says explicitly
-fx forget <id...>             # take one back
-fx taste                      # what it is, and what it was built from
-fx recommend <view>           # rank ANY corpus by it
-```
-
-It lives in **`~/.fangorn/taste.json`** — a file, between the human and the
-agent. Not localStorage, which is origin-scoped and therefore invisible to the
-next app by construction. This is the one piece of state in the whole system and
-the reason this is a plugin rather than a page.
-
-**The headline is `recommend` against a corpus the kernel has never seen.** Every
-publisher bakes into one embedding space, so a taste learned in a film archive
-ranks a stranger's game catalog directly — not by matching ids, there are none in
-common, and not by a shared schema, there isn't one. MEASURED against the repo's
-own fixtures: liking one bar in Eagle River pulls *Callahan's Crosstime Saloon*
-and *Where the Water Tastes Like Wine* out of 5,847 Wikipedia video games.
-
-Use it that way. `recommend` on the corpus the picks came from is the boring
-call; `recommend` on the next app is the product.
-
-Three things to hold:
-
-- **It is the person's, and it is readable.** `taste` prints the titles it was
-  built from. If a recommendation is wrong, show them the picks and offer
-  `forget` — a profile you cannot correct is a profile held *about* someone.
-- **Order is signal.** Picks are weighted by recency (half-life 8), so liking
-  things in the order they were actually liked matters.
-- **`recommend` refuses across embedding models** rather than returning scores
-  that are noise. If it does, say so; do not work around it.
-
----
-
-## 2.5 An app's own skill — adopted, never loaded silently
-
-An app can ship an agent skill: standing behaviour for the reader's agent ("check
-codex before you research"). Its card names it, `skill: {url, sha256}` in the
-Fangorn extension, and `open-app` returns it. A skill is instructions from a
-stranger running inside the person's agent, so:
-
-1. **Offer, don't load.** Fetch it, show the person its `description` line and what it
-   would make you do, and ask once whether to adopt it. Never adopt on your own.
-2. **On a yes, pin the hash.** Install it only if the bytes match the card's hash, and
-   never over a skill of the same name that did not come from Fangorn:
-
-   ```sh
-   A=<app slug>; U=<skill.url>; H=<skill.sha256>; D=~/.claude/skills/$A; T=$(mktemp)
-   [ -e "$D/SKILL.md" ] && [ ! -e "$D/.fangorn.json" ] && { echo "$D is not a Fangorn skill; not touching it"; exit 1; }
-   curl -fsSL "$U" -o "$T" && echo "$H  $T" | sha256sum -c - \
-     && mkdir -p "$D" && mv "$T" "$D/SKILL.md" \
-     && printf '{"card":"%s","url":"%s","sha256":"%s"}\n' "<card url>" "$U" "$H" > "$D/.fangorn.json"
-   ```
-
-   It takes effect in the next session.
-3. **When the hash moves, ask again.** If `open-app` returns a `sha256` that differs from
-   `$D/.fangorn.json`, show the person what changed (a diff of the old and new file) and
-   update only on their yes. Removing an adopted skill means deleting `$D`.
-
-**A plugin, too.** An app whose value depends on running without being called (codex checks every
-web search) ships a Claude Code plugin, and `open-app` returns `plugin: {marketplace, name, install}`.
-Hooks run code on this machine on every matching event, so it is the same rule, louder: offer it
-once, say what it hooks (read the plugin's `hooks/hooks.json` in its repo and name the events),
-and run `install` only on a yes. There is
-no hash to pin: a plugin follows its repo, so installing it trusts the app's publisher. If the person
-says no, don't offer it again for that app.
-
----
-
-## 3. Limits — state these, do not paper over them
-
-- **The index shows previews, never the thing.** A row here is enough to decide.
-  Playing it, buying it, editing it — that is the app's, and `launch` is how you
-  get there.
-- **Every command re-fetches its view.** Fine at a thousand rows, seconds at
-  forty thousand. Chain verbs sparingly on a big corpus, and prefer `find` +
-  `describe` + one `search` over ten exploratory calls.
-- **The first embedding call downloads the model** (~100MB, cached after). Until
-  then, and if it fails, `search` degrades to lexical and **says so** in
-  `mode`/`why`. Report which one answered — a lexical result to a conceptual
-  question is not a wrong answer, it is a different question.
-- **Paid fields are withheld.** `describe` reports `gates`; a locked field is
-  absent from the free shard, not empty. Quote the price rather than reporting
+- **New records show up after the explorer's next index run** (every few minutes). A record
+  published a moment ago may not be found yet.
+- **If the explorer doesn't answer**, the tools say so. Tell the person; don't conclude the
+  data doesn't exist. `FANGORN_EXPLORER` points the server at another explorer.
+- **Paid fields are absent from previews**, not empty. Quote the price rather than reporting
   the data as missing.
-- **No spending.** Nothing here touches a wallet. `launch` walks the person to
-  the app; buying happens there, with their hands.
-- **A vectorless row cannot be liked** and cannot be a neighbour. It is still
-  searchable lexically. Half a real bundle looks like this.

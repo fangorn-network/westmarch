@@ -53,7 +53,7 @@ const log = (s) => console.error(`[ship] ${s}`);
 //                                 //   (pages/intro.html, a fragment, replaces the description on the front page)
 //             "nav": [{ "href": "coverage.html", "label": "Coverage" }],   // optional: header links to them
 //             "examples": ["…"],  // optional: questions to start from, on the front page
-//             "plugin": {"marketplace": "owner/repo", "name": "…"},   // optional: its Claude Code plugin (hooks), offered by open-app
+//             "plugin": {"marketplace": "owner/repo", "name": "…"},   // optional: its Claude Code plugin (hooks), named in its card
 //             "skill": "skill/SKILL.md",   // optional: the app's agent skill, served at skill/<app>/SKILL.md and named
 //                                          //   in the card with its sha256; fangorn-index offers it to whoever opens the app
 //             "agent": "app/agent.js" },   // optional: the module whose registerAgent the card lists, when

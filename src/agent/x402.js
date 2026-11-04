@@ -19,7 +19,7 @@
 //
 // `maxPrice` (USDC base units) is checked before anything is signed.
 
-import { concat, createPublicClient, http, keccak256, parseAbiItem, parseSignature, toHex } from "viem";
+import { concat, createPublicClient, http, keccak256, parseSignature, toHex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { openField, recordKey, registerNonce, repoId, subjectOf } from "@fangorn-network/sdk";
 
@@ -66,18 +66,6 @@ export async function signPayment(req, account, { subject, commitment, salt, now
              v: Number(v ?? 27n + BigInt(yParity)), r, s };
 }
 
-const REGISTERED = parseAbiItem("event Registered(bytes32 indexed subject, address indexed publisher, address indexed referrer, uint256 commitment, uint256 price, uint256 referrer_cut)");
-
-/** Every commitment registered for `subject`, in the order the contract added them to its group. */
-async function membersOf(pub, registry, subject, { fromBlock, window = 1000n }) {
-    const head = await pub.getBlockNumber(), out = [];
-    for (let from = BigInt(fromBlock); from <= head; from += window) {
-        const to = from + window - 1n < head ? from + window - 1n : head;
-        out.push(...await pub.getLogs({ address: registry, event: REGISTERED, args: { subject }, fromBlock: from, toBlock: to }));
-    }
-    return out.map((l) => l.args.commitment);
-}
-
 /** A Semaphore proof that `identity` is in the group, naming `reader`, scoped to `subject`, as `settle` checks it. */
 async function prove({ identity, members, reader, subject }) {
     const { Group, generateProof } = await semaphore();
@@ -99,10 +87,16 @@ export async function buyRecord(quoteUrl, { privateKey, account = privateKeyToAc
     if (terms.publisher.toLowerCase() !== record.publisher.toLowerCase() || terms.repo !== repoId(record.repo) || terms.key !== recordKey(record.id))
         throw new Error("the quote's terms are for another record");
     const subject = subjectOf(terms.publisher, terms.repo, terms.key);
+    // Every sealed field must be readable before anything is paid: a sale we can't open is money lost.
+    const storage = fangorn.getStorage(), held = new Map();
+    for (const h of Object.values(fields)) {
+        try { held.set(h.cid, await storage.getFile(h.cid)); }
+        catch (e) { throw new Error(`not buying: the record's sealed data (${h.cid}) can't be read: ${e.message}`); }
+    }
 
     const config = fangorn.getConfig(), settlement = fangorn.getSettlementRegistry();
     const pub = deps.pub ?? createPublicClient({ transport: http(config.rpcUrl) });
-    const members = deps.members ?? ((s) => membersOf(pub, settlement.getAddress(), s, { fromBlock: config.fromBlock, window: config.logWindow ?? 1000n }));
+    const members = deps.members ?? ((s) => settlement.membersOf(s).then((m) => [...m]));
     const { identity, reader } = await identityOf(account);
 
     let tx = null;
@@ -116,7 +110,7 @@ export async function buyRecord(quoteUrl, { privateKey, account = privateKeyToAc
             tx = JSON.parse(unb64(paid.headers.get("PAYMENT-RESPONSE") ?? b64("{}"))).transaction || null;
             if (tx) await pub.waitForTransactionReceipt({ hash: tx });
         }
-        // A load-balanced RPC can answer getLogs from a node behind the one that mined `register`:
+        // A load-balanced RPC can answer from a node behind the one that mined `register`:
         // our commitment is registered, so read until it shows up.
         const has = (g) => !!deps.members || g.some((c) => BigInt(c) === identity.commitment);
         let group = await members(subject);
@@ -124,7 +118,7 @@ export async function buyRecord(quoteUrl, { privateKey, account = privateKeyToAc
             await new Promise((r) => setTimeout(r, 3000));
             group = await members(subject);
         }
-        if (!has(group)) throw new Error("our commitment is registered but the RPC's logs don't show it yet; retry the purchase");
+        if (!has(group)) throw new Error("our commitment is registered but the RPC doesn't show it yet; retry the purchase");
         const proof = await (deps.prove ?? prove)({ identity, members: group, reader: reader.address, subject });
         const res = await fetchImpl(`${relay}/relay/settle`, { method: "POST", headers: { "content-type": "application/json" },
             body: JSON.stringify({ subject, reader: reader.address, ...proof }) });
@@ -135,7 +129,7 @@ export async function buyRecord(quoteUrl, { privateKey, account = privateKeyToAc
 
     const opened = {};
     for (const [field, handle] of Object.entries(fields)) {
-        const bytes = await openField({ handle, deposit, key: terms.key, field, signer: reader, storage: fangorn.getStorage(), fetch: fetchImpl });
+        const bytes = await openField({ handle, deposit, key: terms.key, field, signer: reader, storage: { getFile: async (cid) => held.get(cid) ?? storage.getFile(cid) }, fetch: fetchImpl });
         opened[field] = JSON.parse(new TextDecoder().decode(bytes));
     }
     return { record, fields: opened, price: req.amount, tx };
@@ -188,6 +182,10 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     await buyRecord(quoteUrl, { account: buyer, fangorn, fetchImpl, deps, maxPrice: 9999n }).then(() => { throw new Error("over the cap must refuse"); },
         (e) => { if (!/exceeds the cap/.test(e.message)) throw e; });
     eq(signed, null, "nothing is signed over the cap");
+    const gone = { ...fangorn, getStorage: () => ({ getFile: async () => { throw new Error("HTTP 404"); } }) };
+    await buyRecord(quoteUrl, { account: buyer, fangorn: gone, fetchImpl, deps }).then(() => { throw new Error("unreadable data must refuse"); },
+        (e) => { if (!/can't be read/.test(e.message)) throw e; });
+    eq(signed, null, "nothing is paid for data that can't be read");
 
     const got = await buyRecord(quoteUrl, { account: buyer, fangorn, fetchImpl, deps, maxPrice: 10000n });
     eq([got.fields, got.price, got.tx], [{ body: { text: "the body" } }, "10000", "0xabc"], "paid, settled, and the field opens as JSON");
@@ -212,5 +210,5 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
         { status: 402, headers: { "PAYMENT-REQUIRED": b64(JSON.stringify({ x402Version: 2, accepts: [other] })) } }) : fetchImpl(url, init);
     await buyRecord(quoteUrl, { account: privateKeyToAccount(generatePrivateKey()), fangorn, fetchImpl: lying, deps }).then(() => { throw new Error("must refuse"); },
         (e) => { if (!/another record/.test(e.message)) throw e; });
-    console.log("x402.js self-check ok — the cap holds before signing, the payment is an ERC-3009 authorization bound to this purchase, the proof names a reader that isn't the wallet, a retry pays nothing, a quote for another record is refused, and the field opens");
+    console.log("x402.js self-check ok — the cap holds before signing, the payment is an ERC-3009 authorization bound to this purchase, the proof names a reader that isn't the wallet, a retry pays nothing, a quote for another record is refused, nothing is paid when the sealed data can't be read, and the field opens");
 }

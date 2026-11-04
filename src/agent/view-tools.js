@@ -11,7 +11,7 @@
 //   - a search goes to the 3 views whose coverage sketch best matches the query,
 //     not to all of them (Kingsfoil: ~3 of 23 views, ~92% of the true top 10 with
 //     a 32-vector sketch). The result names what was searched and what was not.
-//   - `warm()` starts the embedder before the first query (fangorn-mcp: on find-apps), and a search
+//   - `warm()` starts the embedder before the first query, and a search
 //     never waits on a first-time model download.
 //
 // `get`/`similar`/`count` answer over what is loaded, and say so.
@@ -86,6 +86,7 @@ export function viewTools(app, { fetchCatalog = fetch, queryVector: embedQ = que
             view, name: label(view),
             description: domains.map((d) => d.description).filter(Boolean).join(" "),
             count: domains.reduce((s, d) => s + (d.count ?? 0), 0),
+            repos: domains.filter((d) => d.publisher).map((d) => ({ publisher: d.publisher, repo: d.repo, rows: d.count ?? 0, description: d.description ?? "" })),
             coverage: { vectors: domains.flatMap((d) => d.coverage?.vectors ?? []) },
         };
     })).catch((e) => { surveyed = null; throw e; }));
@@ -112,7 +113,8 @@ export function viewTools(app, { fetchCatalog = fetch, queryVector: embedQ = que
     const run = {
         describe: async () => ({
             app: app.name, description: app.desc,
-            views: (await survey()).map((v) => ({ view: v.name, rows: v.count, description: v.description, loaded: loaded.has(v.view) })),
+            views: (await survey()).map((v) => ({ view: v.name, rows: v.count, description: v.description, loaded: loaded.has(v.view),
+                                                  ...(v.repos.length ? { repos: v.repos } : {}) })),
         }),
         search: async ({ query, limit = 10, views, where: w }) => {
             if (!query) throw new Error("query is required");

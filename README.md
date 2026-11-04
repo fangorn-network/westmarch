@@ -60,7 +60,7 @@ src/
               envelope.js · manifest.js · cli.js · view.js · ship.js · eval.ts
               lint.js    …and whether any of that WORKED
 site/         the stock page every `westmarch-ship` app deploys
-plugin/       Claude Code plugin fangorn-index: its skill, fangorn-fx, the fangorn MCP server
+plugin/       Claude Code plugin fangorn-index: its skill and the fangorn MCP server
 plugin-builder/  Claude Code plugin fangorn-builder: fangorn-app, fangorn-improve
 examples/     demo/ (a second consumer + fixtures) · publisher/ (the smallest publisher)
 scripts/      test.js (`npm test`) · build-bin.js (single-file fangorn-mcp)

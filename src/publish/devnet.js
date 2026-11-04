@@ -30,8 +30,10 @@ const ADMIN_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f
  * answers. Its own process group, so `kill` takes workerd down with wrangler. Local bindings only.
  */
 export async function wranglerDev(dir, vars = {}, { config, probe = "/", name = dir, log = () => {} } = {}) {
-    const port = await new Promise((ok) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => ok(p)); }); });
-    const w = spawn("npx", ["wrangler", "dev", ...(config ? ["--config", config] : []), "--port", String(port), "--ip", "127.0.0.1",
+    const free = () => new Promise((ok) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => ok(p)); }); });
+    // Its own inspector port too: two workers started at once both take wrangler's default (9229), and one dies.
+    const [port, inspector] = await Promise.all([free(), free()]);
+    const w = spawn("npx", ["wrangler", "dev", ...(config ? ["--config", config] : []), "--port", String(port), "--inspector-port", String(inspector), "--ip", "127.0.0.1",
         "--persist-to", mkdtempSync(join(tmpdir(), "devnet-wrangler-")), ...Object.entries(vars).flatMap(([k, v]) => ["--var", `${k}:${v}`])],
         { cwd: dir, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, NO_D1_WARNING: "true" } });
     let out = "";

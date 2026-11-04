@@ -19,7 +19,7 @@
 //
 // The layout is fixed, so any reader (shard.js, a tab, an agent) reads any app's view:
 //   - URL layout, domain names (`domainFor`: the publisher's address prefix and the repo),
-//     row shape {track_id, fields, v}, manifest and catalog keys;
+//     row shape {track_id, owner, fields, v}, manifest and catalog keys;
 //   - a record is a row: track_id = its CID, fields = payload + entityType (its type);
 //   - the schema: a declared type is embedded and shipped with exactly its role map;
 //   - the embedded text (`composeText`).
@@ -447,7 +447,7 @@ async function publishDomain({ fangorn, store, schema, schemaHash, publisher, re
         const ids = fresh.slice(i, i + 32);
         try {
             const vs = await embedBatch(ids.map((id) => composeText(fieldsOf(id), rolesOf.get(fieldsOf(id).entityType))));
-            ids.forEach((id, j) => lines.push(JSON.stringify({ track_id: id, fields: fieldsOf(id), v: packVec(vs[j]) })));
+            ids.forEach((id, j) => lines.push(JSON.stringify({ track_id: id, owner: publisher, fields: fieldsOf(id), v: packVec(vs[j]) })));
         } catch (e) {
             // The encoder gave out (Workers AI's free daily allowance, say): keep what is embedded
             // and come back for the rest. Nothing served yet, nothing to save: fail as before.
@@ -543,6 +543,8 @@ export async function writeCatalog(store) {
         generated_at: Math.floor(Date.now() / 1000), embedding_model: EMBED_MODEL,
         domains: domains.map((m) => ({
             name: m.name, description: m.description, count: m.count, dim: m.dim,
+            // Whose it is: a reader can list publishers without opening a manifest.
+            ...(m.filter?.owner?.length === 1 ? { publisher: m.filter.owner[0], repo: m.filter.repo?.[0] } : {}),
             bytes: m.shards.reduce((s, x) => s + x.bytes, 0), shard_count: m.shards.length,
             entity_types: m.entity_types.map((e) => e.type), manifest: `${m.name}/manifest.json`,
             ...(m.link_hosts?.length ? { link_hosts: m.link_hosts } : {}),

@@ -241,7 +241,7 @@ Do not open with this list. Check what you can yourself (`node -v`, `fangorn --v
 when the next step needs it: Node, the Fangorn CLI, the wallet and Cloudflare to register;
 whatever the sources run on before the first local build; Pinata before *Go live*.
 
-- Node 22 and the Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.11.3`, or whatever
+- Node 22 and the Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.11.4-dev`, or whatever
   newer version westmarch's `package.json` lists as its `@fangorn-network/sdk` peer.
 - Whatever the app's sources are written in: a source is any command (see step 2).
 - A wallet on Base Sepolia with a little ETH. **It owns the app forever**, so it
@@ -440,8 +440,10 @@ structure and a few tokens, not a look. Do not design over it: the look belongs 
   What matters is what a stranger can fetch, not what was built.
 - The card answers `200` with CORS from another origin:
   `curl -sD - https://<site>/.well-known/agent-card.json -o /dev/null | grep -iE "^HTTP|access-control"`.
-- `fangorn-mcp open-app <name>` returns `verified: true`, and `describe` lists the
-  namespaces with the schema's description, not a guess.
+- The app's own `/mcp` answers: its `describe` lists each repo with the schema's
+  description, not a guess (`claude mcp add --transport http <app> https://<site>/mcp`).
+- Once the explorer has indexed the records (a few minutes after the push), `fangorn-mcp`'s
+  `search` finds them and `publishers` lists this wallet's repos.
 - A search phrased by *meaning* (not a title) returns the right records with
   `ranked_by: "meaning"`.
 
@@ -692,8 +694,8 @@ for (const k of new Set([...Object.keys(a),...Object.keys(b)])) if (!["skills","
 
 Then repeat *Before saying it is done* against the deployed site, and add:
 - the live card's `skills` lists every new tool, with the tag `webmcp`;
-- `open-app <name>` still returns `verified: true`. Its data tools do not include page
-  tools; those show only with `page: true` in a WebMCP browser (Chrome 150+ with
+- the card still verifies (`discoverCard` on its URL). The app's `/mcp` tools do not include
+  page tools; those run only in a WebMCP browser (Chrome 150+ with
   `--enable-features=WebMCP`). Test there if one is available, and say so if not;
 - the deployed page's new features work in a browser, not just locally.
 

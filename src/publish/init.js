@@ -41,7 +41,7 @@ export function init(app, dir = app, { install = true, log = console.log } = {})
     }
     log(`${app} is in ${dir}. Next:
   1. app.json: the description, and the type's fields (role_map)
-  2. npx westmarch-ship app.json           # claims ${app} if it isn't yet, deploys the Worker, registers its agent`);
+  2. npx westmarch-ship app.json           # creates the repo ${app}, deploys the Worker, registers its agent`);
     return dir;
 }
 
