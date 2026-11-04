@@ -240,8 +240,8 @@ export async function buildForDeploy(configPath, wranglerPath = join(dirname(res
 
 export async function ship(configPath, { crawl = true, deploy = true, dry = false, replace = false, only = null, register = false } = {}) {
     const cfg = loadConfig(configPath);
-    // No sources is fine: the app then presents whatever its members commit (repos: [] = all of them).
-    if (!register && !Object.keys(cfg.types).length)
+    // No sources is fine: the app then presents every repo on chain (repos: [] = all of them), as the explorer does.
+    if (!register && cfg.sources.length && !Object.keys(cfg.types).length)
         throw new Error(`${configPath}: no types yet, so nothing to build; --register sets up the app alone`);
     if (!cfg.network) throw new Error(`${configPath}: "network" is required, e.g. "baseSepolia"`);
     if (cfg.paid && !cfg.facilitator) throw new Error(`${configPath}: "paid" needs "facilitator", the URL of the x402 facilitator (Barliman) its quotes settle through`);
@@ -266,8 +266,9 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     const chain = createPublicClient({ transport: http(FangornConfig.rpcUrl) });
     const repoDir = join(dir, "repo");
     if (!(await fangorn.onChainTip(me, cfg.app))) {
-        state.fromBlock = String(await chain.getBlockNumber());
-        log(`creating the app's repo ${me}:${cfg.app} (fromBlock ${state.fromBlock})`);
+        // Its own records start now; an app presenting every repo (the explorer) reads from the deployment's start.
+        if (presentedRepos(cfg).length) state.fromBlock = String(await chain.getBlockNumber());
+        log(`creating the app's repo ${me}:${cfg.app}`);
         mkdirSync(repoDir, { recursive: true });
         fangornCli(["repo", "init", cfg.app], { cwd: repoDir, dry });
         save();

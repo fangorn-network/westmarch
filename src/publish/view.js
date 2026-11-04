@@ -146,11 +146,10 @@ export async function network(name = process.env.FANGORN_NETWORK || "baseSepolia
     return SupportedNetworks[name];
 }
 
-/** The IPFS gateway to read contents through: FANGORN_IPFS_GATEWAY, else the one in
- *  ~/.fangorn/config.json (what the fangorn CLI reads through), else none (the SDK default). */
+/** The IPFS gateway to read contents through: FANGORN_IPFS_GATEWAY, else none (the SDK
+ *  default, Fangorn's gateway). Not the deployer's CLI config: that would ship into the Worker. */
 export function ipfsGateway() {
-    let gateway = process.env.FANGORN_IPFS_GATEWAY ?? process.env.IPFS_GATEWAY;
-    try { gateway ??= JSON.parse(readFileSync(`${process.env.HOME}/.fangorn/config.json`, "utf8")).pinataGateway || undefined; } catch { /* no CLI config */ }
+    const gateway = process.env.FANGORN_IPFS_GATEWAY || process.env.IPFS_GATEWAY;
     return gateway && !/^https?:\/\//.test(gateway) ? `https://${gateway}` : gateway;
 }
 
