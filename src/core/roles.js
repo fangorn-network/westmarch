@@ -307,6 +307,10 @@ export const BRIEF_ITEMS = 6;
 
 export function briefOf(row, roles, extra = []) {
     const out = { id: row.id, title: titleOf(row, roles) };
+    // The publisher's own id beside the CID: stable across re-shapes, so it is what an agent cites
+    // (supports/refutes) and passes back. get and similar accept either.
+    // ponytail: additive; making it `id` itself is the overhaul (taste and the page key on the CID).
+    if (roles.identity && row[roles.identity] != null && row[roles.identity] !== row.id) out[roles.identity] = row[roles.identity];
     const sub = subtitleOf(row, roles);
     if (sub) out.subtitle = sub;
     for (const f of [...roles.tags, ...roles.measures, ...extra]) {
