@@ -135,8 +135,11 @@ export function viewTools(app, { fetchCatalog = fetch, queryVector: embedQ = que
             return { error: `${id} is not in a loaded view. Search for it, or pass its view.`, loaded: [...loaded.keys()].map(label) };
         },
         similar: async ({ id, limit = 10, views }) => {
-            const hit = loadedRows().find(({ r }) => r.id === id);
+            // A fresh isolate has nothing loaded: load as get does. The publisher's own id finds it too.
+            if (!loaded.size) for (const v of await survey()) await load(v);
+            const hit = loadedRows().find(({ r, view }) => r.id === id || (rolesOf(view).identity && String(r[rolesOf(view).identity]) === String(id)));
             if (!hit) return { error: `${id} is not loaded. Search for it first.` };
+            id = hit.r.id;
             // Neighbours by design live anywhere, so route on the row's own vector.
             const targets = views?.length ? await pick(views)
                 : hit.r.vector ? (await route("", hit.r.vector)).slice(0, ROUTE_TOP) : [];
