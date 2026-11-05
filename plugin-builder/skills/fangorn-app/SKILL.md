@@ -241,7 +241,7 @@ Do not open with this list. Check what you can yourself (`node -v`, `fangorn --v
 when the next step needs it: Node, the Fangorn CLI, the wallet and Cloudflare to register;
 whatever the sources run on before the first local build; Pinata before *Go live*.
 
-- Node 22 and the Fangorn CLI: `npm i -g @fangorn-network/sdk@2026.11.4-dev`, or whatever
+- Node 22 and the Fangorn CLI: `npm i -g @fangorn-network/sdk@0.1.1`, or whatever
   newer version westmarch's `package.json` lists as its `@fangorn-network/sdk` peer.
 - Whatever the app's sources are written in: a source is any command (see step 2).
 - A wallet on Base Sepolia with a little ETH. **It owns the app forever**, so it

@@ -173,8 +173,7 @@ let CLI = ["fangorn"];
 const fangornCli = (args, opts = {}) => run(CLI[0], [...CLI.slice(1), ...args], { capture: true, ...opts });
 
 /** The CLI must be the SDK version westmarch reads with. A different one signs against
- *  another deployment's contracts: its commits land where nothing here looks. (It happened: a global 2026.08.18-dev CLI
- *  claimed and published onto the previous registries.) */
+ *  another deployment's contracts: its commits land where nothing here looks. */
 function assertSameDeployment(cli) {
     // "env HOME=… node cli.js": a CLI with its own config (another wallet); find the script past the env.
     let i = cli[0] === "env" ? 1 : 0;

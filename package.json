@@ -1,6 +1,6 @@
 {
   "name": "@fangorn-network/westmarch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "all-in-one builder for fangorn apps",
   "license": "MIT",
   "type": "module",
@@ -41,7 +41,7 @@
     "@fangorn-network/markov": "^0.1.0"
   },
   "peerDependencies": {
-    "@fangorn-network/sdk": "^2026.11.4-dev",
+    "@fangorn-network/sdk": "^0.1.1",
     "@huggingface/transformers": "^4.2.0",
     "@noble/curves": "^1.9.1",
     "@semaphore-protocol/core": "^4.14.5",
@@ -56,7 +56,7 @@
     }
   },
   "devDependencies": {
-    "@fangorn-network/sdk": "2026.11.4-dev",
+    "@fangorn-network/sdk": "^0.1.1",
     "@huggingface/transformers": "^4.2.0",
     "@noble/curves": "^1.9.1",
     "@semaphore-protocol/core": "^4.14.5",
