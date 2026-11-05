@@ -442,7 +442,7 @@ export async function suggestDomains(q, { url } = {}) {
 }
 
 // ── self-check: `node src/core/shard.js` — no network, no view ────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/shard.js")) {
+if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.argv[1].endsWith("/shard.js")) {
     const { gzipSync } = await import("node:zlib");
     const warn = console.warn, info = console.info;
     console.warn = console.info = () => {}; // the fallback warnings are behaviour under test, not output

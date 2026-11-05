@@ -553,7 +553,7 @@ export async function writeCatalog(store) {
 }
 
 // ── self-check: `node src/publish/view.js` — a fake chain, a fake embedder, the real reader ──
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/view.js")) {
+if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.argv[1].endsWith("/view.js")) {
     const { createServer } = await import("node:http");
     const { mkdtempSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");

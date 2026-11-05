@@ -505,7 +505,7 @@ export function stage({ picks = [], heading = "", note = "" } = {}) {
 }
 
 // ── self-check: `node src/agent/ui.js` ────────────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/ui.js")) {
+if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.argv[1].endsWith("/ui.js")) {
     const roles = { measures: ["rating", "year", "runtime", "votes"] };
     const html = rankedList({
         heading: 'search "frozen"', note: "2 corpora",

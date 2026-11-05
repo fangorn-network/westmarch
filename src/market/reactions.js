@@ -254,7 +254,7 @@ export function reactionCorpus(events = [], {
 }
 
 // ── self-check: `node src/market/reactions.js` ────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/reactions.js")) {
+if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.argv[1].endsWith("/reactions.js")) {
     const A = (n) => `0x${String(n).repeat(40).slice(0, 40)}`;
     const vec = (a, b) => { const v = new Float32Array(256); v[0] = a; v[1] = b; return v; };
 

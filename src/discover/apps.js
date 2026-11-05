@@ -101,7 +101,7 @@ export async function listApps(fangorn, { fromBlock, store } = {}) {
 }
 
 // ── self-check: `node src/discover/apps.js` ──────────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/apps.js")) {
+if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.argv[1].endsWith("/apps.js")) {
     const j = (x) => JSON.stringify(x, (_, v) => (typeof v === "bigint" ? `${v}n` : v));
     const eq = (a, b, m) => { if (j(a) !== j(b)) throw new Error(`${m}: ${j(a)} != ${j(b)}`); };
     const P = "0x" + "11".repeat(20), Q = "0x" + "22".repeat(20);

@@ -347,7 +347,7 @@ export function format(r) {
 }
 
 // ── cli + self-check: `node src/publish/lint.js [viewUrl]` ─────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/lint.js")) {
+if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.argv[1].endsWith("/lint.js")) {
     const arg = process.argv.slice(2).find((a) => !a.startsWith("--"));
     if (arg) {
         console.log(format(await lint(arg, { rows: !process.argv.includes("--no-rows"), links: process.argv.includes("--links") })));

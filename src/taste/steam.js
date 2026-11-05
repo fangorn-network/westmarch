@@ -237,7 +237,7 @@ export const summarize = (seed) =>
     `${seed.hours} hours · ${seed.likes.length} liked, ${seed.dislikes.length} bounced off`;
 
 // ── self-check: `node src/taste/steam.js` ─────────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/steam.js")) {
+if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.argv[1].endsWith("/steam.js")) {
     // A localconfig.vdf, cut down but structurally exact — including the mixed
     // casing of the Valve/valve segment that defeats a hardcoded path.
     const VDF = `

@@ -113,7 +113,7 @@ export function fangornExtension({ app, owner, fromBlock, repos = [], views = []
 }
 
 // ── self-check: `node src/agent/agent-card.js` ────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/agent-card.js")) {
+if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.argv[1].endsWith("/agent-card.js")) {
     const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} != ${JSON.stringify(b)}`); };
     const throws = (f, re, m) => { try { f(); } catch (e) { if (re.test(e.message)) return; throw e; } throw new Error(`must throw: ${m}`); };
 

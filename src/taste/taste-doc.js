@@ -237,7 +237,7 @@ export function tasteDoc({ t = null, catalogues = [], instructions = "", now = n
 }
 
 // ── self-check: `node src/taste/taste-doc.js` ─────────────────────────────────
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/taste-doc.js")) {
+if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.argv[1].endsWith("/taste-doc.js")) {
     const { taste } = await import("./taste.js");
 
     // A catalogue with a KNOWN shape: two axes, and a tag at each end of each.

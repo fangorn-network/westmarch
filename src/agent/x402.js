@@ -136,7 +136,7 @@ export async function buyRecord(quoteUrl, { privateKey, account = privateKeyToAc
 }
 
 // ── self-check: `node src/agent/x402.js` — a stand-in app, relay and key server; no chain ──
-if (typeof process !== "undefined" && import.meta.url === `file://${process.argv[1]}` && process.argv[1].endsWith("/x402.js")) {
+if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.argv[1].endsWith("/x402.js")) {
     const { x25519 } = await import("@noble/curves/ed25519");
     const { generatePrivateKey } = await import("viem/accounts");
     const { recoverTypedDataAddress } = await import("viem");
