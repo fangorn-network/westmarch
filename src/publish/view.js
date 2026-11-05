@@ -54,6 +54,11 @@ const slug = (s) => (String(s ?? "").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^
 /** A domain's name in the view: the publisher's address prefix and the repo. */
 export const domainFor = (owner, namespace) => `${slug(owner.slice(2, 10))}-${slug(namespace)}`;
 
+/** Whether an app's `repos` list takes `owner`'s `repo`: an entry is `0x<owner>/<repo>` (that
+ *  publisher's only) or a bare `<repo>` (any publisher's, for open namespaces). [] takes every repo. */
+export const presents = (repos, owner, repo) =>
+    !repos?.length || repos.includes(repo) || repos.some((r) => r.toLowerCase() === `${owner.toLowerCase()}/${repo}`.toLowerCase());
+
 /** The text a row is embedded from, minus the `search_document: ` prefix that
  *  `embedDocumentDirect` adds itself. */
 export function composeText(fields, rm) {
@@ -279,8 +284,8 @@ const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 
 /**
  * Bring the view up to date with what the app presents. `fangorn` is an SDK client (reads
- * only); `schema` is app.json's { types, relations } (a type it leaves out is guessed); the view goes to `store`, or the directory `out`. `repos` narrows it to those repo
- * names (every publisher's); without it, every repo. `fromBlock` must be
+ * only); `schema` is app.json's { types, relations } (a type it leaves out is guessed); the view goes to `store`, or the directory `out`. `repos` narrows it
+ * (`presents`: `0x<owner>/<repo>` for one publisher's, a bare name for anyone's); without it, every repo. `fromBlock` must be
  * at or before the first update to a repo the app presents, or a repo the scan misses is left out;
  * left out, the SDK's deployment start. `embedBatch(texts)` embeds many at once where the
  * encoder batches (a Worker's AI binding); `embedder` is what the manifest records.
@@ -297,11 +302,10 @@ export async function publishView({ fangorn, app, schema, repos, out, store = fs
     const schemaHash = sha256(JSON.stringify(schema));
 
     // Every repo the app presents, at its latest head: one log scan.
-    // ponytail: open: any publisher's repo of a listed name, and with no names, every repo.
-    // Read the app's repo of citations instead once the SDK reads citations.
+    // ponytail: read the app's repo of citations instead once the SDK reads citations.
     const listed = (presented ?? await retry(() => fangorn.repos(fromBlock == null ? {} : { fromBlock: BigInt(fromBlock) })))
         // ponytail: "fangorn.schema" is where apps shipped before 2026-10-22 committed their schema; never data.
-        .filter((t) => t.repo !== "fangorn.schema" && (!repos?.length || repos.includes(t.repo)));
+        .filter((t) => t.repo !== "fangorn.schema" && presents(repos, t.owner, t.repo));
     log(`${listed.length} repo(s) presented${repos?.length ? ` of ${repos.join(", ")}` : ""}`);
 
     const report = {};
@@ -328,7 +332,8 @@ export async function publishView({ fangorn, app, schema, repos, out, store = fs
         if (live.has(d)) continue;
         const m = await readJson(store, `cdn/domains/${d}/manifest`, null);
         const repo = m?.filter?.repo?.[0] ?? m?.filter?.namespace?.[0];
-        if (repos?.length && !repos.includes(repo)) continue;
+        // A name this run doesn't cover (an --only build) is left alone; another publisher's repo of a covered name is dropped.
+        if (repos?.length && !repos.some((r) => r.replace(/^0x[0-9a-f]{40}\//i, "") === repo)) continue;
         await store.del(`cdn/domains/${d}`);
         report[d] = { added: 0, removed: m?.count ?? 0, dropped: true };
         log(`${d}: no longer presented by the app; dropped`);
@@ -647,6 +652,20 @@ if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.arg
     chain[`${PUB}/shop`] = shop;
     eq((await run())[d], { added: 2, removed: 0 }, "and presenting it again brings it back");
 
+    // Two publishers, one repo name: `0x<owner>/<repo>` takes only that publisher's; a bare name takes both.
+    eq([presents([`${PUB}/shop`], PUB, "shop"), presents([`${PUB.toUpperCase().replace("0X", "0x")}/shop`], PUB, "shop"),
+        presents([`${PUB}/shop`], OWNER, "shop"), presents(["shop"], OWNER, "shop"), presents([], OWNER, "x")],
+       [true, true, false, true, true], "presents: owner-qualified, case-insensitive address, bare name, empty list");
+    {
+        const twins = { [`${PUB}/shop`]: shop, [`${OWNER}/shop`]: { records: [rec("s1", TAG, { sku: "z9", name: "Squat", about: "not the shop you meant" })] } };
+        const o = mkdtempSync(`${tmpdir()}/view-twins-`);
+        const go = (repos) => publishView({ fangorn: localFangorn(twins), app: APP, schema, out: o, repos, embed, log: () => {} });
+        eq(Object.keys(await go(["shop"])).sort(), [domainFor(OWNER, "shop"), domainFor(PUB, "shop")].sort(), "a bare name presents every publisher's repo of it");
+        const r = await go([`${PUB}/shop`]);
+        eq([r[domainFor(OWNER, "shop")]?.dropped, existsSync(`${o}/cdn/domains/${domainFor(PUB, "shop")}`)], [true, true],
+           "pinning the name to one publisher drops the other's, already indexed");
+    }
+
     const setEmbedder = (e) => { const x = manifestOf(out, d); x.embedder = e; x.head = "moved"; writeFileSync(`${out}/cdn/domains/${d}/manifest`, JSON.stringify(x)); };
     setEmbedder({ ...EMBEDDER, runtime: "transformers.js cuda" });
     if ((await run())[d]?.error) throw new Error("another runtime of the same q8 model must be accepted");
@@ -766,5 +785,5 @@ if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.arg
         await r2.del(`cdn/domains/${d}`);
         eq([...objs.keys()].filter((k) => k.includes(d)), [], "del removes a folder and everything under it");
     }
-    console.log("view.js self-check ok — domain names and embedded text are stable, the schema is applied, an unmoved head reads nothing, additions ship as delta shards, removals compact the domain, an excluded repo is dropped and a restored one returns, the real reader sees exactly the live records by the publisher's id, another encoder's view is refused, declared references land on their source rows, and the view builds the same into R2");
+    console.log("view.js self-check ok — domain names and embedded text are stable, the schema is applied, an unmoved head reads nothing, additions ship as delta shards, removals compact the domain, an excluded repo is dropped and a restored one returns, a repo name pinned to one publisher drops the others, the real reader sees exactly the live records by the publisher's id, another encoder's view is refused, declared references land on their source rows, and the view builds the same into R2");
 }
