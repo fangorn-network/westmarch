@@ -37,7 +37,10 @@ fangorn push
 ```
 
 The view picks it up within 5 minutes at `<url>/view`. A source that crawls something
-on a schedule goes in `app.json` `sources`, and publishes with
+on a schedule goes in `app.json` `sources`. Once there are sources, the view presents
+only those repos, published by your wallet, plus the namespaces listed in `"live"`
+(`"live": ["items"]` for any wallet's `items`, `"0x<wallet>/items"` for one wallet's).
+A source publishes with
 `npx westmarch-ship app.json --no-deploy` (the push to `main` deploys; without the flag it
 would deploy a second copy over this Worker). See westmarch's docs.
 

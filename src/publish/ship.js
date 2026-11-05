@@ -31,10 +31,10 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -63,9 +63,11 @@ const log = (s) => console.error(`[ship] ${s}`);
 //   "sources": [{ "namespace": "…", "cwd": "…", "command": ["python", "-m", "…", …] }],
 //   "live": ["readings"],     // optional: namespaces members push to from their own wallets (devices,
 //                             //   contributors), presented beside the sources'; true = every repo they push.
+//                             //   A bare name takes any wallet's repo of it; "0x<wallet>/readings" takes only
+//                             //   that wallet's. Sources are always the app's own wallet's repos.
 //                             //   Without sources the app already presents every member's repo.
 //   "network": "baseSepolia", // required: the SDK's network name
-//   "owner": "0x…",           // the wallet that publishes the app's repo; only `westmarch build` (the
+//   "owner": "0x…",           // the wallet that publishes the app's repo and its sources; only `westmarch build` (the
 //                             //   deploy button) needs it, westmarch-ship asks the CLI
 //   "fangorn": "fangorn",     // the CLI that signs; e.g. "node ~/fangorn/fangorn/lib/cli/cli.js",
 //                             //   or "env HOME=<dir> node …/cli.js" to sign with <dir>/.fangorn/config.json
@@ -111,16 +113,17 @@ export function loadConfig(path) {
     if (!c.site.project) throw new Error(`${path}: site.project names the Cloudflare Worker`);
     for (const s of c.sources) if (!s.namespace || !Array.isArray(s.command))
         throw new Error(`${path}: each source needs a namespace and a command (an argv array)`);
-    if (c.live != null && c.live !== true && !(Array.isArray(c.live) && c.live.every((n) => typeof n === "string")))
-        throw new Error(`${path}: live is true (every repo members push) or a list of the namespaces they push to`);
+    if (c.live != null && c.live !== true && !(Array.isArray(c.live) && c.live.every((n) => typeof n === "string" && n && !/^0x(?![0-9a-fA-F]{40}\/.)/.test(n))))
+        throw new Error(`${path}: live is true (every repo members push) or a list of the namespaces they push to: "name" (any wallet's) or "0x<40 hex>/name" (that wallet's)`);
     return { relations: [], tags: [], types: {}, ...c };
 }
 
-/** The repo names the view presents: the sources' namespaces plus `live`'s, the ones members push
- *  to themselves (devices, contributors). [] means every repo the app presents: no sources, or live: true. */
-export function presentedRepos(cfg) {
+/** The repos the view presents (view.js `presents`): the sources' namespaces, pinned to `owner`, the
+ *  wallet that publishes them, plus `live`'s, the ones members push to themselves (devices, contributors).
+ *  [] means every repo the app presents: no sources, or live: true. */
+export function presentedRepos(cfg, owner) {
     if (cfg.live === true) return [];
-    return [...new Set([...cfg.sources.map((s) => s.namespace), ...(cfg.live ?? [])])];
+    return [...new Set([...cfg.sources.map((s) => `${owner.toLowerCase()}/${s.namespace}`), ...(cfg.live ?? [])])];
 }
 
 /** The Worker's wrangler config: the stock worker, the site as its assets, its bucket, the AI
@@ -225,11 +228,13 @@ export async function buildForDeploy(configPath, wranglerPath = join(dirname(res
 
     const base = dirname(resolve(configPath));
     const { site, writeCard } = await buildSite(cfg, base);
-    writeCard(view.ORIGIN, { owner: cfg.owner, fromBlock, repos: [] });
+    // Sources pinned to the owner beside `live`, as a ship presents them; [] (every repo) with neither, or live: true.
+    const repos = presentedRepos(cfg, cfg.owner);
+    writeCard(view.ORIGIN, { owner: cfg.owner, fromBlock, repos });
     const gateway = process.env.FANGORN_IPFS_GATEWAY;
     w.assets = { ...w.assets, directory: relative(dirname(resolve(wranglerPath)), site) };
     w.vars = { ...w.vars, CONFIG: { app: cfg.app, name: cfg.name, description: cfg.description, fromBlock, network: cfg.network,
-                                    schema: { types: cfg.types, relations: cfg.relations }, repos: [], paid: false },
+                                    schema: { types: cfg.types, relations: cfg.relations }, repos, paid: false },
                ...(gateway ? { IPFS_GATEWAY: gateway } : {}) };
     writeFileSync(wranglerPath, JSON.stringify(w, null, 1) + "\n");
     log(`built ${cfg.app} (fromBlock ${fromBlock}) into ${site}; wrangler deploy ships it`);
@@ -266,7 +271,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     const repoDir = join(dir, "repo");
     if (!(await fangorn.onChainTip(me, cfg.app))) {
         // Its own records start now; an app presenting every repo (the explorer) reads from the deployment's start.
-        if (presentedRepos(cfg).length) state.fromBlock = String(await chain.getBlockNumber());
+        if (presentedRepos(cfg, me).length) state.fromBlock = String(await chain.getBlockNumber());
         log(`creating the app's repo ${me}:${cfg.app}`);
         mkdirSync(repoDir, { recursive: true });
         fangornCli(["repo", "init", cfg.app], { cwd: repoDir, dry });
@@ -295,7 +300,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     // site.url: the app's own domain, routed to the Worker. Otherwise its workers.dev URL,
     // which is only known once it is deployed: the first deploy learns it and the card follows.
     let url = cfg.site.url?.replace(/\/$/, "") ?? state.url ?? null;
-    const repos = presentedRepos(cfg);
+    const repos = presentedRepos(cfg, me);
     const writeSite = (u) => writeCard(u, { owner: me, fromBlock: state.fromBlock, repos, paid: !!cfg.paid });
     writeSite(url ?? `https://${cfg.site.project}.workers.dev`);
 
@@ -470,7 +475,7 @@ export async function devnetShip(configPath, { crawl = false, only = null, port 
     }
 
     const url = `http://127.0.0.1:${port}`;
-    const repos = Object.keys(staged);
+    const repos = Object.keys(staged).map((ns) => `${owner.getAddress().toLowerCase()}/${ns}`);
     const { site, writeCard } = await buildSite(cfg, base);
     writeCard(url, { owner: owner.getAddress(), fromBlock: "0", repos, paid: !!services });
     const wcfg = wranglerConfig({ name: cfg.site.project, site, config: { app: cfg.app, name: cfg.name, description: cfg.description,
@@ -583,9 +588,10 @@ export async function buildLocal(configPath, out, { crawl = false, only = null, 
         const statePath = join(base, ".ship/state.json");
         const fromBlock = (existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")).fromBlock : null) ?? cfg.fromBlock;
         const staged = new Set(cfg.sources.map((s) => s.namespace));
+        const { presents } = view;
         for (const t of await fangorn.repos(fromBlock == null ? {} : { fromBlock: BigInt(fromBlock) })) {
             if (t.repo === "fangorn.schema" || staged.has(t.repo) || (only && !only.includes(t.repo))
-                || (cfg.live !== true && !cfg.live.includes(t.repo))) continue;
+                || (cfg.live !== true && !presents(cfg.live, t.owner, t.repo))) continue;
             const { contents } = await fangorn.readRepo(t.owner, t.repo);
             chain[`${t.owner.toLowerCase()}/${t.repo}`] = { records: contents.records };
             say(`live ${t.owner}/${t.repo}: ${contents.records.length} records, from the chain`);
@@ -595,7 +601,7 @@ export async function buildLocal(configPath, out, { crawl = false, only = null, 
     rmSync(out, { recursive: true, force: true });
     mkdirSync(join(base, ".ship"), { recursive: true });
     const embed = view.cachedEmbed(join(base, ".ship/vectors.ndjson"));
-    const repos = presentedRepos(cfg).filter((n) => !only || only.includes(n));
+    const repos = presentedRepos(cfg, owner).filter((n) => !only || only.includes(n.replace(/^0x[0-9a-f]{40}\//i, "")));
     const report = await view.publishView({ fangorn: view.localFangorn(chain), app: cfg.app,
         schema: { types: cfg.types, relations: cfg.relations }, repos, out, embed, log: say });
     const rows = Object.values(report).reduce((n, r) => n + r.added, 0);
@@ -615,10 +621,15 @@ if (process.argv[1]?.endsWith("ship.js") || process.argv[1]?.endsWith("westmarch
             || !w.compatibility_flags.includes("nodejs_compat") || !existsSync(w.main) || !existsSync(w.alias["@huggingface/transformers"]))
             throw new Error(`wrangler config: ${JSON.stringify(w)}`);
         const src = [{ namespace: "towns", command: ["py"] }];
-        if (presentedRepos({ sources: src }).join() !== "towns" || presentedRepos({ sources: src, live: ["readings", "towns"] }).join() !== "towns,readings"
-            || presentedRepos({ sources: src, live: true }).length || presentedRepos({ sources: [] }).length)
-            throw new Error("presentedRepos: sources plus live namespaces; [] (every repo) for live: true or no sources");
-        console.log("ship.js self-check ok — a source template fills per row, the Worker config binds its bucket, AI and cron, and presentedRepos merges sources and live namespaces");
+        const O = `0x${"Ab".repeat(20)}`, o = O.toLowerCase(), M = `0x${"cd".repeat(20)}`;
+        if (presentedRepos({ sources: src }, O).join() !== `${o}/towns` || presentedRepos({ sources: src, live: ["readings", `${M}/towns`] }, O).join() !== `${o}/towns,readings,${M}/towns`
+            || presentedRepos({ sources: src, live: true }, O).length || presentedRepos({ sources: [] }, O).length)
+            throw new Error("presentedRepos: sources pinned to the owner plus live namespaces as written; [] (every repo) for live: true or no sources");
+        const tmp = join(mkdtempSync(join(tmpdir(), "ship-")), "app.json");
+        const takes = (live) => { writeFileSync(tmp, JSON.stringify({ app: "a", name: "a", description: "d", site: { project: "a" }, live })); try { return !!loadConfig(tmp); } catch { return false; } };
+        if (![takes(["readings"]), takes([`${M}/readings`]), takes(true), !takes(["0x12/readings"]), !takes([`${M}/`]), !takes([""])].every(Boolean))
+            throw new Error("live: a bare name or 0x<40 hex>/name, nothing half-qualified");
+        console.log("ship.js self-check ok — a source template fills per row, the Worker config binds its bucket, AI and cron, and presentedRepos pins sources to the owner beside live namespaces, bare or owner-qualified");
         process.exit(0);
     }
     const [path, ...flags] = process.argv.slice(2);

@@ -185,8 +185,10 @@ A source is one kind of input:
   push into its namespace from their own wallets,
   and the view reads every publisher's commits (one domain per publisher). An app with no
   `sources` presents every repo. An app with sources narrows its view
-  to their namespaces, so name the ones publishers push to in `"live": ["readings"]` (or
-  `"live": true` for any). `--local` then reads what publishers have already committed to
+  to their namespaces, published by the app's own wallet only (another wallet's repo of the
+  same name is left out), so name the ones publishers push to in `"live": ["readings"]` (or
+  `"live": true` for any). A bare name takes any wallet's repo of that name; to take one
+  publisher's and not a namesake's, write `"live": ["0x<wallet>/readings"]`. `--local` then reads what publishers have already committed to
   those namespaces from the chain (reads only, no gas), beside what the sources staged,
   so contributions are graded too. Give each device its own repo name: one writer per
   repo.

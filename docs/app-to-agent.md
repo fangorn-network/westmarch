@@ -49,7 +49,8 @@ update: each step checks the chain (or Cloudflare) first and acts only on a diff
                     "tags": ["category"], "text": ["summary"] },
       "presentation": { "facets": ["category"] } } },
   "relations": [],
-  "sources": [{ "namespace": "things", "command": ["python", "-m", "my_source"] }],
+  "sources": [{ "namespace": "things", "command": ["python", "-m", "my_source"] }],   // your wallet's repos only
+  "live": ["readings"],                      // optional: namespaces other wallets push to; "0x<wallet>/readings" for one wallet's
   "network": "baseSepolia",                  // required
   "fangorn": "fangorn",                      // the CLI that signs
   "paid": { "price": "0.01", "description": "the full record" }   // optional: USDC on the app's network, x402 v2
