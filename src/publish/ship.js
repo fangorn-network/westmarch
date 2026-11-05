@@ -67,7 +67,7 @@ const log = (s) => console.error(`[ship] ${s}`);
 //                             //   that wallet's. Sources are always the app's own wallet's repos.
 //                             //   Without sources the app already presents every member's repo.
 //   "network": "baseSepolia", // required: the SDK's network name
-//   "owner": "0x…",           // the wallet that publishes the app's repo; only `westmarch build` (the
+//   "owner": "0x…",           // the wallet that publishes the app's repo and its sources; only `westmarch build` (the
 //                             //   deploy button) needs it, westmarch-ship asks the CLI
 //   "fangorn": "fangorn",     // the CLI that signs; e.g. "node ~/fangorn/fangorn/lib/cli/cli.js",
 //                             //   or "env HOME=<dir> node …/cli.js" to sign with <dir>/.fangorn/config.json
@@ -228,11 +228,13 @@ export async function buildForDeploy(configPath, wranglerPath = join(dirname(res
 
     const base = dirname(resolve(configPath));
     const { site, writeCard } = await buildSite(cfg, base);
-    writeCard(view.ORIGIN, { owner: cfg.owner, fromBlock, repos: [] });
+    // Sources pinned to the owner beside `live`, as a ship presents them; [] (every repo) with neither, or live: true.
+    const repos = presentedRepos(cfg, cfg.owner);
+    writeCard(view.ORIGIN, { owner: cfg.owner, fromBlock, repos });
     const gateway = process.env.FANGORN_IPFS_GATEWAY;
     w.assets = { ...w.assets, directory: relative(dirname(resolve(wranglerPath)), site) };
     w.vars = { ...w.vars, CONFIG: { app: cfg.app, name: cfg.name, description: cfg.description, fromBlock, network: cfg.network,
-                                    schema: { types: cfg.types, relations: cfg.relations }, repos: [], paid: false },
+                                    schema: { types: cfg.types, relations: cfg.relations }, repos, paid: false },
                ...(gateway ? { IPFS_GATEWAY: gateway } : {}) };
     writeFileSync(wranglerPath, JSON.stringify(w, null, 1) + "\n");
     log(`built ${cfg.app} (fromBlock ${fromBlock}) into ${site}; wrangler deploy ships it`);
