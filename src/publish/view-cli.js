@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // westmarch-view: publish what an app presents as a view (see view.js).
 //
-//   westmarch-view --app my-app --out site/view [--config app.json] [--repo catalog …] [--from-block N] [--rebake]
+//   westmarch-view --app my-app --out site/view [--config app.json] [--repo 0x<owner>/catalog …] [--from-block N] [--rebake]
 //
 // The schema (types, relations) is read from --config; without it every type is guessed.
 // Reads only; needs no key. Deploy <out> with the site, and put its URL in the card's
@@ -20,7 +20,7 @@ for (let i = 2; i < process.argv.length; i++) {
     if (m[1] === "repo") flags.repo.push(v); else flags[m[1]] = v;
 }
 if (flags.help || !flags.app || !flags.out) {
-    console.error("usage: westmarch-view --app <name|0xid> --out <dir> [--config app.json] [--repo <name> …] [--from-block N] [--rebake]");
+    console.error("usage: westmarch-view --app <name|0xid> --out <dir> [--config app.json] [--repo <0xowner/name | name> …] [--from-block N] [--rebake]");
     process.exit(flags.help ? 0 : 2);
 }
 

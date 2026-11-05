@@ -38,6 +38,8 @@ export async function captureTools(register) {
  * tools. With it, `{app, owner, fromBlock, repos, views, mcp, config}`:
  *   app        the app's repo name
  *   owner      the address that publishes it
+ *   repos      the repos the app presents: `0x<owner>/<repo>` (that publisher's) or a
+ *              bare `<repo>` (any publisher's); [] for every repo
  *   fromBlock  a block at or before the app's registration. The reader's log
  *              scan starts here; leave it at 0 and a reader makes one RPC call
  *              per 1000 blocks of chain history.

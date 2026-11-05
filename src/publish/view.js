@@ -1,11 +1,11 @@
 // An app's presented data → a view any Fangorn reader loads: the embedding lens
 // (WHITEPAPER_1 §3.4), computed by whoever runs this.
 //
-//   westmarch-view --app my-app [--repo catalog …] --out site/view     (a laptop, CI)
+//   westmarch-view --app my-app [--repo 0x<owner>/catalog …] --out site/view     (a laptop, CI)
 //   site/worker.js, on a cron                                          (the free tier)
 //
-// Reads the registry and storage and nothing else: every repo the app presents (any
-// publisher's repo of a name it lists), at their latest heads; the schema
+// Reads the registry and storage and nothing else: every repo the app presents (`presents`:
+// `0x<owner>/<repo>` for one publisher's, a bare name for any publisher's), at their latest heads; the schema
 // (app.json's `types` + `relations`) comes from the caller. Embeds only records the view does not hold
 // yet, drops removed ones, and writes, through a store (a directory or an R2 bucket):
 //
