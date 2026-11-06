@@ -94,19 +94,83 @@ export async function presented({ fangorn, chain }, state) {
     return Object.values(state.repos);
 }
 
+// The indexer's limits, CONFIG.limits over these. A Worker has 128 MB, and Workers AI's free
+// allowance (10,000 neurons a day, per account: every app on it shares it) is ~30,000 rows of
+// embeddinggemma at ~0.34 neurons a row. A query takes the same encoder, so the indexer stops
+// well short of the allowance and search keeps working.
+export const LIMITS = {
+    embedPerRun: 2000,    // rows one run embeds, across every repo
+    embedPerDay: 10000,   // rows a UTC day embeds (~3,400 neurons)
+    checkpoint: 256,      // rows between saves: a run killed for memory redoes at most this many
+    concurrency: 2,       // repos read at once; each read holds the whole repo in memory
+    strikes: 2,           // runs that die inside one repo at one head before it is skipped until its head moves
+};
+
+/**
+ * A repo a run died in (killed for memory or CPU: no exception, no `finally`) is noted at its
+ * head; after `strikes` such deaths it is skipped until the head moves, so one oversized repo
+ * cannot take every run (and the encoder's day) down with it. Only `westmarch-ship --index`,
+ * the same Worker run locally without the 128 MB cap, reads it then.
+ * State: `inflight` {key: head} written as a repo starts, `strikes` {key: {head, n}}.
+ */
+export function guardOf(state, { strikes, save, log, local = false }) {
+    state.strikes ??= {};
+    for (const [key, head] of Object.entries(state.inflight ?? {})) {
+        const s = state.strikes[key];
+        state.strikes[key] = { head, n: s?.head === head ? s.n + 1 : 1 };
+        log(`${key}: the last run died while indexing it (${state.strikes[key].n}/${strikes} at this head)`);
+    }
+    state.inflight = {};
+    const key = (t) => `${t.owner.toLowerCase()}/${t.repo}`;
+    return {
+        skip: (t) => {
+            const s = state.strikes[key(t)];
+            if (local || !s || s.head !== t.root || s.n < strikes) return false;
+            log(`${key(t)}: skipped; ${s.n} runs died indexing it at this head (too big for a Worker?). ` +
+                "Its last view stays. Index it with `westmarch-ship app.json --index`, or it is retried when its head moves.");
+            return true;
+        },
+        start: async (t) => { state.inflight[key(t)] = t.root; await save(); },
+        end: async (t, r) => {
+            delete state.inflight[key(t)];
+            if (!r.error) delete state.strikes[key(t)];
+            await save();
+        },
+    };
+}
+
+/** This run's embedding: the day's remainder, at most `embedPerRun`. `used` is counted per UTC day. */
+export function budgetOf(state, limits, day = new Date().toISOString().slice(0, 10)) {
+    if (state.embedded?.day !== day) state.embedded = { day, rows: 0 };
+    const left = Math.max(0, Math.min(limits.embedPerRun, limits.embedPerDay - state.embedded.rows));
+    return { left, start: left };
+}
+
 export async function index(env, { log = console.log } = {}) {
+    // A Worker deployed by --register, before the app says what it presents, indexes nothing:
+    // repos [] would otherwise mean every repo on chain.
+    if (CONFIG.index === false) return log("index: off until the app's first full ship");
     const lock = await takeLock(env.VIEW);
     if (!lock) return log("index: a run is in progress; skipped");
     const beating = setInterval(() => lock.beat().catch(() => {}), BEAT_MS);
     try {
+        const limits = { ...LIMITS, ...CONFIG.limits };
         const state = (await (await env.VIEW.get(STATE))?.json()) ?? { block: null, repos: {} };
+        const budget = budgetOf(state, limits), base = state.embedded.rows;
+        // Every save counts what this run embedded so far: a run killed later still charges its day.
+        const save = () => { state.embedded.rows = base + budget.start - budget.left; return env.VIEW.put(STATE, JSON.stringify(state)); };
         const r = reader(env);
+        const list = await presented(r, state);
+        const guard = guardOf(state, { strikes: limits.strikes, save, log, local: !!env.INDEX_HERE });
+        await save();
         const report = await publishView({
             fangorn: r.fangorn, app: CONFIG.app, schema: CONFIG.schema, repos: CONFIG.repos, store: r2Store(env.VIEW),
-            presented: await presented(r, state), embedBatch: encode(env, DOCUMENT), embedder: await embedderOf(env), log,
+            presented: list, embedBatch: encode(env, DOCUMENT), embedder: await embedderOf(env), log,
+            budget, checkpoint: limits.checkpoint, concurrency: limits.concurrency, guard,
         });
-        await env.VIEW.put(STATE, JSON.stringify(state));
-        log(`index: through block ${state.block}, ${Object.keys(report).length} domain(s) changed`);
+        await save();
+        log(`index: through block ${state.block}, ${Object.keys(report).length} domain(s) changed, ` +
+            `${budget.start - budget.left} row(s) embedded (${state.embedded.rows}/${limits.embedPerDay} today)`);
         return report;
     } finally {
         clearInterval(beating);
@@ -424,5 +488,44 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
     block = 30n;
     eq((await presented(r, state)).map((t) => [t.repo, t.root]).sort(), [["notes", "0x02"], ["shop", "0x03"]], "the next reads only what is new");
     eq(asked.map((a) => a.map(String)), [["5", "20"], ["21", "30"]], "each run starts where the last ended");
-    console.log("worker.js self-check ok — the lens embeds through the AI binding, /mcp serves the view's tools from R2 with queries embedded by the same runtime, the view and /doc are served from R2, a paid record is quoted from its signed terms, and the indexer scans only new updates");
+
+    // Limits: a run embeds at most its budget, keeps it, and the next run embeds only the rest.
+    const big = { [`${PUB}/big`]: { records: Array.from({ length: 100 }, (_, i) => rec(`b${i}`, TAG, { sku: `s${i}`, name: `Chair ${i}`, about: "a chair" })) } };
+    const bigF = localFangorn(big), bigList = await bigF.repos(), bstore = r2Store(VIEW, "lim/");
+    const embedded = () => calls.reduce((n, c) => n + c.text.filter((t) => t.includes("Chair")).length, 0);
+    const run = (budget, extra = {}) => publishView({ fangorn: bigF, app: APP, schema: CONFIG.schema, store: bstore, presented: bigList, embedBatch: encode(env, DOCUMENT),
+        embedder: WORKER_EMBEDDER, log: () => {}, budget, checkpoint: 32, ...extra });
+    const b1 = { left: 40 };
+    eq([(await run(b1))[`${PUB.slice(2, 10)}-big`].partial, b1.left, embedded()], [true, 0, 40], "a run stops at its budget and keeps what it embedded");
+    const reads = bigF.reads;
+    eq([(await run({ left: 0 }))[`${PUB.slice(2, 10)}-big`].deferred, bigF.reads], [true, reads], "no budget left: a repo behind its head is not even read");
+    await run({ left: 1000 });
+    eq([embedded(), JSON.parse(new TextDecoder().decode(await (await VIEW.get("lim/cdn/domains/22222222-big/manifest")).arrayBuffer())).count], [100, 100],
+        "the next run embeds only the rest: 100 rows, each once");
+
+    // A whole run drops domains it doesn't present (a register-time every-repo view); an --only run keeps other names.
+    await VIEW.put("lim/cdn/domains/99999999-stray/manifest", JSON.stringify({ name: "99999999-stray", filter: { repo: ["stray"] }, count: 3, shards: [], entity_types: [] }));
+    await run({ left: 0 }, { only: ["big"] });
+    eq(!!await VIEW.get("lim/cdn/domains/99999999-stray/manifest"), true, "an --only run leaves a name it doesn't cover");
+    await run({ left: 0 });
+    eq(!!await VIEW.get("lim/cdn/domains/99999999-stray/manifest"), false, "a whole run drops what it doesn't present");
+
+    // The day's budget, and the guard against a repo every run dies in.
+    eq([budgetOf({}, LIMITS, "d1").left, budgetOf({ embedded: { day: "d1", rows: 9000 } }, LIMITS, "d1").left, budgetOf({ embedded: { day: "d0", rows: 9999 } }, LIMITS, "d1").left],
+       [2000, 1000, 2000], "a run takes at most embedPerRun, never past embedPerDay, and a new day starts at zero");
+    const t = { owner: PUB, repo: "big", root: "0xaa" }, key = `${PUB}/big`, gs = { inflight: { [key]: "0xaa" } }, noop = async () => {};
+    let g = guardOf(gs, { strikes: 2, save: noop, log: () => {} });
+    eq([gs.strikes[key].n, g.skip(t)], [1, false], "a run that died inside a repo is a strike against it, at that head");
+    gs.inflight = { [key]: "0xaa" };
+    g = guardOf(gs, { strikes: 2, save: noop, log: () => {} });
+    eq([g.skip(t), g.skip({ ...t, root: "0xbb" }), guardOf(structuredClone(gs), { strikes: 2, save: noop, log: () => {}, local: true }).skip(t)], [true, false, false],
+       "two strikes skip it until its head moves; --index (local, no 128 MB cap) still reads it");
+    await g.start(t);
+    await g.end(t, { added: 1 });
+    eq([gs.inflight, gs.strikes[key]], [{}, undefined], "a repo indexed to the end is cleared");
+    CONFIG = { ...CONFIG, index: false };
+    let said = "";
+    await index(env, { log: (m) => { said = m; } });
+    eq(said, "index: off until the app's first full ship", "a --register Worker indexes nothing");
+    console.log("worker.js self-check ok — the lens embeds through the AI binding, /mcp serves the view's tools from R2 with queries embedded by the same runtime, the view and /doc are served from R2, a paid record is quoted from its signed terms, the indexer scans only new updates, embeds within its run and day budgets, resumes where a run stopped, skips a repo runs keep dying in, drops what a whole run doesn't present, and a --register Worker indexes nothing");
 }

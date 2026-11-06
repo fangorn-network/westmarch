@@ -347,7 +347,12 @@ export function format(r) {
 }
 
 // ── cli + self-check: `node src/publish/lint.js [viewUrl]` ─────────────────────
-if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.argv[1].endsWith("/lint.js")) {
+// Run as `node …/lint.js` or as the `westmarch-lint` bin (a symlink in node_modules/.bin): compare real paths.
+// node:fs by a variable, so a bundler building this module for a browser leaves it alone.
+const NODE_FS = "node:fs";
+const isMain = !!globalThis.process?.argv?.[1] && typeof window === "undefined"
+    && await import(NODE_FS).then((fs) => fs.realpathSync(process.argv[1]) === fs.realpathSync(new URL(import.meta.url)), () => false);
+if (isMain) {
     const arg = process.argv.slice(2).find((a) => !a.startsWith("--"));
     if (arg) {
         console.log(format(await lint(arg, { rows: !process.argv.includes("--no-rows"), links: process.argv.includes("--links") })));

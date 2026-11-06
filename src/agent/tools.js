@@ -12,7 +12,7 @@
 // Pure functions, so `node tools.js` checks them with no browser and no network.
 
 import { bestPassage, cosine, lexScore, norm, zFloor } from "../core/rank.js";
-import { briefOf, collections, linkOf, pick, subtitleOf, titleOf, typeOf, values } from "../core/roles.js";
+import { briefOf, collections, findById, linkOf, pick, subtitleOf, titleOf, typeOf, values } from "../core/roles.js";
 
 /** Fields that are plumbing rather than content — never worth faceting or
  *  showing as "what this corpus holds". */
@@ -201,8 +201,9 @@ export function browse(rows, roles, { type, where, sort, desc = true, limit = 20
  *  write — which is how an agent explores a corpus whose vocabulary it doesn't
  *  know yet. Returns nothing (not an error) for a row with no vector. */
 export function neighbors(rows, id, roles, { limit = 10, fields } = {}) {
-    const seed = rows.find((r) => r.id === id);
+    const seed = findById(rows, id, roles) ?? null;
     if (!seed?.vector) return { seed: seed ? brief(seed, roles, fields) : null, near: [] };
+    id = seed.id;
     const qn = seed.norm;
     return {
         seed: brief(seed, roles, fields),
@@ -267,8 +268,7 @@ export function getRow(rows, id, roles) {
     if (!id) return null;   // else `x.path === undefined` matches the first row lacking one
     // A view built from commits keys rows by vertex CID, so the publisher's own id
     // (the declared identity field) has to find them too.
-    const r = rows.find((x) => x.id === id)
-        ?? (roles?.identity ? rows.find((x) => String(x[roles.identity]) === String(id)) : null)
+    const r = findById(rows, id, roles)
         ?? rows.find((x) => x.path === id || x.name === id || titleOf(x, roles) === id);
     if (!r) return null;
     const { vector, norm: _n, ...rest } = r;
@@ -303,6 +303,28 @@ if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.arg
     if (series.on !== 2 || series.pct !== 50) throw new Error(`empty strings must not count as coverage: ${JSON.stringify(series)}`);
     if (d.fields.some((f) => PLUMBING.has(f.name))) throw new Error("plumbing fields must not be offered as content");
     if (d.owners.join() !== "0xa") throw new Error("owners lost");
+
+    // identity: a hit carries the publisher's own id beside the CID, and similar takes either.
+    {
+        const keyed = rows.slice(0, 3).map((r, i) => ({ ...r, id: `bafy${i}`, sku: `shop:${i}` }));
+        const kr = rolesFrom([{ role_map: { identity: "sku", title: "name", text: ["desc"] } }]);
+        const h = search(keyed, "sitcom", kr, { qv: [1, 0, 0] })[0];
+        if (h.id !== "bafy0" || h.sku !== "shop:0") throw new Error(`a hit must carry its identity: ${JSON.stringify(h)}`);
+        const n = neighbors(keyed, "shop:0", kr);
+        if (n.seed?.id !== "bafy0" || n.near[0]?.id !== "bafy1" || n.near.some((x) => x.id === "bafy0")) throw new Error(`similar by identity: ${JSON.stringify(n)}`);
+
+        // A fused view (the explorer): each type keeps its own identity field, whichever domain came first.
+        const fused = rolesFrom([
+            { role_map: { identity: "uid", title: "name" }, entity_types: [{ type: "other.v1" }] },
+            { role_map: { identity: "statement_id", title: "statement" }, entity_types: [{ type: "devintel.statement.v1" }] }]);
+        const mixed = [{ id: "bafyA", uid: "o:1", name: "other", entityType: "other.v1" },
+                       { id: "bafyB", statement_id: "devintel:claim:1", statement: "a claim", entityType: "devintel.statement.v1" }];
+        const briefs = mixed.map((r) => brief(r, fused));
+        if (briefs[0].uid !== "o:1" || briefs[1].statement_id !== "devintel:claim:1" || "uid" in briefs[1])
+            throw new Error(`a fused view's hit carries its own type's identity: ${JSON.stringify(briefs)}`);
+        if (getRow(mixed, "devintel:claim:1", fused)?.id !== "bafyB" || neighbors(mixed, "devintel:claim:1", fused).seed?.id !== "bafyB")
+            throw new Error("get and similar find a row by its own type's identity in a fused view");
+    }
 
     // search: semantic where there is a vector, and the z-floor keeps the corpus
     // from answering every query with all of itself.

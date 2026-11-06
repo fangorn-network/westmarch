@@ -72,6 +72,8 @@ export function rolesFrom(manifests = [], sample = []) {
     const entityTypes = [];
     const gates = [];
     let identity = null, thread = null;
+    // A fused view (the explorer: every publisher's domains) holds one identity per type, not one in all.
+    const identityByType = {};
 
     const push = (into, v) => { for (const x of arr(v)) if (x && !into.includes(x)) into.push(x); };
 
@@ -80,6 +82,7 @@ export function rolesFrom(manifests = [], sample = []) {
         push(title, rm.title); push(subtitle, rm.subtitle); push(tags, rm.tags);
         push(text, rm.text); push(measures, rm.measures); push(spatial, rm.spatial); push(media, rm.media); push(temporal, rm.temporal);
         identity ??= rm.identity ?? null;
+        if (rm.identity) for (const t of arr(m?.entity_types)) identityByType[t?.type ?? t] ??= rm.identity;
         // The relation that follows one thing across rows: an agenda item's `part_of` names
         // its matter, so the items taken up at a committee and then the council are one thread.
         // view.js writes the target's identity onto the row; a reader groups by it.
@@ -141,7 +144,7 @@ export function rolesFrom(manifests = [], sample = []) {
     guess(text, GUESS.text);
 
     return {
-        title, subtitle, tags, text, measures, spatial, media, temporal, facets, identity, thread,
+        title, subtitle, tags, text, measures, spatial, media, temporal, facets, identity, identityByType, thread,
         labels, types, fieldLabels, externalUrl, actions, launch, refers, entityTypes,
         // What this view sells, if anything. A list because a fused view can pull
         // domains from several publishers and they price independently.
@@ -305,8 +308,19 @@ export const BRIEF_CHARS = 160;
  *  The first few carry the meaning; `get-row` has the rest. */
 export const BRIEF_ITEMS = 6;
 
+/** The field that holds this row's own id: its type's declared identity (a fused view has several), else the view's. */
+export const identityOf = (row, roles) => roles?.identityByType?.[row?.entityType] ?? roles?.identity ?? null;
+/** The row whose CID or own id is `id`, or undefined. */
+export const findById = (rows, id, roles, at = (x) => x) => rows.find((x) => at(x).id === id)
+    ?? rows.find((x) => { const k = identityOf(at(x), roles); return k && at(x)[k] != null && String(at(x)[k]) === String(id); });
+
 export function briefOf(row, roles, extra = []) {
     const out = { id: row.id, title: titleOf(row, roles) };
+    // The publisher's own id beside the CID: stable across re-shapes, so it is what an agent cites
+    // (supports/refutes) and passes back. get and similar accept either.
+    // ponytail: additive; making it `id` itself is the overhaul (taste and the page key on the CID).
+    const key = identityOf(row, roles);
+    if (key && row[key] != null && row[key] !== row.id) out[key] = row[key];
     const sub = subtitleOf(row, roles);
     if (sub) out.subtitle = sub;
     for (const f of [...roles.tags, ...roles.measures, ...extra]) {

@@ -204,8 +204,9 @@ A record is `{ entityType, <identity field>, …fields }`, one tag per kind of t
 versioned (`my-app.thing.v1`) so a later shape can be a new type.
 
 - The identity must be stable across runs (the same thing keeps the same id, or every
-  update is a delete plus an insert) and unique across **every type** in the app: it
-  replaces the CID as the row id that `search` returns and `get` looks up. Namespace
+  update is a delete plus an insert) and unique across **every type** in the app: every
+  `search` hit carries it beside the row's CID `id` (under the identity field's name), and
+  `get` and `similar` accept it. Cite it, not the CID, which changes when a record is re-shaped. Namespace
   it (`audius:genre:electronic`), keep the source's own id under another name, and
   declare it as `identity` in the role map.
 - It needs prose that says what the record *is*. That text is what gets embedded; a
@@ -303,7 +304,7 @@ npx westmarch-ship app.json --register --dry-run   # every step, printed, none d
 npx westmarch-ship app.json --register             # repo, empty site, deploy, bind the card
 ```
 
-It creates the app's repo (its block becomes the card's `fromBlock`), deploys the stock page over an empty view ("registered and being built"), and binds the
+It creates the app's repo (the card's `fromBlock` is that block only when the app already presents repos; at `--register`, with no sources yet, it is the Fangorn deployment's start, which is safe, just a longer scan), deploys the stock page over an empty view ("registered and being built"), and binds the
 card URL on chain. It does **not** mint the ERC-8004 agent. The mint copies the card's
 skills into a registration file once, for good, so it waits for the first full ship, when
 the card describes the app as built. Back up `.ship/state.json`.
@@ -764,6 +765,9 @@ never opened.
 |---|---|
 | card rejected as not bound | the card URL differs by a slash, scheme or path |
 | the view is empty after a push | the Worker's cron hasn't run yet (`westmarch-ship app.json --index`), or the push has not landed (`fangorn status`) |
+| a repo stays out of the view; the Worker log says "skipped; N runs died indexing it" | it is too big for a Worker's 128 MB (reading a repo holds it whole: ~4 KB a record, 50k records is ~200 MB); `westmarch-ship app.json --index` reads it on your machine |
+| the view fills a few thousand rows a day | the indexer's embedding budget (`site.limits`, default 2,000 a run and 10,000 a day); raise `embedPerDay` if the account's Workers AI allowance has room |
+| search matches words only; the page says the embedder is unavailable | the account's Workers AI allowance (10,000 neurons a day, shared by every app on it) is spent; it resets at 00:00 UTC |
 | search matches words, never meaning | the bundler pre-bundled westmarch; exclude it in `optimizeDeps` |
 | an agent's first call returns empty, later calls work | tools registered before the data loaded |
 | `search` ignores what records say, or titles are ids | the type is not in the schema, so roles were guessed |
@@ -774,6 +778,6 @@ never opened.
 | IPFS reads say "switching to a service worker gateway" | ipfs.io no longer serves raw content; set a Pinata gateway in `fangorn init` |
 | `fangorn-mcp`: "this browser has no WebMCP" | page tools need Chrome 150+ with `--enable-features=WebMCP`; data tools never need a browser |
 | `commit` right after `repo init`: "owner of this gateway does not have this content pinned" (ERR_ID:00006) | the configured gateway belongs to a different Pinata account than the JWT; check `curl -s https://api.pinata.cloud/v3/ipfs/gateways -H "Authorization: Bearer $JWT"` lists it |
-| `get` returns the wrong record, or two types share search ids | payload `id` is not unique across types; it replaces the CID as the row id; make it the namespaced key (`audius:genre:electronic`) |
+| `get` returns the wrong record, or two types share search ids | payload `id` is not unique across types; `get` and `similar` resolve it as the row's identity; make it the namespaced key (`audius:genre:electronic`) |
 | wrangler: "More than one account available" | set `CLOUDFLARE_ACCOUNT_ID` |
 | `fangorn card`: "agent … was minted but its registration file was not set" | the mint landed and the pin or `setAgentURI` failed; run the `--update` command it prints, never a bare rerun (that mints a second agent) |

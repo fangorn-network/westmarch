@@ -97,15 +97,23 @@ export function completeRoles(rm = {}) {
 // declaring the type.
 export function guessRoles(rows) {
     const keys = [...new Set(rows.flatMap((r) => Object.keys(r)))].filter((k) => k !== "entityType");
-    const find = (names) => keys.find((k) => names.includes(k.toLowerCase())) ?? null;
+    const strings = (k) => rows.filter((r) => typeof r[k] === "string" && r[k]);
+    // The first of `names`, in that order of preference, that some row holds as a string.
+    const find = (names, not = []) => names.map((n) => keys.find((k) => k.toLowerCase() === n && !not.includes(k) && strings(k).length)).find(Boolean) ?? null;
     const avgLen = (k) => rows.reduce((s, r) => s + (typeof r[k] === "string" ? r[k].length : 0), 0) / (rows.length || 1);
+    // A `<thing>_id` whose values are distinct across the rows is an identity too (statement_id, track_id).
+    const unique = (k) => { const v = strings(k).map((r) => r[k]); return v.length === rows.length && new Set(v).size === v.length; };
+    const title = find(["title", "name", "label", "headline", "statement", "summary", "subject", "question"]);
     return completeRoles({
-        identity: find(["id", "uid", "key", "slug"]),
-        title: find(["title", "name", "label", "headline"]),
+        identity: find(["id", "uid", "key", "slug"]) ?? keys.find((k) => /(^|_)id$/i.test(k) && unique(k)) ?? null,
+        title,
+        subtitle: find(["subtitle", "question", "summary", "description"], [title]),
         text: keys.filter((k) => avgLen(k) >= 80),
         tags: keys.filter((k) => ["tags", "category", "categories", "genre", "genres", "topics"].includes(k.toLowerCase())),
     });
 }
+/** Bumped when guessRoles changes: a domain guessed by an older one is guessed again, once. */
+export const GUESS_VERSION = 2;
 
 /** Merge the declared types a domain holds (most common first). */
 export function domainSpec(schema, tags) {
@@ -291,15 +299,27 @@ const sha256 = (s) => createHash("sha256").update(s).digest("hex");
  * encoder batches (a Worker's AI binding); `embedder` is what the manifest records.
  * `presented` replaces the `repos` scan with a list the caller keeps itself
  * ([{owner, repo, root}]), as a Worker does across runs.
+ * `only`: this run builds just these repo names (an --only build); domains of other names are
+ * left as they are. Without it the run is whole, and every domain it does not present is dropped.
+ * Limits, for a runtime with a memory, CPU or encoder allowance (a Worker):
+ *   `budget`: `{ left }`, rows this run may embed, shared by every domain and counted down. Spent,
+ *     a domain keeps what it embedded (served under its old head) and the rest waits for the next run;
+ *     a domain with work to do and none left is not even read.
+ *   `checkpoint`: rows embedded between saves; a run killed mid-domain redoes at most this many.
+ *   `guard`: `{ skip(t), start(t), end(t, result) }` around each domain with work to do: skip a repo
+ *     (its last view is kept), and note one starting and ending, so a caller can tell which repo a
+ *     run died in (killed for memory: no exception, no `finally`) and stop retrying it.
  * Returns per-domain counts of what changed.
  */
 export async function publishView({ fangorn, app, schema, repos, out, store = fsStore(out), fromBlock, presented, rebake = false,
                                     embed = embedDocumentDirect, embedBatch = (ts) => Promise.all(ts.map(embed)),
-                                    embedder = EMBEDDER, log = console.log, shardRows = 20000, concurrency = 4 }) {
+                                    embedder = EMBEDDER, log = console.log, shardRows = 20000, concurrency = 4,
+                                    only = null, budget = { left: Infinity }, checkpoint = CHECKPOINT, guard = {} }) {
     schema = schemaOf(schema);
     const declared = Object.keys(schema.types);
     log(`schema: ${declared.length ? declared.join(", ") : "no declared types"}`);
-    const schemaHash = sha256(JSON.stringify(schema));
+    // The guesser's version too: a better guess revisits every domain once (no reads past the diff, no embedding).
+    const schemaHash = sha256(JSON.stringify({ schema, guess: GUESS_VERSION }));
 
     // Every repo the app presents, at its latest head: one log scan.
     // ponytail: read the app's repo of citations instead once the SDK reads citations.
@@ -319,9 +339,11 @@ export async function publishView({ fangorn, app, schema, repos, out, store = fs
             live.add(domain);
             // One repo failing (unreadable, the encoder out for the day) keeps its last view and
             // does not stop the others; the next run tries it again.
+            if (await guard.skip?.(t)) { report[domain] = { added: 0, removed: 0, skipped: true }; continue; }
             const r = await publishDomain({ fangorn, store, schema, schemaHash, publisher: t.owner, repo: t.repo, head: t.root, domain,
-                dir: `cdn/domains/${domain}`, rebake, embedBatch, embedder, log, shardRows })
+                dir: `cdn/domains/${domain}`, rebake, embedBatch, embedder, log, shardRows, budget, checkpoint, start: () => guard.start?.(t) })
                 .catch((e) => { log(`${domain}: ✗ ${e.message}; left as it was`); return { added: 0, removed: 0, error: e.message }; });
+            if (r) await guard.end?.(t, r);
             if (r) report[domain] = r;
         }
     };
@@ -332,8 +354,9 @@ export async function publishView({ fangorn, app, schema, repos, out, store = fs
         if (live.has(d)) continue;
         const m = await readJson(store, `cdn/domains/${d}/manifest`, null);
         const repo = m?.filter?.repo?.[0] ?? m?.filter?.namespace?.[0];
-        // A name this run doesn't cover (an --only build) is left alone; another publisher's repo of a covered name is dropped.
-        if (repos?.length && !repos.some((r) => r.replace(/^0x[0-9a-f]{40}\//i, "") === repo)) continue;
+        // A name an --only build doesn't cover is left alone; another publisher's repo of a covered name is dropped.
+        // A whole run drops everything it doesn't present (a register-time cron's every-repo view, say).
+        if (only && !only.includes(repo)) continue;
         await store.del(`cdn/domains/${d}`);
         report[d] = { added: 0, removed: m?.count ?? 0, dropped: true };
         log(`${d}: no longer presented by the app; dropped`);
@@ -353,11 +376,15 @@ async function retry(f, tries = 6) {
 }
 
 const CHECKPOINT = 2048;   // rows embedded between saves; a killed run redoes at most this many
-async function publishDomain({ fangorn, store, schema, schemaHash, publisher, repo, head, domain, dir, rebake, embedBatch, embedder, log, shardRows }) {
+async function publishDomain({ fangorn, store, schema, schemaHash, publisher, repo, head, domain, dir, rebake, embedBatch, embedder, log, shardRows,
+                               budget = { left: Infinity }, checkpoint = CHECKPOINT, start = () => {} }) {
     // The head the domain was built from, and the schema it was built under: neither moved,
     // nothing to read. This is what keeps a cron run with nothing new to one read per repo.
     const was = rebake ? null : await readJson(store, `${dir}/manifest`, null);
     if (was && was.head === head && was.schema_hash === schemaHash) return null;
+    // Work to do and no embedding left this run: don't read it (a big repo's read is most of a run's memory).
+    if (budget.left <= 0) { log(`${domain}: behind its head; waits for a run with embedding budget`); return { added: 0, removed: 0, deferred: true }; }
+    await start();
 
     // The head moved from one this domain was built from: read only what changed between them (the
     // SDK's repoDiff opens only the changed paths of the record tree), not every record again. A
@@ -383,7 +410,9 @@ async function publishDomain({ fangorn, store, schema, schemaHash, publisher, re
     // are read, to skip what they hold. A removal, an edit, a rebake or a coverage refit reads all.
     // Rows in `ahead` are already counted, and come back among the puts of a diff from the old head.
     const aheadRows = (was?.shards ?? []).filter((x) => was.ahead?.includes(x.file)).reduce((n, x) => n + x.count, 0);
-    const append = !!was && !!diff?.superseded && !diff.superseded.length && !was.tombstones?.length
+    // A domain whose roles were guessed by an older guesser reads all its rows once, to guess them again.
+    const staleGuess = !!was && !(was.entity_types ?? []).some((e) => schema.types[e.type]) && was.guess_version !== GUESS_VERSION;
+    const append = !!was && !!diff?.superseded && !diff.superseded.length && !was.tombstones?.length && !staleGuess
         && (was.count ?? 0) + diff.puts.length - aheadRows < COVERAGE_REFIT * (was.coverage?.fit_at ?? 0);
     const had = await loadDomain(store, dir, append ? was.ahead ?? [] : null);
     const made = had.manifest?.embedder ?? (had.manifest ? { runtime: "fastembed", dtype: "fp32" } : null);
@@ -448,7 +477,14 @@ async function publishDomain({ fangorn, store, schema, schemaHash, publisher, re
     const lines = [];
     // 32 at a time: what an encoder batches (embed.js, a GPU, the Worker's AI binding).
     for (let i = 0; i < fresh.length; i += 32) {
-        const ids = fresh.slice(i, i + 32);
+        if (budget.left <= 0) {
+            // This run's embedding is spent: keep what is embedded, the rest on a later run.
+            if (!lines.length && !n) { log(`${domain}: ${fresh.length} to embed; waits for a run with embedding budget`); return { added: 0, removed: 0, deferred: true }; }
+            stopped = new Error("this run's embedding budget is spent");
+            break;
+        }
+        const ids = fresh.slice(i, Math.min(i + 32, i + budget.left));
+        budget.left -= ids.length;
         try {
             const vs = await embedBatch(ids.map((id) => composeText(fieldsOf(id), rolesOf.get(fieldsOf(id).entityType))));
             ids.forEach((id, j) => lines.push(JSON.stringify({ track_id: id, owner: publisher, fields: fieldsOf(id), v: packVec(vs[j]) })));
@@ -461,7 +497,7 @@ async function publishDomain({ fangorn, store, schema, schemaHash, publisher, re
         }
         if (Math.floor((n + ids.length) / 1000) > Math.floor(n / 1000)) log(`${domain}: embedded ${n + ids.length}/${fresh.length}`);
         n += ids.length;
-        if (lines.length >= CHECKPOINT && n < fresh.length) await save();
+        if (lines.length >= checkpoint && n < fresh.length) await save();
     }
     // Unfinished: the old head stays, so the next run sees a head to catch up to and embeds only what is missing.
     manifest.head = stopped ? (had.manifest?.head ?? null) : head;
@@ -523,7 +559,17 @@ async function applySpec(store, dir, manifest, schema, rows, dead, guessed = new
     manifest.entity_types = tags.map((t) => ({ type: t, count: types[t] }));
     const spec = domainSpec(schema, tags);
     const fields = [...new Set([...(added ? manifest.role_map?.fields ?? [] : []), ...liveRows.slice(0, 500).flatMap((r) => Object.keys(r.fields ?? {}))])].sort();
-    manifest.role_map = { ...(spec?.role_map ?? manifest.role_map ?? guessed.values().next().value ?? completeRoles()), fields };
+    // Declared roles win. Otherwise guess: from the whole domain when this run holds it (the most common
+    // type's rows); appending, keep a guess this guesser made, else guess from the new rows. A guess from
+    // an older guesser is never kept: an empty one, once stored, used to stay forever.
+    let roles = spec?.role_map;
+    if (!roles) {
+        const top = liveRows.filter((r) => r.fields?.entityType === tags[0]).slice(0, 200).map((r) => r.fields);
+        const current = manifest.guess_version === GUESS_VERSION ? manifest.role_map : null;
+        roles = !added && top.length ? guessRoles(top) : current ?? guessed.get(tags[0]) ?? guessed.values().next().value ?? manifest.role_map ?? completeRoles();
+        manifest.guess_version = GUESS_VERSION;
+    } else delete manifest.guess_version;
+    manifest.role_map = { ...roles, fields };
     if (spec?.description) manifest.description = spec.description;
     if (spec && Object.keys(spec.presentation).length) manifest.presentation = spec.presentation;
     const media = [manifest.role_map.media ?? []].flat();
@@ -785,5 +831,25 @@ if (import.meta.url === `file://${globalThis.process?.argv?.[1]}` && process.arg
         await r2.del(`cdn/domains/${d}`);
         eq([...objs.keys()].filter((k) => k.includes(d)), [], "del removes a folder and everything under it");
     }
-    console.log("view.js self-check ok — domain names and embedded text are stable, the schema is applied, an unmoved head reads nothing, additions ship as delta shards, removals compact the domain, an excluded repo is dropped and a restored one returns, a repo name pinned to one publisher drops the others, the real reader sees exactly the live records by the publisher's id, another encoder's view is refused, declared references land on their source rows, and the view builds the same into R2");
+    // Guessed roles: dev-intel's shape (statement/question/statement_id), and a stale empty guess is replaced once.
+    {
+        const DT = "devintel.statement.v1", long = "because the dry run never deploys, it cannot learn the account's workers.dev subdomain and prints a placeholder";
+        const rows = [1, 2].map((i) => ({ statement: `claim ${i}`, question: `why ${i}?`, statement_id: `devintel:claim:${i}`, argument: long, tags: ["x"], kind: "claim", entityType: DT }));
+        const g = guessRoles(rows);
+        eq([g.identity, g.title, g.subtitle, g.text, g.tags], ["statement_id", "statement", "question", ["argument"], ["tags"]], "a statement record's roles are guessed");
+        eq(guessRoles([{ title: "T", name: "N", id: "a" }]).title, "title", "the guess prefers title over name, whatever the key order");
+        const o = mkdtempSync(`${tmpdir()}/view-guess-`), dc = { [`${PUB}/intel`]: { records: rows.map((p, i) => rec(`g${i}`, DT, p)) } };
+        const go = () => publishView({ fangorn: localFangorn(dc), app: APP, schema: { types: {} }, out: o, embed, log: () => {} });
+        await go();
+        const dd = domainFor(PUB, "intel"), path = `${o}/cdn/domains/${dd}/manifest`;
+        eq([manifestOf(o, dd).role_map.title, manifestOf(o, dd).guess_version], ["statement", GUESS_VERSION], "a new domain stores its guess and the guesser's version");
+        // What an older guesser left: every role empty, no version, under an older schema hash.
+        const stale = manifestOf(o, dd);
+        writeFileSync(path, JSON.stringify({ ...stale, role_map: { ...completeRoles(), fields: stale.role_map.fields }, guess_version: undefined, schema_hash: "old" }));
+        const before = embedded.length;
+        await go();
+        eq([manifestOf(o, dd).role_map.title, manifestOf(o, dd).role_map.identity, embedded.length - before], ["statement", "statement_id", 0],
+           "a stale empty guess on an unmoved head is guessed again, with no embedding");
+    }
+    console.log("view.js self-check ok — guessed roles fit statement records and a stale guess is replaced once, domain names and embedded text are stable, the schema is applied, an unmoved head reads nothing, additions ship as delta shards, removals compact the domain, an excluded repo is dropped and a restored one returns, a repo name pinned to one publisher drops the others, the real reader sees exactly the live records by the publisher's id, another encoder's view is refused, declared references land on their source rows, and the view builds the same into R2");
 }

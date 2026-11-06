@@ -17,7 +17,7 @@
 // `get`/`similar`/`count` answer over what is loaded, and say so.
 
 import { configure, loadShard, trimView } from "../core/shard.js";
-import { rolesFrom, textOf } from "../core/roles.js";
+import { identityOf, rolesFrom, textOf } from "../core/roles.js";
 import { browse, facet, getRow, neighbors, search, threads } from "./tools.js";
 import { lexScore, rankDomains } from "../core/rank.js";
 import { existsSync } from "node:fs";
@@ -135,8 +135,11 @@ export function viewTools(app, { fetchCatalog = fetch, queryVector: embedQ = que
             return { error: `${id} is not in a loaded view. Search for it, or pass its view.`, loaded: [...loaded.keys()].map(label) };
         },
         similar: async ({ id, limit = 10, views }) => {
-            const hit = loadedRows().find(({ r }) => r.id === id);
+            // A fresh isolate has nothing loaded: load as get does. The publisher's own id finds it too.
+            if (!loaded.size) for (const v of await survey()) await load(v);
+            const hit = loadedRows().find(({ r, view }) => r.id === id || (() => { const k = identityOf(r, rolesOf(view)); return k && r[k] != null && String(r[k]) === String(id); })());
             if (!hit) return { error: `${id} is not loaded. Search for it first.` };
+            id = hit.r.id;
             // Neighbours by design live anywhere, so route on the row's own vector.
             const targets = views?.length ? await pick(views)
                 : hit.r.vector ? (await route("", hit.r.vector)).slice(0, ROUTE_TOP) : [];
