@@ -291,11 +291,22 @@ const sha256 = (s) => createHash("sha256").update(s).digest("hex");
  * encoder batches (a Worker's AI binding); `embedder` is what the manifest records.
  * `presented` replaces the `repos` scan with a list the caller keeps itself
  * ([{owner, repo, root}]), as a Worker does across runs.
+ * `only`: this run builds just these repo names (an --only build); domains of other names are
+ * left as they are. Without it the run is whole, and every domain it does not present is dropped.
+ * Limits, for a runtime with a memory, CPU or encoder allowance (a Worker):
+ *   `budget`: `{ left }`, rows this run may embed, shared by every domain and counted down. Spent,
+ *     a domain keeps what it embedded (served under its old head) and the rest waits for the next run;
+ *     a domain with work to do and none left is not even read.
+ *   `checkpoint`: rows embedded between saves; a run killed mid-domain redoes at most this many.
+ *   `guard`: `{ skip(t), start(t), end(t, result) }` around each domain with work to do: skip a repo
+ *     (its last view is kept), and note one starting and ending, so a caller can tell which repo a
+ *     run died in (killed for memory: no exception, no `finally`) and stop retrying it.
  * Returns per-domain counts of what changed.
  */
 export async function publishView({ fangorn, app, schema, repos, out, store = fsStore(out), fromBlock, presented, rebake = false,
                                     embed = embedDocumentDirect, embedBatch = (ts) => Promise.all(ts.map(embed)),
-                                    embedder = EMBEDDER, log = console.log, shardRows = 20000, concurrency = 4 }) {
+                                    embedder = EMBEDDER, log = console.log, shardRows = 20000, concurrency = 4,
+                                    only = null, budget = { left: Infinity }, checkpoint = CHECKPOINT, guard = {} }) {
     schema = schemaOf(schema);
     const declared = Object.keys(schema.types);
     log(`schema: ${declared.length ? declared.join(", ") : "no declared types"}`);
@@ -319,9 +330,11 @@ export async function publishView({ fangorn, app, schema, repos, out, store = fs
             live.add(domain);
             // One repo failing (unreadable, the encoder out for the day) keeps its last view and
             // does not stop the others; the next run tries it again.
+            if (await guard.skip?.(t)) { report[domain] = { added: 0, removed: 0, skipped: true }; continue; }
             const r = await publishDomain({ fangorn, store, schema, schemaHash, publisher: t.owner, repo: t.repo, head: t.root, domain,
-                dir: `cdn/domains/${domain}`, rebake, embedBatch, embedder, log, shardRows })
+                dir: `cdn/domains/${domain}`, rebake, embedBatch, embedder, log, shardRows, budget, checkpoint, start: () => guard.start?.(t) })
                 .catch((e) => { log(`${domain}: ✗ ${e.message}; left as it was`); return { added: 0, removed: 0, error: e.message }; });
+            if (r) await guard.end?.(t, r);
             if (r) report[domain] = r;
         }
     };
@@ -332,8 +345,9 @@ export async function publishView({ fangorn, app, schema, repos, out, store = fs
         if (live.has(d)) continue;
         const m = await readJson(store, `cdn/domains/${d}/manifest`, null);
         const repo = m?.filter?.repo?.[0] ?? m?.filter?.namespace?.[0];
-        // A name this run doesn't cover (an --only build) is left alone; another publisher's repo of a covered name is dropped.
-        if (repos?.length && !repos.some((r) => r.replace(/^0x[0-9a-f]{40}\//i, "") === repo)) continue;
+        // A name an --only build doesn't cover is left alone; another publisher's repo of a covered name is dropped.
+        // A whole run drops everything it doesn't present (a register-time cron's every-repo view, say).
+        if (only && !only.includes(repo)) continue;
         await store.del(`cdn/domains/${d}`);
         report[d] = { added: 0, removed: m?.count ?? 0, dropped: true };
         log(`${d}: no longer presented by the app; dropped`);
@@ -353,11 +367,15 @@ async function retry(f, tries = 6) {
 }
 
 const CHECKPOINT = 2048;   // rows embedded between saves; a killed run redoes at most this many
-async function publishDomain({ fangorn, store, schema, schemaHash, publisher, repo, head, domain, dir, rebake, embedBatch, embedder, log, shardRows }) {
+async function publishDomain({ fangorn, store, schema, schemaHash, publisher, repo, head, domain, dir, rebake, embedBatch, embedder, log, shardRows,
+                               budget = { left: Infinity }, checkpoint = CHECKPOINT, start = () => {} }) {
     // The head the domain was built from, and the schema it was built under: neither moved,
     // nothing to read. This is what keeps a cron run with nothing new to one read per repo.
     const was = rebake ? null : await readJson(store, `${dir}/manifest`, null);
     if (was && was.head === head && was.schema_hash === schemaHash) return null;
+    // Work to do and no embedding left this run: don't read it (a big repo's read is most of a run's memory).
+    if (budget.left <= 0) { log(`${domain}: behind its head; waits for a run with embedding budget`); return { added: 0, removed: 0, deferred: true }; }
+    await start();
 
     // The head moved from one this domain was built from: read only what changed between them (the
     // SDK's repoDiff opens only the changed paths of the record tree), not every record again. A
@@ -448,7 +466,14 @@ async function publishDomain({ fangorn, store, schema, schemaHash, publisher, re
     const lines = [];
     // 32 at a time: what an encoder batches (embed.js, a GPU, the Worker's AI binding).
     for (let i = 0; i < fresh.length; i += 32) {
-        const ids = fresh.slice(i, i + 32);
+        if (budget.left <= 0) {
+            // This run's embedding is spent: keep what is embedded, the rest on a later run.
+            if (!lines.length && !n) { log(`${domain}: ${fresh.length} to embed; waits for a run with embedding budget`); return { added: 0, removed: 0, deferred: true }; }
+            stopped = new Error("this run's embedding budget is spent");
+            break;
+        }
+        const ids = fresh.slice(i, Math.min(i + 32, i + budget.left));
+        budget.left -= ids.length;
         try {
             const vs = await embedBatch(ids.map((id) => composeText(fieldsOf(id), rolesOf.get(fieldsOf(id).entityType))));
             ids.forEach((id, j) => lines.push(JSON.stringify({ track_id: id, owner: publisher, fields: fieldsOf(id), v: packVec(vs[j]) })));
@@ -461,7 +486,7 @@ async function publishDomain({ fangorn, store, schema, schemaHash, publisher, re
         }
         if (Math.floor((n + ids.length) / 1000) > Math.floor(n / 1000)) log(`${domain}: embedded ${n + ids.length}/${fresh.length}`);
         n += ids.length;
-        if (lines.length >= CHECKPOINT && n < fresh.length) await save();
+        if (lines.length >= checkpoint && n < fresh.length) await save();
     }
     // Unfinished: the old head stays, so the next run sees a head to catch up to and embeds only what is missing.
     manifest.head = stopped ? (had.manifest?.head ?? null) : head;

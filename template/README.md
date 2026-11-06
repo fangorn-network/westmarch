@@ -32,7 +32,7 @@ Any wallet commits records of its type, from anywhere:
 ```sh
 echo '{"records":[{"id":"first","type":"my-app.item.v1","payload":{"id":"first","title":"Hello","text":"The first item.","tags":["demo"]}}]}' > items.json
 fangorn repo init items
-fangorn commit items.json -m "first items"
+fangorn commit items.json
 fangorn push
 ```
 

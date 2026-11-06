@@ -12,7 +12,8 @@
 // (/mcp) and its site. Nothing is embedded here. Every step checks the chain (or
 // Cloudflare) first and only acts on a difference, so re-running is how you update.
 //
-//   1. the app's repo, `<your wallet> : app` (first run only; that block becomes the card's fromBlock)
+//   1. the app's repo, `<your wallet> : app` (first run only; for an app with sources or live namespaces
+//      that block becomes the card's fromBlock; one presenting every repo, or created before 2026-11, reads from the deployment's)
 //   2. run each source, which crawls and publishes straight into the app
 //   3. the stock page, the card and _headers → .ship/site
 //   4. deploy the Worker: its R2 bucket, Workers AI, the cron, CONFIG (app.json's schema rides in it)
@@ -31,7 +32,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -310,7 +311,10 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
         writeFileSync(path, JSON.stringify(wranglerConfig({
             name: cfg.site.project, site, account: cfg.site.account, cron: cfg.site.cron, cpuMs: cfg.site.cpu_ms, url: cfg.site.url, ipfsGateway: view.ipfsGateway(),
             config: { app: cfg.app, name: cfg.name, description: cfg.description, fromBlock: state.fromBlock, network: cfg.network,
-                      schema: { types: cfg.types, relations: cfg.relations }, repos: register ? [] : repos, paid: !!cfg.paid,
+                      // --register runs before the app says what it presents: its Worker indexes nothing (repos [] would be every repo on chain).
+                      schema: { types: cfg.types, relations: cfg.relations }, repos, ...(register ? { index: false } : {}), paid: !!cfg.paid,
+                      // site.limits: the indexer's budgets (worker.js LIMITS), e.g. { "embedPerDay": 20000 }.
+                      ...(cfg.site.limits ? { limits: cfg.site.limits } : {}),
                       ...(cfg.facilitator ? { facilitator: cfg.facilitator } : {}) },
         }), null, 1));
         return path;
@@ -336,8 +340,20 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     // 5. ERC-8004 + the repo's @card
     const cardUrl = `${url}/.well-known/agent-card.json`;
     const bound = (await fangorn.cardOf(me, cfg.app).catch(() => undefined)) ?? "";
+    // `fangorn card` commits @card without moving .ship/repo's head: re-clone it at the new tip, so a
+    // source committing from there builds on the chain's head, not a stale parent (that push would revert).
+    const resync = () => {
+        if (dry || !existsSync(repoDir)) return;
+        const fresh = `${repoDir}.clone`;
+        rmSync(fresh, { recursive: true, force: true });
+        mkdirSync(fresh, { recursive: true });
+        fangornCli(["clone", me, cfg.app, "--dir", fresh]);
+        rmSync(repoDir, { recursive: true, force: true });
+        renameSync(fresh, repoDir);
+    };
     const mint = () => {
         const out = dry ? "" : fangornCli(["card", cardUrl, "--repo", cfg.app]);
+        resync();
         state.agentId = (out.match(/Agent ID:\s+(\S+)/) ?? [])[1] ?? state.agentId;
         delete state.agentPending;
         save();
@@ -345,6 +361,7 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
     if (deploy && bound !== cardUrl && register) {
         log(`binding ${cardUrl} (on chain: ${bound || "nothing"}); the agent is minted on the first full ship`);
         fangornCli(["card", cardUrl, "--repo", cfg.app, "--skip-register"], { dry });
+        resync();
         state.agentPending = true;
         save();
     } else if (deploy && bound !== cardUrl) {
@@ -361,8 +378,9 @@ export async function ship(configPath, { crawl = true, deploy = true, dry = fals
         await indexHere(configPath).catch((e) => log(`✗ first index: ${e.message}; the cron will build it`));
     }
 
-    log(`done: ${url}  ·  card ${cardUrl}  ·  MCP ${url}/mcp  ·  the view fills on the Worker's next cron run`);
-    if (failed.length) throw new Error(`deployed, but these sources failed and kept their old records: ${failed.join(", ")}`);
+    if (failed.length) log(`✗ these sources failed and kept their old records: ${failed.join(", ")} (their errors are above)`);
+    log(`done${failed.length ? " (with failures)" : ""}: ${url}  ·  card ${cardUrl}  ·  MCP ${url}/mcp  ·  the view fills on the Worker's next cron run`);
+    if (failed.length) throw new Error(`deployed, but these sources failed: ${failed.join(", ")}`);
     return { url, cardUrl, agentId: state.agentId };
 }
 
@@ -530,6 +548,8 @@ export async function indexHere(configPath, { port = 8791 } = {}) {
     w.r2_buckets = w.r2_buckets.map((b) => ({ ...b, remote: true }));
     w.ai = { ...w.ai, remote: true };
     delete w.routes;
+    // Run here, without a Worker's 128 MB: read the repos the deployed cron skips as too big. The day's embedding budget still holds.
+    w.vars = { ...w.vars, INDEX_HERE: "1" };
     const wpath = join(dir, "wrangler.index.json");
     writeFileSync(wpath, JSON.stringify(w, null, 1));
     const url = `http://127.0.0.1:${port}`, start = Math.floor(Date.now() / 1000);
@@ -603,7 +623,7 @@ export async function buildLocal(configPath, out, { crawl = false, only = null, 
     const embed = view.cachedEmbed(join(base, ".ship/vectors.ndjson"));
     const repos = presentedRepos(cfg, owner).filter((n) => !only || only.includes(n.replace(/^0x[0-9a-f]{40}\//i, "")));
     const report = await view.publishView({ fangorn: view.localFangorn(chain), app: cfg.app,
-        schema: { types: cfg.types, relations: cfg.relations }, repos, out, embed, log: say });
+        schema: { types: cfg.types, relations: cfg.relations }, repos, out, embed, log: say, only });
     const rows = Object.values(report).reduce((n, r) => n + r.added, 0);
     say(`local view: ${out}  ·  ${rows} records, ${embed.misses} embedded, ${rows - embed.misses} from the vector cache`);
     return report;

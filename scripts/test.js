@@ -2,6 +2,7 @@
 // A module is tested by running it (`node src/x/y.js`); the ones that are also CLIs take
 // --selfcheck so a bare run does not start the real thing.
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 const checks = [
     "src/market/reactions.js", "src/market/cohort.js", "src/taste/vault.js",
@@ -14,6 +15,9 @@ const checks = [
     "src/agent/x402.js", "site/feed.js", "site/store.js", "site/worker.js",
 ];
 const only = process.argv.slice(2);
+// The SDK these checks read with: a release cut against another one reads other contracts than the CLI users run (ship asserts the pair).
+try { console.log(`westmarch ${JSON.parse(readFileSync("package.json", "utf8")).version} · @fangorn-network/sdk ${JSON.parse(readFileSync("node_modules/@fangorn-network/sdk/package.json", "utf8")).version}`); }
+catch { console.log("@fangorn-network/sdk: not installed"); }
 for (const c of checks) {
     if (only.length && !only.some((o) => c.includes(o))) continue;
     const r = spawnSync(process.execPath, c.split(" "), { stdio: "inherit" });

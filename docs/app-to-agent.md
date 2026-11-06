@@ -68,7 +68,7 @@ npx westmarch-ship app.json --index    # build the deployed app's view once, on 
 The app is one Cloudflare Worker: a cron that indexes the chain into R2 (embedding with
 Workers AI), the view, `/mcp`, and the page. What `ship` does, in order:
 
-1. **create the app's repo** (`fangorn repo init <app>`) on the first run, and record that block (the card's `fromBlock`);
+1. **create the app's repo** (`fangorn repo init <app>`) on the first run, and record that block as the card's `fromBlock` when the app already presents repos (otherwise, at `--register` or for an app presenting every repo, the deployment's start);
 2. **run each source**: a command that publishes into `--namespace` when given `--publish`.
    A source with `"each": "rows.json"` is a template,
    one source per row (`{field}`, `{field|slug}`, `{args...}`), so adding a town, a feed or
@@ -109,6 +109,24 @@ and commit `.ship/state.json`.
   builds the view in R2 as for any app. `--index` does the same once on your machine
   (`wrangler dev` against the app's own R2 and Workers AI), for the first view or a catalog too
   big for one cron run.
+
+### The indexer's limits
+
+The Worker's cron is bounded so one large repo can't take down the app (or every app on the
+account). `site.limits` in `app.json` overrides any of these:
+
+| limit | default | why |
+|---|---|---|
+| `embedPerRun` | 2000 | rows one run embeds, across every repo; the rest wait for the next run |
+| `embedPerDay` | 10000 | rows a UTC day embeds (~3,400 Workers AI neurons). The free allowance is 10,000 neurons a day for the **whole account**, and search's own queries use it too |
+| `checkpoint` | 256 | rows between saves, so a run killed for memory or CPU redoes at most this many |
+| `concurrency` | 2 | repos read at once; each read holds the whole repo in memory |
+| `strikes` | 2 | runs that die inside one repo at one head before the cron skips it until its head moves |
+
+A repo too big for a Worker (reading it holds every record: ~50k records is past 128 MB) gets
+skipped after `strikes` dead runs, and its last view stays. `westmarch-ship app.json --index`
+runs the same Worker on your machine, without the memory cap, and reads it. The daily budget
+still applies there.
 - **Serving.** `/view/*` (but `cdn/catalog`) and every MCP tool but `describe` need access: a pass
   (`POST /pass`, x402 v2, a bearer token good for `days`) or one x402 payment per tool call over
   x402's MCP transport (`_meta["x402/payment"]`). A call that fails or misses is not charged.
@@ -252,6 +270,9 @@ const { contents } = await fangorn.readRepo(publisher, repo);
 | `search` ignores what records say, or titles are ids | the type isn't declared in the schema, so its roles were guessed; declare it in `app.json` |
 | a schema change didn't change search results | records keep the text they were embedded with; only newly embedded records use the new `text` role |
 | the view is empty after a push | the Worker's cron hasn't run yet (`westmarch-ship app.json --index`), or the push hasn't landed (`fangorn status`) |
+| a repo stays out of the view; the Worker log says "skipped; N runs died indexing it" | it is too big for a Worker's 128 MB (reading a repo holds it whole: ~4 KB a record, 50k records is ~200 MB); `westmarch-ship app.json --index` reads it on your machine |
+| the view fills a few thousand rows a day | the indexer's embedding budget (`site.limits`, default 2,000 a run and 10,000 a day); raise `embedPerDay` if the account's Workers AI allowance has room |
+| search matches words only; the page says the embedder is unavailable | the account's Workers AI allowance (10,000 neurons a day, shared by every app on it) is spent; it resets at 00:00 UTC |
 | `westmarch-view`: "vectors from two encoders are not comparable" | the view was built by another embedder; `--rebake`, or keep publishing it with that tool |
 | lint: "nowhere to go" | no `presentation.externalUrl` in the schema, so a hit links nowhere |
 | `fangorn-mcp`: "this browser has no WebMCP" | page tools only: the browser lacks `document.modelContext`; it needs Chrome 150+ with `--enable-features=WebMCP` |
