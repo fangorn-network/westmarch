@@ -6,6 +6,8 @@
         "-y",
         "-p",
         "@fangorn-network/westmarch",
+        "-p",
+        "@huggingface/transformers@^4.2.0",
         "fangorn-mcp"
       ],
       "env": {

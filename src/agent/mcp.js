@@ -239,3 +239,12 @@ const deps = {
 };
 serve(handlers(deps));
 log(`ready: explorer ${EXPLORER}`);
+// Queries are embedded here, never sent anywhere: start the model now, kept outside node_modules
+// (FANGORN_MODEL_CACHE, default ~/.cache/fangorn/models) so an upgrade doesn't download its 131MB
+// again. Until a first download lands, search ranks by words and says so. Without
+// @huggingface/transformers installed (the plugin installs it) search ranks by words only.
+const MODELS = process.env.FANGORN_MODEL_CACHE || `${homedir()}/.cache/fangorn/models`;
+import("./view-tools.js").then((vt) => vt.warm({ cacheDir: MODELS })).then(async (ok) => {
+    const { warmError } = await import("./view-tools.js");
+    log(ok ? `embedder ready (${MODELS})` : `embedder unavailable, search ranks by words: ${warmError}`);
+});
