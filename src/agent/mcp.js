@@ -200,8 +200,9 @@ const chainClient = async () => {
     }
     return pub;
 };
-// Circle's USDC on Base Sepolia. ponytail: one network's; FANGORN_USDC for another.
-const USDC = process.env.FANGORN_USDC || "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+// The USDC the network's SettlementRegistry is paid in (each chain has its own); FANGORN_USDC overrides.
+const usdcOf = async (c, parseAbi) => process.env.FANGORN_USDC || c.readContract({
+    address: (await network()).settlementRegistryContractAddress, abi: parseAbi(["function usdc() view returns (address)"]), functionName: "usdc" });
 const deps = {
     // The explorer's view, searched here. Re-read every 5 minutes, so a long session sees new publishers.
     // ponytail: the first search downloads the whole view; route to the best domains (shard.js setDomains)
@@ -226,7 +227,7 @@ const deps = {
         const [{ privateKeyToAccount }, { parseAbi, formatUnits, formatEther }, c] = await Promise.all([import("viem/accounts"), import("viem"), chainClient()]);
         const address = privateKeyToAccount(needKey()).address;
         const [usdc, eth] = await Promise.all([
-            c.readContract({ address: USDC, abi: parseAbi(["function balanceOf(address) view returns (uint256)"]), functionName: "balanceOf", args: [address] }),
+            c.readContract({ address: await usdcOf(c, parseAbi), abi: parseAbi(["function balanceOf(address) view returns (uint256)"]), functionName: "balanceOf", args: [address] }),
             c.getBalance({ address })]);
         return { address, usdc: formatUnits(usdc, 6), eth: formatEther(eth) };
     },
