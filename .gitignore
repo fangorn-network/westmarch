@@ -1,5 +1,7 @@
-**/node_modules
-**/dist
-.wrangler
-.claude
-npm/*
+node_modules
+index.db*
+app.json
+.sandbox/
+worker/seed.sql
+.wrangler/
+.env

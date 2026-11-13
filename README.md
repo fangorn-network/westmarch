@@ -1,322 +1,148 @@
-# @fangorn-network/westmarch
+# westmarch
 
-Everything you need to get started building Fangorn apps, and the free tier that runs them.
+Follows a set of Fangorn repos into a local, searchable index, and lets agents search it over MCP.
 
-**Start here:** [docs/app-to-agent.md](docs/app-to-agent.md) takes a static site from nothing
-to a Fangorn app and ERC-8004 agent that any agent can discover, verify and drive.
+How it works:
 
-**Just want to query apps from Claude or another MCP client?** [docs/mcp.md](docs/mcp.md)
-installs `fangorn-mcp` in one command; in Claude Code, `claude plugin marketplace add
-fangorn-network/westmarch && claude plugin install fangorn-index@fangorn` adds it with its skill.
+1. The indexer keeps a **stitch** over every `publisher/repo` pair you follow. A stitch is a single block that records the head of each of those repos.
+2. Each time a followed head moves, the indexer:
+   - rebuilds the stitch from the update log, reading only the entries since the last stitch;
+   - diffs each repo whose head moved, and embeds the new and changed records with a local model;
+   - writes those records and the new stitch to a SQLite file in one transaction.
+3. Agents search that file and fetch records live from Fangorn.
 
+Everything runs on your machine: there are no servers to run and no API keys to supply. You need Node 22.13+. `npm i @fangorn-network/westmarch`, or run it from this checkout.
 
-## The free tier: one Worker per app
-
-```sh
-westmarch-ship app.json        # claim the app, commit its schema, run its sources, deploy its Worker
-```
-
-An app on the free tier is one Cloudflare Worker (`site/worker.js`), and nobody runs anything
-after the deploy:
-
-- **Indexer.** A cron follows the update log from where it left off, and runs the
-  embedding lens (WHITEPAPER_1 §3.4) over every repo it lists whose head moved: `view.js`, with
-  the Worker's AI binding as the encoder (`@cf/google/embeddinggemma-300m`, 256 dims). The view
-  goes to R2. A repo the app stops listing loses its domain on the next run.
-- **View.** `/view/cdn/…`: the catalog, manifests and content-named shards a reader ranks in
-  its own tab, so a query need never leave it.
-- **MCP.** `/mcp`, streamable HTTP: describe, search, get, similar, count, browse and threads
-  over the view, the query embedded by the same runtime as the rows. Add it to a client as a
-  URL; there is nothing to install.
-- **Site and card.** The stock page, and the agent card naming the app, its repos, its view
-  and its MCP endpoint, bound on chain.
-
-The whole network embeds with one model (`src/core/embed.js`): EmbeddingGemma-300m, by its
-retrieval prompts, truncated to 256 dims. A tab runs it with transformers.js (q8) and the Worker
-with Workers AI; on the same rows they agree to ~0.996 cosine (`E2E_PARITY=1 npm run e2e:worker`).
-
-`npm run e2e:worker` runs the whole tier on this machine: the contracts on anvil, a local IPFS
-gateway, publishers, and the Worker under `wrangler dev` with its real AI binding.
-
-**For Publishers** — shape a tree into a commit graph, describe what's in it, seal and upload the bytes. Needs `fangorn`. Runs anywhere: a script, a server, a browser.
-
-**For Consumers** — read an app's view (its Semantic CDN shards) in the reader's own process and rank them there. Needs a view URL and nothing else. No index server, no chain read, and the query never leaves the tab.
-
-The two halves never talk to each other. A publisher writes a graph; some
-watcher bakes it into a view; a consumer reads the view. Either half is useful
-without the other.
-
-```
-src/
-  core/       embed.js   text → 256-d vector       shard.js   view → rows, streamed
-              rank.js    rows + query → hits       roles.js   which field is the title
-  taste/      taste.js   what YOU like, portably (on @fangorn-network/markov)
-              taste-doc.js · steam.js · vault.js
-  discover/   apps.js    every app bound on chain  directory.js  WHICH corpus
-              explore.js · corpora.js   SEVERAL corpora, open at once
-  agent/      tools.js · view-tools.js · mcp.js (fangorn-mcp) · ui.js · agent-card.js · x402.js
-  market/     terms.js · settle.js · reactions.js · cohort.js · demand.js   who pays whom
-  publish/    graph.js   fs tree ⇄ vertices + edges   enrich.js  what a file says → search text
-              envelope.js · manifest.js · cli.js · view.js · ship.js · eval.ts
-              lint.js    …and whether any of that WORKED
-site/         the stock page every `westmarch-ship` app deploys
-plugin/       Claude Code plugin fangorn-index: its skill and the fangorn MCP server
-plugin-builder/  Claude Code plugin fangorn-builder: fangorn-app, fangorn-improve
-examples/     demo/ (a second consumer + fixtures) · publisher/ (the smallest publisher)
-scripts/      test.js (`npm test`) · build-bin.js (single-file fangorn-mcp)
-```
-
-Every module carries its own self-check (`node src/core/rank.js`); `npm test`
-runs them all, and `npm test -- taste` runs the ones whose path matches.
-
-`lint.js` reads like a consumer, but it is for the person who baked the view:
-every capability a reader has is paid for at bake time, and the bill is
-invisible until a reader hits it.
-
-## lint.js — what will the index be able to do with this?
-
-```
-$ npx westmarch-lint https://cdn.example/q/qb_1
-archive-transcripts — 21,131 rows — 1 thing stopping readers finding or reading this
-  ✗ paywall names 1 field the free shard ships anyway
-      text — readers are told these cost money and are handed them for free.
-      → Either withhold them from the shard, or take them out of paywall.locked.
-```
-
-Three levels because there are three real outcomes: the reader cannot find you
-(no `coverage`, a foreign embedding model, no vectors), they find you and cannot
-read you (no `role_map`, no text role), or they read you and cannot go anywhere
-(no `externalUrl`, no `actions`, no `launch`).
-
-The check that needs a real shard — and the reason this is not a schema
-validator — is a `paywall` naming fields the free shard ships anyway. It found
-that in this repo's own fixtures on its first run, twice.
-
-## corpora.js — the questions one publisher cannot answer
-
-`directory.js` picks the right corpus. This holds several of them open, which is
-a different thing and the more useful one: rank *these games* by a taste built
-from *those films*, put one query to four publishers and get one ranking back.
-
-`shard.js` always cached rows per view — what was singular was the consumer's
-idea of "the" corpus, and the two `configure()` hooks, which now say which view
-they are running for. Without that, the second corpus loaded is silently parsed
-with the first one's text role.
-
-```js
-const S = session({ blankRoles: () => rolesFrom([], []) });
-configure({
-  onManifests: (ms, view) => { S.slot(view).roles = rolesFrom(ms); },
-  rowText:     (f, view)  => textOf(f, S.slot(view).roles),
-});
-// …then merge() collapses per-corpus hit lists onto one scale. It is a sort,
-// not a normalisation: every corpus scored the same query vector.
-```
-
-`examples/demo/cross.mjs` runs it against the four fixture bundles.
-
-## ui.js — an interface for data nobody wrote an interface for
-
-A tool can return an HTML view beside its JSON (MCP Apps, formerly mcp-ui): an
-`EmbeddedResource` with a `ui://` uri, rendered by a host that understands it and
-ignored by one that does not. `resource` is a standard MCP content block, so
-emitting one is safe everywhere.
-
-It is worth doing *here* because this page does not know what its rows are. The
-publisher's `role_map` already states which field is the title, the subtitle, the
-tags, the measures — which is exactly a table renderer's input. So the interface
-is generated per corpus at the moment of the call, from a declaration that
-shipped with the data.
-
-## taste.js — the thing one shared embedding space actually buys
-
-The directory refuses to rank a corpus baked with a different model, because
-cosine between two models' vectors is noise. Stated that way it sounds like a
-limitation. It is the opposite:
-
-> a taste learned in ONE publisher's corpus applies directly to ANOTHER'S.
-
-Not by matching ids — there are none in common. Not by a shared schema — there
-isn't one. Measured on this repo's own corpora: four bleak sci-fi films picked
-out of 20,986 archive films produce a 888-byte vector which, pointed at 1,571
-Wikipedia video games from an unrelated publisher, returns Beam Breakers
-(cyberpunk), B-Movie and Crimson Tears. Four comedies produce a vector that
-returns Bugs Bunny, Elmo in Grouchland and Goofy Skateboarding. Same corpus,
-same code, disjoint answers.
-
-Every recommender that exists keeps its embedding private, which is exactly what
-makes taste non-portable — your taste is an asset of whoever holds the model.
-Here the model is public and the vectors are in files you already downloaded, so
-the taste is a small object you own, carry, read and correct.
-
-State is sond3r's session kernel cut to what travels: `mu` (where you are), `v`
-(where you're heading), `q` (the lookahead you rank with), `no` (what you
-rejected, with the same GAMMA the kernel uses, so a rejection means the same
-thing on both surfaces). `exportTaste` packs it as base64 int8 and carries the
-TITLES it was built from — a taste you cannot read is a taste you cannot
-correct, and this is meant to be a thing a person owns rather than a profile
-held about them.
+## Run it
 
 ```sh
-node examples/demo/taste-demo.mjs        # films -> games, end to end
+npm install
+cp app.example.json app.json      # then put your publishers and repos in it
+npm start                         # follow app.json into index.db, live (Ctrl-C to stop)
+node src/run.js app.json --once   # or: catch up once, then exit
 ```
 
-## steam.js — the cold start, solved by a file you already have
+`app.json`:
 
-A taste needs picks and a new reader has none, so every recommender opens by
-asking you to rate ten things. The obvious fix for games is Steam's Web API:
-issue a key, call GetOwnedGames, receive the library. It works, and it means the
-first thing a recommender does — before recommending anything — is tell Valve
-that you asked.
+```json
+{ "publishers": ["0x…"], "repos": ["shop"], "network": "baseSepolia", "db": "index.db" }
+```
 
-Steam already wrote your playtime to your own disk. `localconfig.vdf` holds one
-entry per app you have launched, with minutes played and a last-played
-timestamp. No key, no login, no network, and reading it is not a request anyone
-can log. `steamLibrary(text)` parses it, `seedTaste(library, rows)` matches it
-against a corpus on `appid`, and what comes back drives `taste.js` unchanged.
+- Every publisher is paired with every repo name.
+- `network` is `baseSepolia` (the default) or `arbitrumSepolia`.
+- Optional fields: `fromBlock`, `rpcUrl`, `gateway`, `deployment`, `view` (a local JSON file of every record and the stitch, rewritten on each new root) and `publishView` (a repo of the indexer's to publish that view to: storage, plus a `view` record pointing at it). Leave out `publishers` to follow the named repos of every publisher.
+- Environment variables `RPC_URL` and `IPFS_GATEWAY` override the config.
+- `INDEXER_KEY` signs the stitch blocks the indexer uploads. If you don't set one, a fresh key is generated each run. That's fine, because the indexer's state lives in `index.db`, not with the key.
 
-The mapping is where the judgement is, and it is deliberately narrow:
+The first run downloads EmbeddingGemma-300m (about 300 MB) and indexes everything. Later runs resume from `index.db` and only embed what changed. If you change `publishers` or `repos`, the index rebuilds itself. If you switch to a different model, it refuses to run; start a new `db` file instead.
 
-| in the library | becomes | why |
-|---|---|---|
-| played a lot | a like | you kept coming back |
-| launched, bounced off | a dislike | you tried it and stopped — the only negative signal a library actually contains |
-| never launched | **neither** | a backlog is not a rejection |
+## Sandbox: all of it on your machine
 
-That third row is the one that matters. `taste.js` applies GAMMA 0.6 to
-rejections, so a wrong dislike actively steers recommendations away from things
-you would have liked, and an unplayed game in a library is a sale or a bundle
-rather than a verdict. Playtime decides membership; `LastPlayed` decides order,
-because the half-life is what makes a taste steerable and sorting by hours would
-tell it that a game you adored in 2021 is where you are now.
+`npm run sandbox` starts a Fangorn that writes nothing to a real chain or to IPFS:
 
-In a browser it is a drop target — parsed in the tab, going nowhere. In Node it
-is a path. Same parser either way.
+- a fresh anvil, with the contracts deployed from `../contracts` (`FANGORN_CONTRACTS_DIR` points it elsewhere);
+- a local stand-in for the upload worker and the IPFS gateway, with blocks stored in `.sandbox/ipfs`;
+- funded keys for alice, bob, carol and the indexer.
 
-## Sharing back — what a publisher can learn, and what it cannot
+It needs `anvil` and `forge`. In another terminal:
 
-Three modules make the reverse direction honest, and until now none of them was
-reachable from an agent:
+```sh
+mkdir -p /tmp/shop && cd /tmp/shop
+echo '[{"id":"t1","name":"oak table"}]' > items.json
+~/fangorn/indexer/.sandbox/fangorn repo init shop    # the real fangorn CLI, on the sandbox, as alice
+~/fangorn/indexer/.sandbox/fangorn add items.json && ~/fangorn/indexer/.sandbox/fangorn commit && ~/fangorn/indexer/.sandbox/fangorn push
+AS=bob ~/fangorn/indexer/.sandbox/fangorn …          # as bob
 
-- **`reactions.js`** turns a reader's log into a corpus someone can buy. The free
-  index carries coverage centroids, which corpus, and the month — the *shape* of
-  someone's attention. Which item, what it was called, and which way they reacted
-  are the paid columns, and no reaction ships a vector, because a reaction's
-  vector is a copy of a row anyone can download free.
-- **`cohort.js`** answers a publisher's question by pairwise-masked secure
-  aggregation. Every reader evaluates the question against their own log and
-  returns a share that is uniform over the ring; sum the cohort and the masks
-  cancel. Below five readers it refuses, because an aggregate over two people is
-  two people's data with a total sign on it.
-- **`demand.js`** names the resulting direction in the publisher's own declared
-  tag vocabulary, measures what their shelf holds along it in the shelf's own
-  sigma, and returns a verdict: commission, serve, fix, retire, cold.
+cd ~/fangorn/indexer
+node src/run.js .sandbox/app.json                     # index alice's and bob's "shop"
+claude mcp add fangorn-sandbox -- node "$PWD/src/mcp.js" "$PWD/.sandbox/app.json" --watch
+```
 
-`examples/demo/main.js` exposes the reader's half as `share-reactions` and
-`answer-question`; `examples/demo/publisher-console.mjs` is the buyer's half.
+- `.sandbox/fangorn` runs the CLI with its own `HOME`, so it never reads `~/.fangorn` (your real key and storage).
+- `.sandbox/app.json` is a starting config. Any app.json with `"network": "sandbox"` runs on the sandbox; set `"sandbox"` to the sandbox's directory if it isn't `.sandbox`.
+- Each start is a fresh chain with fresh keys, so delete `index.db` when you restart.
 
-## directory.js — searching FOR data, before searching IN it
+`node examples/memory.js` runs an experiment on a running sandbox: agents that don't know each other share memory, and apps form over it. Agents with no ETH write through a relayer. Two apps follow different sets of publishers, a stranger replays and verifies one of them, and a citation goes stale. It prints the txs, gas, bytes and embeds behind each step.
 
-Every other module answers a question about rows you already have. An agent
-facing a network of independent publishers has an earlier question: *which
-corpus*.
+`node examples/game.js` plays a game with no game server. Each player writes moves to its own repo, and the board is a pure reducer over the chain's log ([src/fold.js](src/fold.js)). A referee publishes a checkpoint (a stitch plus a state hash), and a spectator verifies it without trusting the referee. `node examples/scale.js 8,32,128` measures what grows as publishers are added.
 
-The bake already publishes the answer. Each domain's `catalog.json` carries
-`coverage` — spherical k-means centroids over a sample of its own vectors, 8 at
-128 dims, about 4 KB. Rank a query against every publisher's centroids and you
-have ranked the network without downloading a shard.
+## On Cloudflare: [worker/](worker/)
 
-That is what keeps it from being a search engine. A directory that indexed rows
-would have to hold everyone's rows. This holds 4 KB per corpus and never sees
-one — and the query is embedded in the client, so it never sees the question
-either. Same privacy property the shards give search, one level up.
+The same indexer as one Worker, configured by its `CONFIG` var: what it follows, on which network, and where it publishes its view. One codebase, many deployments at different levels: fangorn.network follows repos across publishers to make them discoverable, while an app follows its own repos to index the records inside them.
 
-`findCorpora(query, {sources, embed, model})` returns matches with affinity,
-size and price, plus what could not be reached and what could not be compared —
-a corpus baked with a different embedding model is excluded and named, because
-cosine between two models' vectors is noise that still looks like a score.
+- **Cron, every minute.** One log read, filtered by repo name on chain, asks whether any followed repo moved. If one did, the Worker restitches from the saved stitch ([src/stitcher.js](src/stitcher.js)) into D1 ([src/d1.js](src/d1.js)). Records land without vectors, and Workers AI (EmbeddingGemma-300m, the model the local index uses) embeds up to 100 of them per run.
+- **Publishing the view.** With `CONFIG.publishView`, each new root's view also goes to Fangorn: storage, plus a `view` record in that repo. A static page hosted anywhere finds it on chain, and anyone can check its stitch with `verifyStitch`.
+- **`GET /view.json`** is the view. **`GET /search?q=`** ranks records by meaning, embedding the query with the same model, so a page needs no in-browser model. Everything else goes to `ASSETS` when one is bound (an app's static site).
+- **`POST /mcp`** is MCP over streamable HTTP, stateless: `claude mcp add --transport http <name> https://<worker>/mcp`. Its tools are `search`, `repos` and `get`.
+- **`INDEXER_KEY`** (a secret) signs the stitch blocks the Worker uploads and the view commits, and pays their gas.
 
-## roles.js — why a reader works on a corpus nobody wrote code for
+Deploy it as is, with no code: copy [worker/wrangler.example.json](worker/wrangler.example.json) into a project that depends on westmarch, then:
 
-A generic reader has one hard problem: it has rows and no idea which field is
-the title. Hardcode `name` and it works on one bundle and returns `undefined` on
-the next.
+```sh
+wrangler d1 create my-indexer                      # put its id in wrangler.json
+node node_modules/@fangorn-network/westmarch/worker/seed.js index.db > seed.sql && wrangler d1 execute my-indexer --remote --file seed.sql
+wrangler deploy
+node -e 'import("viem/accounts").then(m => process.stdout.write(m.generatePrivateKey()))' | wrangler secret put INDEXER_KEY   # then fund its address
+```
 
-The answer is already baked. A view's domain manifest carries `role_map`
-(title, subtitle, tags, the prose to search, measures, location, link) and
-`presentation` (icon, accent and singular/plural per entity type, plus per-type
-external URL templates). `rolesFrom(manifests, sample)` merges that across the
-domains a view fuses and falls back to sniffing where a domain declared nothing.
-`collections(roles, rows)` turns `entity_types` into browsable groups with the
-publisher's own icons and plurals, and `values(v)` normalizes a multi-valued
-field — one real shard holds the same field as an array, as `"['a', 'b']"` and
-as `"a,b"`, and handing an agent two shapes for one field is how it filters on
-the wrong one.
+The seed is a local index's stitch and records, without vectors. It saves the Worker its first catch-up over the whole update log, which takes more requests than one run is allowed.
 
-One ordering matters and it is silent when you get it wrong: `rowText` runs per
-row *during parsing*, so anything it depends on must exist before the first
-shard is read. Derive roles after `loadShard` resolves and every row is already
-parsed with the default — search then matches nothing and nothing errors. That
-is what `configure({ onManifests })` is for; the format puts every manifest on
-the wire before any shard.
-
-## What an app has to pin
-
-Almost nothing — but what there is, is permanent, because it goes on-chain.
-
-| pin | where | why it can never change |
-|---|---|---|
-| **namespace** | `resourceIdFor(ns, …)` | folded into every resourceId ever minted. A different `ns` derives different ids, and bytes already stored become unreachable from the resource someone paid for. |
-| **`file`** | `buildTreeGraph(nodes, { file })` | the fs node type, vertex tag and payload `kind`. Every vertex already committed says it. Default `"file"` — a new app takes it. |
-| **`passages`** | same | the timestamped-text sidecar (cues, chapters, a transcript): its tag, edge rel, back-pointer field and id suffix. `null` if an app's files have no timeline. |
-| **`pointerFields`** | same | which keys of a node's `published` blob reach the payload. `null` passes the blob through whole, which is right for a new app; pin a list once something is committed, so a field added upstream can't quietly start appearing. |
-
-`sond3r/server/graph.js` and `sond3r/src/pay/envelope.js` are what a pin looks
-like: a short file that holds the constants still and re-exports the rest.
-
-## What an app has to wire
+An app adds its own MCP tools, or replaces a base one by name, with a Worker of its own:
 
 ```js
-import { configure } from "@fangorn-network/westmarch/shard";
+import { indexer } from "@fangorn-network/westmarch/worker";
+import { BASE } from "@fangorn-network/westmarch/worker/mcp";
+import { publishAs, grantOf, signerFor } from "@fangorn-network/westmarch/worker/publisher";
 
-configure({
-  // How to learn WHICH view to read. A callback, not a constant: a view id
-  // embeds its requester, so repointing an app must not need a rebuild.
-  resolveView: () => "https://registry.example/q/qb_1",
-  // The free text a lexical query matches, per row. Default: name/path/desc.
-  rowText: (f) => [f.name, f.path, f.desc].filter(Boolean).join(" "),
+export default indexer({
+    name: "my-app",
+    instructions: (gateway) => `How an agent should use my app. Files load from ${gateway}/ipfs/<src>.`,
+    tools: [{ name: "publish", description: "…", inputSchema: { … }, async run(args, ctx) { /* ctx: index, fangorn, gateway, auth, origin, env */ } }],
 });
 ```
 
-Then `loadShard()` gives you every row, streamed, tombstones resolved, cached per
-view; `watchShard(fn)` drops that cache when the view gains shards;
-`suggestDomains(q)` ranks domains you have *not* downloaded, off the coverage
-centroids in `catalog.json` — which is how you choose what to pull before the
-bytes move.
+`worker/publisher.js` publishes a record into a person's own repo on their signature, through the grant they gave the app at fangorn.network. The app relays the commit, and holds no keys of theirs.
 
-## What it deliberately does not do
+## Give it to an agent
 
-No row schema, no plugin system, no adapter interface. A row is
-`{ id, owner, ...fields, text, vector, norm }` and what those fields *mean* is
-the app's: what counts as a file, how hits group into results, what a price is.
-`sond3r/src/catalog/search.js` is that layer for one app — series collapsing,
-subtitle seeks, an x402f pointer projection — and none of it belongs here.
+`src/mcp.js` is an MCP server that talks over stdio. It has three tools:
 
-No UI. The React publisher and storefront still live in sond3r. A component API
-designed against one consumer is a guess; the second app is what earns it.
+| tool | |
+|---|---|
+| `search` | Finds records by meaning (`semantic`), by words (`lexical`, BM25), or both (`hybrid`, the default, merged by reciprocal rank). It can filter by `publisher`, `repo` and `type`. Each hit has `publisher, repo, id, cid, type, payload, score`. |
+| `repos` | Lists what's in the index: each publisher, repo name, and record count. |
+| `get` | Fetches one record's current version live from Fangorn (chain and IPFS). |
 
-## Test
+To run the indexer and the server in one process, which is the simplest setup:
 
 ```sh
-npm test     # every module's own self-check, no network, no browser
+claude mcp add westmarch -- node "$PWD/src/mcp.js" "$PWD/app.json" --watch
 ```
 
-`src/publish/envelope.js` pins fixed vectors for sond3r's live ids. If that check
-fails, the extraction broke money.
+Without `--watch`, the server only reads `index.db`, and a separate `npm start` keeps it up to date. SQLite's WAL mode lets both processes use the file at once.
 
-`examples/demo/` is a second consumer — five WebMCP verbs and a telemetry page — run
-against two unrelated bundles to prove the seam holds. See its README.
+## Layout
 
-`examples/publisher/` is the other half: the smallest directory that publishes a
-priced, encrypted file to a Fangorn app. Its only dependency is this package —
-publishing to an app does not require a clone of that app. See its README.
+| file | |
+|---|---|
+| [src/stitcher.js](src/stitcher.js) | `stitcher`: `update` / `trigger` (coalesced), with an injected `store` and `lens`; `watchHeads`: one subscription to the update log |
+| [src/sqlite.js](src/sqlite.js) | `sqliteIndex`: the store, the lens, and `search`, all over one SQLite file |
+| [src/store.js](src/store.js) | other stores: `fangornStore` (saves the stitch on Fangorn) and `memoryStore` |
+| [src/embed.js](src/embed.js) | `localEmbedder` (EmbeddingGemma, in-process) and `textOf` |
+| [src/run.js](src/run.js) / [src/mcp.js](src/mcp.js) | the runner and the MCP server, each usable as a module or a CLI |
+| [src/client.js](src/client.js) | creates the SDK client from a config |
+| [src/fold.js](src/fold.js) | `fold`: shared app state, a pure reducer over the update log of the repos a set of patterns follows; resumable, and stoppable at a stitch |
+| [src/d1.js](src/d1.js) / [worker/](worker/) | the index on Cloudflare D1 (store, lens, view, search by meaning), and the Worker that runs it on a cron with Workers AI, its MCP tools, and publishing as a person |
+| [src/gemma.js](src/gemma.js) | EmbeddingGemma: the model, the prompts, matryoshka truncation and vector packing |
+| [src/sandbox.js](src/sandbox.js) | the local sandbox: anvil, the contracts, and `storageServer` (the upload worker and gateway, locally) |
+
+A lens is anything with `apply(changes)`, where `changes` is `[{ publisher, repo, from, to }]`. An embedder is `{ id, embed(texts), query(text) }`.
+
+## Tests
+
+```sh
+npm test                    # in memory: an in-memory chain, a fake embedder, :memory: SQLite
+EMBED_LOCAL=1 npm test      # also runs the real model
+```
+
+[src/e2e.test.js](src/e2e.test.js) covers the whole path: publish, then the runner follows it, then an agent searches and fetches over MCP.

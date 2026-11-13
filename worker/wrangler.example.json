@@ -1,0 +1,11 @@
+{
+  "name": "my-indexer",
+  "main": "node_modules/@fangorn-network/westmarch/worker/index.js",
+  "compatibility_date": "2025-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [{ "binding": "DB", "database_name": "my-indexer", "database_id": "<wrangler d1 create my-indexer>" }],
+  "ai": { "binding": "AI" },
+  "triggers": { "crons": ["* * * * *"] },
+  "alias": { "@huggingface/transformers": "./node_modules/@fangorn-network/westmarch/worker/no-model.js" },
+  "vars": { "CONFIG": { "name": "my-indexer", "repos": ["my-repo"], "network": "baseSepolia" } }
+}

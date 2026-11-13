@@ -1,0 +1,6 @@
+{
+  "publishers": ["0xYOUR_PUBLISHER_ADDRESS"],
+  "repos": ["shop"],
+  "network": "baseSepolia",
+  "db": "index.db"
+}

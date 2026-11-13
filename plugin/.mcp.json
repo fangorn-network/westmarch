@@ -1,20 +1,5 @@
 {
   "mcpServers": {
-    "fangorn": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "-p",
-        "@fangorn-network/westmarch",
-        "-p",
-        "@huggingface/transformers@^4.2.0",
-        "fangorn-mcp"
-      ],
-      "env": {
-        "FANGORN_EXPLORER": "${FANGORN_EXPLORER:-https://explorer.fangorn.network}",
-        "FANGORN_MCP_WALLET_KEY": "${FANGORN_MCP_WALLET_KEY:-}",
-        "FANGORN_MCP_MAX_PRICE": "${FANGORN_MCP_MAX_PRICE:-0.10}"
-      }
-    }
+    "fangorn": { "type": "http", "url": "https://fangorn.network/mcp" }
   }
 }
