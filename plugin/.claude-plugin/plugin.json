@@ -1,6 +1,8 @@
 {
   "name": "fangorn-index",
-  "version": "1.0.0",
-  "description": "Find repos on Fangorn by what they're about, see who publishes them, and read their records live. One hosted MCP server (fangorn.network/mcp): nothing to install, no keys.",
-  "author": { "name": "driemworks" }
+  "version": "1.2.0",
+  "description": "Find what's published on Fangorn and read it: Fangorn's global index (fangorn.network/mcp) by default, and any index someone else runs, to search inside their repos. No install, no keys.",
+  "author": {
+    "name": "driemworks"
+  }
 }

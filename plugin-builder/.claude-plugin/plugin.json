@@ -1,6 +1,6 @@
 {
   "name": "fangorn-builder",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Build an app on Fangorn with @fangorn-network/sdk: typed records in repos, a Worker that follows and searches them, publishing on people's own signatures, and an agent card that lists it.",
   "author": { "name": "driemworks" }
 }

@@ -2,11 +2,13 @@
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "fangorn",
   "description": "Find anything published on Fangorn, and build apps on it.",
-  "owner": { "name": "Tony Riemer" },
+  "owner": {
+    "name": "Tony Riemer"
+  },
   "plugins": [
     {
       "name": "fangorn-index",
-      "description": "Find repos on Fangorn by what they're about, see who publishes them, and read their records: the fangorn MCP server (fangorn.network/mcp) and the skill that uses it.",
+      "description": "Find what's published on Fangorn and read it: the global index (fangorn.network/mcp) by default, or any index someone runs; the MCP server and the skill that uses it.",
       "source": "./plugin",
       "category": "productivity"
     },

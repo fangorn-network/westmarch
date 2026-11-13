@@ -1,6 +1,6 @@
 {
   "name": "@fangorn-network/westmarch",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Follows Fangorn repos into a searchable index, locally or as a Cloudflare Worker, and serves it to agents over MCP",
   "license": "MIT",
   "type": "module",
