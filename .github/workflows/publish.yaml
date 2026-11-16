@@ -36,6 +36,8 @@ jobs:
           fi
       - if: steps.check.outputs.publish
         run: npm ci && npm test
+        env:
+          ONNXRUNTIME_NODE_INSTALL: skip # CPU binaries ship in the package; the CUDA download from nuget is unused and flaky
       - if: steps.check.outputs.publish
         # trusted publishing needs npm >= 11.5.1; node 22 ships npm 10. Provenance is automatic.
         run: |
