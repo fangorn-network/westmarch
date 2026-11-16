@@ -18,7 +18,7 @@
     "sandbox": "node src/sandbox.js"
   },
   "dependencies": {
-    "@fangorn-network/sdk": "^0.1.5",
+    "@fangorn-network/sdk": "^0.1.6",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "viem": "^2.56.3",
     "zod": "^4.6.7",
