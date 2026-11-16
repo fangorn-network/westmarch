@@ -16,6 +16,26 @@ const json = (v) => JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toStr
 const cosine = (q, v) => { let d = 0, a = 0, b = 0; for (let i = 0; i < q.length; i++) { d += q[i] * v[i]; a += q[i] * q[i]; b += v[i] * v[i]; } return a && b ? d / Math.sqrt(a * b) : 0; };
 const row = (r) => ({ publisher: r.publisher, repo: r.repo, id: r.id, cid: r.cid, type: r.type, payload: JSON.parse(r.payload) });
 
+/**
+ * What changed in a repo from head `from` to `to`, against `known` (id → record CID, what the index holds now),
+ * reading only the commits in between: their diff events, and the records they put.
+ * `repoDiff` looks every changed id up in the OLD tree, and an old tree node resolves by walking the repo's
+ * history one CAR at a time: 226 fetches for a 3-record commit on a 300-record repo, where a free-plan run may make 50.
+ */
+// ponytail: a put whose record CID an older commit introduced (a revert) still walks back to it; rare
+export async function diffSince(engine, from, to, known) {
+    const zero = (h) => !h || /^0x0*$/.test(h);
+    const tip = zero(to) ? null : engine.hexToRootCid(to);
+    const events = !zero(from) && tip && await engine.eventsSince(engine.hexToRootCid(from), tip);
+    if (!events) return engine.repoDiff(from, to); // a new or emptied repo, a reset, or commits without diff events
+    const puts = [], deletes = [];
+    for (const [id, after] of events) {
+        if (!after) { if (known.has(id)) deletes.push(id); }
+        else if (known.get(id) !== after.toString()) puts.push(await engine.decodeRecord(id, after, tip));
+    }
+    return { puts, deletes };
+}
+
 /** `db`: a D1 binding. `fangorn` reads the diffs. */
 export function d1Index({ db, fangorn }) {
     const getMeta = async (k) => { const r = await db.prepare("SELECT v FROM meta WHERE k = ?").bind(k).first(); return r && JSON.parse(r.v); };
@@ -45,7 +65,8 @@ export function d1Index({ db, fangorn }) {
             const staged = [];
             for (const { publisher, repo, from, to } of changes) {
                 const p = publisher.toLowerCase();
-                const { puts, deletes } = await fangorn.engine.repoDiff(from, to);
+                const { results } = await db.prepare("SELECT id, cid FROM records WHERE publisher = ? AND repo = ?").bind(p, repo).all();
+                const { puts, deletes } = await diffSince(fangorn.engine, from, to, new Map(results.map((r) => [r.id, r.cid])));
                 for (const id of deletes) staged.push({ publisher: p, repo, id });
                 for (const r of puts) staged.push({ publisher: p, repo, id: r.id, cid: r.cid, type: r.type ?? null, payload: json(r.payload), text: textOf(r.payload) });
             }
