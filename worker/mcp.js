@@ -61,7 +61,7 @@ export async function mcpCall(ctx, msg) {
         case "initialize": return ok({
             protocolVersion: msg.params?.protocolVersion ?? "2025-06-18",
             capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: ctx.name, version: "0.3.0" },
+            serverInfo: { name: ctx.name, version: "0.3.1" },
             instructions: ctx.instructions,
         });
         case "ping": return ok({});
