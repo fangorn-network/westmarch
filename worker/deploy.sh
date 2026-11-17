@@ -11,9 +11,7 @@
 # The wallet's key is generated here and goes straight into the Worker's secrets: it is never written down, and
 # nobody holds it. It only pays gas for stitches and relayed publishes; with FUNDER_KEY set it gets FUND ether from it,
 # otherwise fund the address printed.
-# ponytail: a new app catches up over the update log from CONFIG.fromBlock (the network's deploy block by default)
-# in its first run. Following repos with a long history may need more requests than one run gets: seed it first
-# (README, worker/seed.js).
+# A new app is caught up here and its database seeded (worker/seed.js): one Worker run can't fold the whole log.
 set -euo pipefail
 name=${1:?usage: deploy.sh <name> <config.json>}
 config=$(realpath "${2:?usage: deploy.sh <name> <config.json>}")
@@ -42,6 +40,14 @@ EOF
 
 node --input-type=module -e 'import { SCHEMA } from "./src/d1.js"; console.log(SCHEMA)' >"$dir/schema.sql"
 wrangler d1 execute "$name" --remote --file "$dir/schema.sql" --config "$dir/wrangler.json" >/dev/null
+# A new database: catch up here and seed it, before the Worker's first run would try to (worker/seed.js).
+stitched=$(wrangler d1 execute "$name" --remote --json --command "SELECT count(*) AS n FROM meta WHERE k = 'stitch'" \
+    --config "$dir/wrangler.json" | node -pe 'JSON.parse(require("fs").readFileSync(0))[0].results[0].n')
+if [ "$stitched" = 0 ]; then
+    node worker/seed.js "$config" >"$dir/seed.sql"
+    wrangler d1 execute "$name" --remote --file "$dir/seed.sql" --config "$dir/wrangler.json" >/dev/null
+    echo "seeded $name: $(grep -c '^INSERT OR REPLACE INTO records' "$dir/seed.sql") records" >&2
+fi
 url=$(wrangler deploy --config "$dir/wrangler.json" | grep -o 'https://[^ ]*workers\.dev' | head -1)
 
 if ! wrangler secret list --config "$dir/wrangler.json" | grep -q INDEXER_KEY; then

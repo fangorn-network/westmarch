@@ -1,15 +1,30 @@
 #!/usr/bin/env node
-// SQL that seeds the Worker's D1 from a local index (src/sqlite.js): the stitch and the records, WITHOUT vectors
-// (the Worker embeds them with Workers AI, so its rows all come from one runtime). This spares the Worker the
-// first catch-up over the whole update log, which is more requests than one run may make.
+// SQL that seeds the Worker's D1: the stitch and the records, WITHOUT vectors (the Worker embeds them with Workers
+// AI, so its rows all come from one runtime). This spares the Worker the first catch-up over the whole update log,
+// which is more requests than one run may make.
 //
-//   node worker/seed.js index.db > worker/seed.sql
-//   wrangler d1 execute <your-d1> --remote --file worker/seed.sql      (from worker/)
+//   node worker/seed.js app.json > seed.sql     catches up here first, into a scratch index (nothing embedded)
+//   node worker/seed.js index.db > seed.sql     or from a local index you already run (src/sqlite.js)
+//   wrangler d1 execute <your-d1> --remote --file seed.sql
+//
+// worker/deploy.sh does this for a new app.
 
 import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SCHEMA } from "../src/d1.js";
+import { readConfig, run } from "../src/run.js";
+import { client } from "../src/client.js";
 
-const db = new DatabaseSync(process.argv[2] ?? "index.db", { readOnly: true });
+let file = process.argv[2] ?? "index.db";
+if (file.endsWith(".json")) {
+    const config = readConfig(file);
+    file = join(mkdtempSync(join(tmpdir(), "seed-")), "index.db");
+    const none = { id: "none", embed: async (texts) => texts.map(() => [0]) }; // a placeholder: the seed drops vectors
+    await (await run({ config, fangorn: client(config), embedder: none, path: file, log: console.error })).stop();
+}
+const db = new DatabaseSync(file, { readOnly: true });
 const q = (v) => v == null ? "NULL" : `'${String(v).replaceAll("'", "''")}'`;
 const out = [SCHEMA.trim()];
 const stitch = db.prepare("SELECT v FROM meta WHERE k = 'stitch'").get();
