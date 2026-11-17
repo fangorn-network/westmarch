@@ -1,0 +1,53 @@
+# Deploys (or updates) one hosted app with worker/deploy.sh. Run it by hand: Actions -> Deploy app -> Run workflow,
+# or `gh workflow run deploy-app.yaml -f name=<app> -f config='<json>'`.
+# Secrets live in the `apps` environment: CLOUDFLARE_API_TOKEN (Workers + D1 edit) and FUNDER_KEY (optional; pays the
+# new app's gas wallet). Only people with write access can dispatch; add a required reviewer on the environment to gate it.
+# The config is passed in, not committed: this repo is public. Everything in it is on chain anyway.
+
+name: Deploy app
+
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: App name (Worker, D1 and wallet). An existing name updates that app.
+        required: true
+      config:
+        description: 'CONFIG JSON, e.g. {"repos":["…"],"network":"base","publishPerDay":100}'
+        required: true
+      fund:
+        description: Ether sent to a new app's gas wallet
+        default: "0.002"
+
+permissions:
+  contents: read
+
+concurrency: deploy-${{ inputs.name }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: apps
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+        env:
+          ONNXRUNTIME_NODE_INSTALL: skip
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          FUNDER_KEY: ${{ secrets.FUNDER_KEY }}
+          FUND: ${{ inputs.fund }}
+          NAME: ${{ inputs.name }}
+          CONFIG: ${{ inputs.config }}
+        run: |
+          [[ $NAME =~ ^[a-z0-9-]{1,50}$ ]] || { echo "name: lowercase letters, digits and dashes"; exit 1; }
+          printf %s "$CONFIG" > "$RUNNER_TEMP/config.json"
+          node -e 'JSON.parse(require("fs").readFileSync(process.argv[1]))' "$RUNNER_TEMP/config.json"
+          url=$(worker/deploy.sh "$NAME" "$RUNNER_TEMP/config.json")
+          echo "### $NAME: $url" >> "$GITHUB_STEP_SUMMARY"

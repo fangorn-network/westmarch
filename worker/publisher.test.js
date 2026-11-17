@@ -2,7 +2,8 @@ import { test, expect } from "vitest";
 import { memoryNetwork } from "@fangorn-network/sdk/lib/test/testbed.js";
 import { MEM_DOMAIN } from "@fangorn-network/sdk/lib/test/mem-registry.js";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { publishAs, grantOf, signerFor } from "./publisher.js";
+import { UPDATE_TYPES } from "@fangorn-network/sdk/lib/contracts/data-registry/index.js";
+import { publishAs, publish, grantOf, signerFor } from "./publisher.js";
 
 test("the app publishes into the publisher's own repo, on the publisher's signature only", async () => {
     const net = memoryNetwork();
@@ -41,4 +42,40 @@ test("the handoff to fangorn.network: the grant token as bearer, only the messag
         globalThis.fetch = async () => new Response("<!doctype html>", { headers: { "content-type": "text/html" } }); // the site, no API
         await expect(grantOf("fgn_ok", "https://f")).rejects.toThrow(/without its API/);
     } finally { globalThis.fetch = real; }
+});
+
+// A stand-in fangorn.network: one grant (alice's, for `repos`), signing with alice's key.
+function fakeFangornNetwork(alice, repos) {
+    const real = globalThis.fetch, ok = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json" } });
+    globalThis.fetch = async (url, init) => {
+        if (init.headers.authorization !== "Bearer fgn_alice") return ok({ error: "no such grant" }, 401);
+        if (url.endsWith("/api/grant")) return ok({ address: alice.address, app: "test", repos });
+        const m = JSON.parse(init.body).message;
+        return ok({ signature: await alice.signTypedData({ domain: MEM_DOMAIN, types: UPDATE_TYPES, primaryType: "Update", message: { ...m, epoch: BigInt(m.epoch) } }) });
+    };
+    return () => { globalThis.fetch = real; };
+}
+
+test("POST /publish: a grant publishes into its holder's repo, within the app's daily quota", async () => {
+    const net = memoryNetwork(), app = await net.client(), alice = privateKeyToAccount(generatePrivateKey());
+    const meta = new Map(), restore = fakeFangornNetwork(alice, ["notes", "other"]);
+    const at = (config) => ({ fangorn: app, config, meta: { get: async (k) => meta.get(k), set: async (k, v) => meta.set(k, v) }, base: "https://f", domain: MEM_DOMAIN });
+    const on = at({ repos: ["notes"], publishPerDay: 2 });
+    const note = (id) => ({ repo: "notes", record: { id, type: "note", payload: { id } } });
+    const status = (p) => p.then(() => 200, (e) => e.status);
+    try {
+        const r = await publish(on, "fgn_alice", note("a"));
+        expect(r).toMatchObject({ publisher: alice.address.toLowerCase(), repo: "notes", id: "a" });
+        expect((await app.engine.readRecord(alice.address, "notes", "a")).cid).toBe(r.cid);
+
+        expect(await status(publish(on, "fgn_mallory", note("x")))).toBe(401); // not a grant
+        expect(await status(publish(on, "fgn_alice", { repo: "notes", record: { payload: {} } }))).toBe(400);
+        expect(await status(publish(on, "fgn_alice", { ...note("x"), repo: "other" }))).toBe(404); // granted, not this app's
+        expect(await status(publish(at({ repos: ["notes", "x"], publishPerDay: 9 }), "fgn_alice", { ...note("x"), repo: "x" }))).toBe(403); // the app's, not granted
+        expect(await status(publish(at({ repos: ["notes"] }), "fgn_alice", note("x")))).toBe(404); // publishing off
+
+        await publish(on, "fgn_alice", note("b"));
+        expect(await status(publish(on, "fgn_alice", note("c")))).toBe(429);
+        expect([...meta.values()]).toEqual([2]); // usage per UTC day: what the app is billed on
+    } finally { restore(); }
 });
