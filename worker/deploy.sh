@@ -10,7 +10,7 @@
 #
 # The wallet's key is generated here and goes straight into the Worker's secrets: it is never written down, and
 # nobody holds it. It only pays gas for stitches and relayed publishes; with FUNDER_KEY set it gets FUND ether from it,
-# otherwise fund the address printed. From CI: .github/workflows/deploy-app.yaml.
+# otherwise fund the address printed.
 # ponytail: a new app catches up over the update log from CONFIG.fromBlock (the network's deploy block by default)
 # in its first run. Following repos with a long history may need more requests than one run gets: seed it first
 # (README, worker/seed.js).

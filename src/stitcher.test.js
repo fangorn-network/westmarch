@@ -1,7 +1,7 @@
 import { test, expect } from "vitest";
 import { memoryNetwork } from "@fangorn-network/sdk/lib/test/testbed.js";
 import { generatePrivateKey } from "viem/accounts";
-import { stitcher, watchHeads } from "./stitcher.js";
+import { reposOf, stitcher, watchHeads } from "./stitcher.js";
 import { memoryStore } from "./store.js";
 
 const put = async (client, repo, name) => {
@@ -141,4 +141,17 @@ test("without publishers, it follows that repo of every publisher: a newcomer jo
     await put(bob, "arcade", "particles"); // bob was never named anywhere
     await s.update();
     expect(await who()).toEqual([alice, bob].map((c) => `${c.getAddress().toLowerCase()}/arcade`).sort());
+});
+
+test("follow: exactly the publisher/repo pairs named, not their cross product", async () => {
+    const net = memoryNetwork();
+    const [alice, bob, indexer] = await Promise.all([net.client(), net.client(), net.client()]);
+    await Promise.all([put(alice, "shop", "a"), put(alice, "blog", "not followed"), put(bob, "blog", "b"), put(bob, "shop", "not followed")]);
+    const follow = [`${alice.getAddress()}/shop`, `${bob.getAddress()}/blog`];
+    const s = stitcher(indexer, { follow });
+    await s.update();
+    expect((await indexer.stitchHeads(s.stitch)).map((h) => `${h.publisher}/${h.repo}`.toLowerCase()).sort())
+        .toEqual(follow.map((p) => p.toLowerCase()).sort());
+    expect(reposOf({ follow })).toEqual(["shop", "blog"]);
+    expect(reposOf({ follow: ["*"] })).toBe(null);
 });

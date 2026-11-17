@@ -11,6 +11,8 @@
 // Queue them and send in batches through Multicall3 (updateBySig doesn't care who sends it) when that shows up.
 
 import { recoverTypedDataAddress } from "viem";
+import { stitchFilter } from "@fangorn-network/sdk";
+import { patternsOf, reposOf } from "../src/stitcher.js";
 import { UPDATE_TYPES, dataDomain, updateMessage } from "@fangorn-network/sdk/lib/contracts/data-registry/index.js";
 
 export const FANGORN = "https://fangorn.network";
@@ -58,16 +60,18 @@ const fail = (status, message) => Object.assign(new Error(message), { status });
 
 /**
  * POST /publish, `{ repo, record }` with a fangorn.network grant token as the bearer: publishAs, for the grant's
- * holder, into a repo both the app (`config.repos`) and the grant cover. Off unless `config.publishPerDay` is set:
+ * holder, into a repo both the app follows (for that holder) and the grant covers. Off unless `config.publishPerDay` is set:
  * the app pays the gas, so that many publishes per UTC day, across everyone, is what its plan allows. `meta`
  * ({ get, set }) keeps the count, `published:<day>`, which is also the app's usage to bill.
  * Throws an Error with an HTTP `status`.
  */
 export async function publish({ fangorn, config, meta, base = FANGORN, domain }, token, { repo, record } = {}) {
-    if (!config.publishPerDay || !config.repos.includes(repo)) throw fail(404, `this app doesn't publish to "${repo}"`);
+    const names = reposOf(config);
+    if (!config.publishPerDay || (names && !names.includes(repo))) throw fail(404, `this app doesn't publish to "${repo}"`);
     if (!record?.id || !record?.type) throw fail(400, "the body is { repo, record: { id, type, payload } }");
     const grant = await grantOf(token, base).catch((e) => { throw fail(401, e.message); });
     if (!grant.repos?.includes(repo)) throw fail(403, `your grant doesn't cover "${repo}": connect the app again at fangorn.network`);
+    if (!stitchFilter(patternsOf(config))(grant.address, repo)) throw fail(403, `this app doesn't follow ${grant.address}'s "${repo}"`);
     // ponytail: read, then write, so a burst can overshoot the quota by a few. A Durable Object if it must be exact.
     const day = `published:${new Date().toISOString().slice(0, 10)}`, used = (await meta.get(day)) ?? 0;
     if (used >= config.publishPerDay) throw fail(429, `this app's ${config.publishPerDay} publishes for today are used`);

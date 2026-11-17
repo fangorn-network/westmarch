@@ -73,6 +73,7 @@ test("POST /publish: a grant publishes into its holder's repo, within the app's 
         expect(await status(publish(on, "fgn_alice", { ...note("x"), repo: "other" }))).toBe(404); // granted, not this app's
         expect(await status(publish(at({ repos: ["notes", "x"], publishPerDay: 9 }), "fgn_alice", { ...note("x"), repo: "x" }))).toBe(403); // the app's, not granted
         expect(await status(publish(at({ repos: ["notes"] }), "fgn_alice", note("x")))).toBe(404); // publishing off
+        expect(await status(publish(at({ follow: ["0x0000000000000000000000000000000000000001/notes"], publishPerDay: 9 }), "fgn_alice", note("x")))).toBe(403); // the app follows someone else's "notes"
 
         await publish(on, "fgn_alice", note("b"));
         expect(await status(publish(on, "fgn_alice", note("c")))).toBe(429);

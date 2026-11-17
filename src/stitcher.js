@@ -6,10 +6,18 @@ import { stitchFilter } from "@fangorn-network/sdk";
 import { fangornStore } from "./store.js";
 
 /**
- * Every `publisher/repo` pair, as stitch patterns. Without `publishers`, the bare repo names: that repo
+ * The stitch patterns (see the SDK's stitchFilter): `follow` as given (`publisher/repo` pairs, bare repo names…),
+ * else every `publisher/repo` pair of publishers × repos. Without `publishers`, the bare repo names: that repo
  * of EVERY publisher, so a new publisher joins the stitch with no config change (an indexer as a service).
  */
-export const patternsOf = ({ publishers, repos }) => publishers ? publishers.flatMap((p) => repos.map((r) => `${p}/${r}`)) : [...repos];
+export const patternsOf = ({ follow, publishers, repos }) =>
+    follow ?? (publishers ? publishers.flatMap((p) => repos.map((r) => `${p}/${r}`)) : [...repos]);
+
+/** The repo names a config follows, or null when a pattern (`*`, a regex) can't be named. */
+export function reposOf(config) {
+    const patterns = patternsOf(config);
+    return patterns.some((p) => p === "*" || p.startsWith("/")) ? null : [...new Set(patterns.map((p) => p.slice(p.indexOf("/") + 1)))];
+}
 
 /**
  * A lens is what the stitcher feeds: `{ apply(changes) }`, called with every followed repo whose head
@@ -17,8 +25,8 @@ export const patternsOf = ({ publishers, repos }) => publishers ? publishers.fla
  * The stitch is saved only after `apply` resolves, so the saved stitch is always what the lens has
  * absorbed; if it throws, the next update hands it the same changes again (so `apply` must be idempotent).
  */
-export function stitcher(fangorn, { publishers, repos }, { store = fangornStore(fangorn), lens } = {}) {
-    const patterns = patternsOf({ publishers, repos });
+export function stitcher(fangorn, config, { store = fangornStore(fangorn), lens } = {}) {
+    const patterns = patternsOf(config);
     let stitch, committed, loaded; // committed: the root last saved
     let running, queued;
 
@@ -80,7 +88,7 @@ export function stitcher(fangorn, { publishers, repos }, { store = fangornStore(
  */
 // ponytail: unfiltered on the RPC side, so it sees the whole network's updates; filter by publisher
 // on-chain (LogFilter takes one) if that stream outgrows the in-memory filter.
-export function watchHeads(fangorn, { publishers, repos }, onUpdate, onError = console.error) {
-    const follows = stitchFilter(patternsOf({ publishers, repos }));
+export function watchHeads(fangorn, config, onUpdate, onError = console.error) {
+    const follows = stitchFilter(patternsOf(config));
     return fangorn.getRegistry().watch({}, (e) => follows(e.publisher, e.repo) && onUpdate(e), onError);
 }

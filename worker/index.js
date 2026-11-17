@@ -14,13 +14,13 @@
 //                        A bearer token reaches the tools as ctx.auth.
 //   anything else        ASSETS (a static site), when bound
 //
-// Bindings: DB (D1), AI (Workers AI), ASSETS?, CONFIG (a JSON var: repos, publishers?, network, publishView?, name?,
-// publishPerDay?),
+// Bindings: DB (D1), AI (Workers AI), ASSETS?, CONFIG (a JSON var: follow (publisher/repo pairs) or repos and publishers?,
+// network, publishView?, name?, publishPerDay?),
 // and the secret INDEXER_KEY: it signs the stitch blocks' uploads and the view's commits, and pays their gas.
 
 import { Fangorn, FangornConfig, SupportedNetworks } from "@fangorn-network/sdk";
 import { DOCUMENT, QUERY, matryoshka } from "../src/gemma.js";
-import { stitcher } from "../src/stitcher.js";
+import { reposOf, stitcher } from "../src/stitcher.js";
 import { d1Index } from "../src/d1.js";
 import { publishView } from "../src/view.js";
 import { mcpCall } from "./mcp.js";
@@ -43,8 +43,9 @@ export async function update(env, log = console.log) {
     const registry = fangorn.getRegistry(), head = await registry.clock(), checked = await index.getMeta("checked");
     // The gate: restitching uploads a new stitch whenever ANY repo on the network moved, so first ask the chain,
     // filtered by repo name, whether one we follow did. (With publishers named, every run restitches.)
-    let moved = checked == null || config.publishers;
-    for (const repo of moved ? [] : config.repos)
+    const names = reposOf(config);
+    let moved = checked == null || config.publishers || !names;
+    for (const repo of moved ? [] : names)
         if ((await registry.log({ repo }, BigInt(checked) + 1n, head)).length) { moved = true; break; }
     if (moved) log(`root ${await stitcher(fangorn, config, { store: index.store, lens: index.lens }).update()}`);
     await index.setMeta("checked", head.toString());
