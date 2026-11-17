@@ -88,7 +88,15 @@ export function indexer({ name, instructions, tools = [] } = {}) {
             if (url.pathname === "/view.json") {
                 const s = await index.getMeta("stitch");
                 if (!s) return json({ error: "not indexed yet" }, 404);
-                return json({ root: s.root, stitch: s.stitch, gateway, records: await index.rows() });
+                // The view only changes with the root: cached at the edge under it, so every row is read once per root per
+                // Cloudflare location, and never stale. s-maxage is for that cache; browsers ask again each time.
+                // ponytail: the Cache API is a no-op on *.workers.dev, so there every request still reads every row.
+                const key = new Request(`${url.origin}/view.json?root=${s.root}`), hit = await caches.default.match(key);
+                if (hit) return hit;
+                const res = json({ root: s.root, stitch: s.stitch, gateway, records: await index.rows() });
+                res.headers.set("cache-control", "public, s-maxage=31536000, max-age=0");
+                await caches.default.put(key, res.clone());
+                return res;
             }
             if (url.pathname === "/mcp") {
                 if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
