@@ -1,0 +1,413 @@
+# The westmarch Worker API as OpenAPI 3.1. worker/API.md is the reference; keep the two in step.
+openapi: 3.1.0
+info:
+  title: westmarch Worker API
+  version: 0.4.0
+  description: |
+    Every westmarch Worker deployment serves this API. Apps differ only in their `CONFIG` (see worker/API.md):
+    which repos the Worker follows, on which network, what it calls itself and the record types it documents.
+    A UI is built against this API with a base URL; no app code runs in the Worker.
+
+    Every response carries `access-control-allow-origin: *`. A payload's `src` is a CID in storage, served at
+    `<gateway>/ipfs/<src>`; `payload.mime`, when present, is the file's media type, and a file without `mime` is JSON.
+  license:
+    name: see LICENSE.md
+servers:
+  - url: https://{app}.fangorn.network
+    variables:
+      app:
+        default: internet-slop-warehouse
+        description: The app's name in the ops repo's apps.json
+
+tags:
+  - name: index
+    description: Reading what the deployment has indexed
+  - name: publishing
+    description: Publishing into a person's own repo, on their grant
+  - name: mcp
+    description: The same, for agents
+
+paths:
+  /api.json:
+    get:
+      tags: [index]
+      operationId: getManifest
+      summary: What this deployment is and how to use it
+      description: So a UI needs to hard-code only the base URL. `/api.json` rather than `/`, so an app's static site keeps `/`.
+      responses:
+        "200":
+          description: The deployment
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Manifest" }
+              example:
+                name: internet slop warehouse
+                network: baseSepolia
+                gateway: https://ipfs-test.fangorn.network
+                repos: [internet-slop-warehouse]
+                types: { game: a self-contained HTML page, asset: "a file, with mime" }
+                publish: true
+                mcp: https://internet-slop-warehouse.fangorn.network/mcp
+                connect: https://fangorn.network/#/connect?app=https%3A%2F%2Finternet-slop-warehouse.fangorn.network&repos=internet-slop-warehouse&name=internet+slop+warehouse&mcp=https%3A%2F%2Finternet-slop-warehouse.fangorn.network%2Fmcp
+
+  /view.json:
+    get:
+      tags: [index]
+      operationId: getView
+      summary: The whole index
+      responses:
+        "200":
+          description: Every record, the stitch it was built from, and the gateway
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/View" }
+        "404":
+          description: Not indexed yet; the first cron run (within a minute of deploying) hasn't finished
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /search:
+    get:
+      tags: [index]
+      operationId: search
+      summary: Records by meaning
+      description: The query is embedded with the same model as the rows.
+      parameters:
+        - name: q
+          in: query
+          description: What to look for, in your own words. Empty or missing returns `[]`.
+          schema: { type: string }
+        - name: k
+          in: query
+          description: How many results
+          schema: { type: integer, minimum: 1, maximum: 50, default: 10 }
+        - name: type
+          in: query
+          description: Only rows of this type
+          schema: { type: string }
+      responses:
+        "200":
+          description: Best first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Hit" }
+
+  /publish:
+    options:
+      tags: [publishing]
+      operationId: publishPreflight
+      summary: CORS preflight
+      responses:
+        "200": { description: Allowed methods and headers }
+    post:
+      tags: [publishing]
+      operationId: publish
+      summary: Publish a record into the bearer's own repo
+      description: |
+        The Worker builds the commit, fangorn.network signs it with the bearer's wallet (if their grant covers the repo),
+        and the Worker relays it and pays the gas. It answers once the record has been read back from the chain at its
+        new `cid`.
+      security:
+        - grant: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PublishRequest" }
+            example:
+              repo: internet-slop-warehouse
+              record:
+                id: cubes
+                type: game
+                payload:
+                  title: Cubes
+                  parent: { id: cube }
+                  uses: [{ publisher: "0xabc0000000000000000000000000000000000000", id: orbit }]
+              file: { json: { html: "<!doctype html>…" } }
+              pin: [parent, uses]
+      responses:
+        "200":
+          description: Published and read back
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublishResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotPublishing" }
+        "429": { $ref: "#/components/responses/QuotaUsed" }
+        "502": { $ref: "#/components/responses/Upstream" }
+
+  /mcp:
+    options:
+      tags: [mcp]
+      operationId: mcpPreflight
+      summary: CORS preflight
+      responses:
+        "200": { description: Allowed methods and headers }
+    post:
+      tags: [mcp]
+      operationId: mcp
+      summary: MCP over streamable HTTP, stateless
+      description: |
+        One JSON-RPC 2.0 message per POST, answered with one JSON body. Methods: `initialize`, `ping`, `tools/list`,
+        `tools/call`. Tools: `search`, `repos`, `get` and `publish`; their arguments are `SearchArgs`, none,
+        `GetArgs` and `PublishRequest`. A tool's failure is a result with `isError: true`, not a JSON-RPC error.
+        Only `publish` needs the bearer. Add it to a client with `claude mcp add --transport http <name> <base>/mcp`.
+      security:
+        - {}
+        - grant: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonRpcRequest" }
+            example:
+              jsonrpc: "2.0"
+              id: 1
+              method: tools/call
+              params: { name: search, arguments: { query: a forest walk in the snow, type: game, k: 5 } }
+      responses:
+        "200":
+          description: The answer to a request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JsonRpcResponse" }
+        "202":
+          description: A notification (no `id`); empty body
+        "400":
+          description: Not JSON (-32700), or a batch (-32600)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JsonRpcResponse" }
+        "405":
+          description: Not a POST
+          content:
+            text/plain:
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    grant:
+      type: http
+      scheme: bearer
+      description: |
+        A fangorn.network grant token. A person gets one at the deployment's `connect` URL (see the Manifest): it lets
+        the app publish to the listed repos of their account, on their signature. The Worker never holds their keys.
+
+  responses:
+    BadRequest:
+      description: Malformed body, `type` not in the app's types, a file over 5 MB, or a pinned record that doesn't exist
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: No bearer, or fangorn.network doesn't recognize it
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: The grant doesn't cover `repo`, or the app doesn't follow the bearer's `repo`
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotPublishing:
+      description: Publishing is off (no `publishPerDay`), or `repo` isn't one of the app's
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    QuotaUsed:
+      description: Today's `publishPerDay` is used up
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Upstream:
+      description: Storage, signing or the chain failed. Safe to retry.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Address:
+      type: string
+      pattern: "^0x[0-9a-fA-F]{40}$"
+
+    Manifest:
+      description:
+      type: object
+      required: [name, network, gateway, repos, types, publish, mcp]
+      properties:
+        name: { type: string }
+        network: { type: string }
+        gateway: { type: string, format: uri, description: "Files are at <gateway>/ipfs/<src>" }
+        repos: { type: array, items: { type: string }, description: The app's repos }
+        types:
+          type: object
+          additionalProperties: { type: string }
+          description: The app's record types and what each one is; `{}` when it documents none
+        publish: { type: boolean, description: Whether publishing is on }
+        mcp: { type: string, format: uri }
+        connect:
+          type: string
+          format: uri
+          description: Present when `publish`. fangorn.network's connect page; names the API's own origin as the app, so a grant matches the API that uses it.
+
+    View:
+      type: object
+      required: [root, stitch, gateway, records]
+      properties:
+        root: { type: string }
+        stitch: { type: string, description: "CID of the stitch the rows were built from; checkable with verifyStitch" }
+        gateway: { type: string, format: uri }
+        records: { type: array, items: { $ref: "#/components/schemas/Row" } }
+
+    Row:
+      description: A record as indexed
+      type: object
+      required: [publisher, repo, id, cid, type, payload]
+      properties:
+        publisher: { $ref: "#/components/schemas/Address" }
+        repo: { type: string }
+        id: { type: string }
+        cid: { type: string, description: The version indexed }
+        type: { type: string }
+        payload:
+          type: object
+          description: The record's data. `src` and `mime` describe its file, if it has one.
+          properties:
+            src: { type: string }
+            mime: { type: string }
+
+    Hit:
+      allOf:
+        - $ref: "#/components/schemas/Row"
+        - type: object
+          required: [score]
+          properties:
+            score: { type: number, description: Similarity to the query, higher is closer }
+
+    Record:
+      description: A Row read live from Fangorn (the `get` tool's result)
+      allOf:
+        - $ref: "#/components/schemas/Row"
+        - type: object
+          properties:
+            url: { type: string, format: uri, description: "<gateway>/ipfs/<src>, when the payload has a src" }
+            file: { description: "The file, parsed, when it's JSON (no mime, or application/json) and at most 5 MB" }
+
+    Reference:
+      type: object
+      required: [id]
+      properties:
+        publisher: { $ref: "#/components/schemas/Address", description: "Default: the bearer" }
+        repo: { type: string, description: "Default: the repo being published to" }
+        id: { type: string }
+
+    PinnedReference:
+      type: object
+      required: [publisher, repo, id, cid, type]
+      properties:
+        publisher: { $ref: "#/components/schemas/Address" }
+        repo: { type: string }
+        id: { type: string }
+        cid: { type: string, description: The version that was current when it was pinned }
+        type: { type: string }
+
+    File:
+      description: Uploaded before the record; its CID becomes `payload.src`. At most 5 MB decoded.
+      oneOf:
+        - title: JSON
+          type: object
+          required: [json]
+          properties:
+            json: { description: "Stored as JSON, without mime" }
+          additionalProperties: false
+        - title: Bytes
+          type: object
+          required: [base64, mime]
+          properties:
+            base64: { type: string, contentEncoding: base64 }
+            mime: { type: string, description: Set as `payload.mime` }
+          additionalProperties: false
+
+    PublishRequest:
+      type: object
+      required: [record]
+      properties:
+        repo: { type: string, description: "One of the app's repos. May be left out when the app has exactly one" }
+        record:
+          type: object
+          required: [id, type]
+          properties:
+            id: { type: string, description: Publishing an existing id replaces it }
+            type: { type: string, description: "One of the app's types, when it documents any" }
+            payload: { type: object }
+        file: { $ref: "#/components/schemas/File" }
+        pin:
+          type: array
+          items: { type: string }
+          description: |
+            Top-level payload keys whose values are References, or arrays of them. Each is replaced by the
+            PinnedReference to that record's current version.
+
+    PublishResult:
+      type: object
+      required: [publisher, repo, id, type, cid, txHash]
+      properties:
+        publisher: { $ref: "#/components/schemas/Address" }
+        repo: { type: string }
+        id: { type: string }
+        type: { type: string }
+        cid: { type: string, description: The record's new version }
+        src: { type: string, description: "The file's CID, when a file was sent" }
+        txHash: { type: string }
+
+    SearchArgs:
+      description: The `search` tool's arguments
+      type: object
+      required: [query]
+      properties:
+        query: { type: string }
+        type: { type: string, description: "With the app's types set, an enum of their keys" }
+        k: { type: integer, minimum: 1, maximum: 50, default: 10 }
+
+    GetArgs:
+      description: The `get` tool's arguments; it returns a Record
+      type: object
+      required: [publisher, repo, id]
+      properties:
+        publisher: { $ref: "#/components/schemas/Address" }
+        repo: { type: string }
+        id: { type: string }
+
+    JsonRpcRequest:
+      type: object
+      required: [jsonrpc, method]
+      properties:
+        jsonrpc: { const: "2.0" }
+        id: { type: [string, integer], description: "Absent for a notification" }
+        method: { type: string, enum: [initialize, ping, tools/list, tools/call, notifications/initialized] }
+        params: { type: object }
+
+    JsonRpcResponse:
+      type: object
+      required: [jsonrpc, id]
+      properties:
+        jsonrpc: { const: "2.0" }
+        id: { type: [string, integer, "null"] }
+        result: { type: object }
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: integer }
+            message: { type: string }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, description: What went wrong, for a person to read }

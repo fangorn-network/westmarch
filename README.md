@@ -70,10 +70,12 @@ claude mcp add fangorn-sandbox -- node "$PWD/src/mcp.js" "$PWD/.sandbox/app.json
 
 The same indexer as one Worker, configured by its `CONFIG` var: what it follows, on which network, and where it publishes its view. One codebase, many deployments at different levels: fangorn.network follows repos across publishers to make them discoverable, while an app follows its own repos to index the records inside them.
 
+Every deployment serves the same API, specified in **[worker/API.md](worker/API.md)**: config, HTTP endpoints, MCP tools and errors. Build a UI against it with only a base URL.
+
 - **Cron, every minute.** One log read, filtered by repo name on chain, asks whether any followed repo moved. If one did, the Worker restitches from the saved stitch ([src/stitcher.js](src/stitcher.js)) into D1 ([src/d1.js](src/d1.js)). Records land without vectors, and Workers AI (EmbeddingGemma-300m, the model the local index uses) embeds up to 100 of them per run.
 - **Publishing the view.** With `CONFIG.publishView`, each new root's view also goes to Fangorn: storage, plus a `view` record in that repo. A static page hosted anywhere finds it on chain, and anyone can check its stitch with `verifyStitch`.
 - **`GET /view.json`** is the view. **`GET /search?q=`** ranks records by meaning, embedding the query with the same model, so a page needs no in-browser model. Everything else goes to `ASSETS` when one is bound (an app's static site).
-- **`POST /mcp`** is MCP over streamable HTTP, stateless: `claude mcp add --transport http <name> https://<worker>/mcp`. Its tools are `search`, `repos` and `get`.
+- **`POST /mcp`** is MCP over streamable HTTP, stateless: `claude mcp add --transport http <name> https://<worker>/mcp`. Its tools are `search`, `repos`, `get` (which inlines a record's JSON file) and, where the app publishes, `publish`.
 - **`INDEXER_KEY`** (a secret) signs the stitch blocks the Worker uploads and the view commits, and pays their gas.
 
 Deploy it as is, with no code: copy [worker/wrangler.example.json](worker/wrangler.example.json) into a project that depends on westmarch, then:

@@ -4,18 +4,21 @@
 //   cron (every minute)  one filtered log read: did any followed repo move? If so, restitch from the saved
 //                        stitch (src/stitcher.js) into D1 (src/d1.js). Then embed rows that have no vector yet,
 //                        with Workers AI, a bounded batch per run.
+// The API every deployment serves is specified in worker/API.md (and worker/openapi.yaml).
+//
+//   GET /api.json        what this deployment is: name, network, gateway, repos, types, mcp, and the connect URL
 //   GET /view.json       the view: every record, the stitch, the gateway
 //                        With CONFIG.publishView, each new root's view also goes to Fangorn (storage, and a `view`
 //                        record in that repo), so a static page hosted anywhere finds it on chain.
-//   GET /search?q=&k=    records by meaning: the query embedded here, by the same model as the rows
-//   POST /publish        { repo, record } into the bearer's own repo, on their fangorn.network grant; the app pays the
+//   GET /search?q=&k=&type=  records by meaning: the query embedded here, by the same model as the rows
+//   POST /publish        { repo?, record, file?, pin? } into the bearer's own repo, on their fangorn.network grant; the app pays the
 //                        gas, up to CONFIG.publishPerDay a day (unset: off). See worker/publisher.js.
-//   POST /mcp            search, repos, get, and the app's tools (streamable HTTP, stateless): add the URL to a client.
+//   POST /mcp            search, repos, get, publish, and the app's tools (streamable HTTP, stateless): add the URL to a client.
 //                        A bearer token reaches the tools as ctx.auth.
 //   anything else        ASSETS (a static site), when bound
 //
 // Bindings: DB (D1), AI (Workers AI), ASSETS?, CONFIG (a JSON var: follow (publisher/repo pairs) or repos and publishers?,
-// network, publishView?, name?, publishPerDay?),
+// network, publishView?, name?, publishPerDay?, instructions?, types?),
 // and the secret INDEXER_KEY: it signs the stitch blocks' uploads and the view's commits, and pays their gas.
 
 import { Fangorn, FangornConfig, SupportedNetworks } from "@fangorn-network/sdk";
@@ -23,8 +26,8 @@ import { DOCUMENT, QUERY, matryoshka } from "../src/gemma.js";
 import { reposOf, stitcher } from "../src/stitcher.js";
 import { d1Index } from "../src/d1.js";
 import { publishView } from "../src/view.js";
-import { mcpCall } from "./mcp.js";
-import { publish } from "./publisher.js";
+import { mcpCall, BASE } from "./mcp.js";
+import { publish, FANGORN } from "./publisher.js";
 
 const AI_MODEL = "@cf/google/embeddinggemma-300m"; // EmbeddingGemma-300m, as src/embed.js runs it locally
 const EMBED_PER_RUN = 100;
@@ -37,6 +40,15 @@ const encode = (env, prompt) => async (texts) =>
     (await env.AI.run(AI_MODEL, { text: texts.map((t) => prompt + t) })).data.map((v) => matryoshka(v));
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type, authorization, mcp-protocol-version", "access-control-allow-methods": "POST" };
 const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json", "access-control-allow-origin": "*" } });
+
+/** GET /api.json: what this deployment is and how to use it (worker/API.md, Manifest). `origin` is the API's own. */
+export function manifest(config, { origin, gateway, name }) {
+    const repos = reposOf(config) ?? [], publish = Boolean(config.publishPerDay), mcp = `${origin}/mcp`;
+    return {
+        name, network: config.network ?? "baseSepolia", gateway, repos, types: config.types ?? {}, publish, mcp,
+        ...(publish && { connect: `${FANGORN}/#/connect?${new URLSearchParams({ app: origin, repos: repos.join(","), name, mcp })}` }),
+    };
+}
 
 export async function update(env, log = console.log) {
     const config = env.CONFIG, fangorn = fangornOf(env), index = d1Index({ db: env.DB, fangorn });
@@ -70,6 +82,9 @@ export function indexer({ name, instructions, tools = [] } = {}) {
 
         async fetch(req, env) {
             const url = new URL(req.url), index = d1Index({ db: env.DB }), gateway = networkOf(env).ipfsGateway;
+            const config = env.CONFIG, appName = name ?? config.name ?? "westmarch", meta = { get: index.getMeta, set: index.setMeta };
+            const info = () => manifest(config, { origin: url.origin, gateway, name: appName });
+            if (url.pathname === "/api.json") return json(info());
             if (url.pathname === "/view.json") {
                 const s = await index.getMeta("stitch");
                 if (!s) return json({ error: "not indexed yet" }, 404);
@@ -81,12 +96,15 @@ export function indexer({ name, instructions, tools = [] } = {}) {
                 let msg;
                 try { msg = await req.json(); } catch { return json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "not JSON" } }, 400); }
                 if (Array.isArray(msg)) return json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "one message per request" } }, 400);
+                const fangorn = fangornOf(env), told = instructions ?? config.instructions;
                 const answer = await mcpCall({
-                    index, fangorn: fangornOf(env), gateway, env, origin: url.origin,
+                    index, fangorn, gateway, env, origin: url.origin,
                     auth: req.headers.get("authorization")?.match(/^Bearer\s+(\S+)/i)?.[1],
                     query: async (q) => (await encode(env, QUERY)([q]))[0],
-                    name: name ?? env.CONFIG.name ?? "westmarch",
-                    instructions: typeof instructions === "function" ? instructions(gateway) : instructions,
+                    name: appName,
+                    instructions: typeof told === "function" ? told(gateway) : told?.replaceAll("{gateway}", gateway),
+                    types: config.types,
+                    ...(config.publishPerDay && { publish: (token, body) => publish({ fangorn, config, meta }, token, body), connect: info().connect }),
                     tools,
                 }, msg);
                 return answer ? json(answer) : new Response(null, { status: 202, headers: { "access-control-allow-origin": "*" } });
@@ -97,16 +115,14 @@ export function indexer({ name, instructions, tools = [] } = {}) {
                 const token = req.headers.get("authorization")?.match(/^Bearer\s+(\S+)/i)?.[1];
                 if (!token) return json({ error: "a fangorn.network grant token is the bearer" }, 401);
                 const body = await req.json().catch(() => null);
-                const meta = { get: index.getMeta, set: index.setMeta };
-                try { return json(await publish({ fangorn: fangornOf(env), config: env.CONFIG, meta }, token, body ?? {})); }
+                try { return json(await publish({ fangorn: fangornOf(env), config, meta }, token, body ?? {})); }
                 catch (e) { return json({ error: e.message }, e.status ?? 502); }
             }
             if (url.pathname === "/search") {
                 const q = url.searchParams.get("q")?.trim();
                 if (!q) return json([]);
-                const k = Math.min(Number(url.searchParams.get("k")) || 10, 50);
-                const [vec] = await encode(env, QUERY)([q]);
-                return json(await index.search(vec, { k }));
+                const query = async (text) => (await encode(env, QUERY)([text]))[0];
+                return json(await BASE.search.run({ query: q, k: url.searchParams.get("k"), type: url.searchParams.get("type") || undefined }, { index, query }));
             }
             return env.ASSETS ? env.ASSETS.fetch(req) : new Response("not found", { status: 404 });
         },
