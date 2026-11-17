@@ -80,3 +80,40 @@ test("POST /publish: a grant publishes into its holder's repo, within the app's 
         expect([...meta.values()]).toEqual([2]); // usage per UTC day: what the app is billed on
     } finally { restore(); }
 });
+
+test("POST /publish: the repo by default, types checked, a file uploaded as src, references pinned", async () => {
+    const net = memoryNetwork(), app = await net.client(), alice = privateKeyToAccount(generatePrivateKey());
+    const meta = new Map(), restore = fakeFangornNetwork(alice, ["parts"]);
+    const on = { fangorn: app, config: { repos: ["parts"], publishPerDay: 9, types: { game: "g", asset: "a" } }, meta: { get: async (k) => meta.get(k), set: async (k, v) => meta.set(k, v) }, base: "https://f", domain: MEM_DOMAIN };
+    const status = (p) => p.then(() => 200, (e) => e.status);
+    const text = async (src) => new TextDecoder().decode(await app.getStorage().getFile(src));
+    try {
+        // no repo: the app's only one; a JSON file becomes payload.src, without mime
+        const cube = await publish(on, "fgn_alice", { record: { id: "cube", type: "game", payload: { title: "cube", mime: "x/y" } }, file: { json: { html: "<p>cube</p>" } } });
+        expect(cube).toMatchObject({ repo: "parts", id: "cube", src: expect.any(String) });
+        const c = await app.engine.readRecord(alice.address, "parts", "cube");
+        expect(c.payload).toEqual({ title: "cube", src: cube.src });
+        expect(JSON.parse(await text(cube.src))).toEqual({ html: "<p>cube</p>" });
+
+        // bytes keep their mime
+        const orb = await publish(on, "fgn_alice", { record: { id: "orb", type: "asset", payload: {} }, file: { base64: btoa("\x01\x02"), mime: "model/gltf-binary" } });
+        expect((await app.engine.readRecord(alice.address, "parts", "orb")).payload).toEqual({ src: orb.src, mime: "model/gltf-binary" });
+
+        // references pinned to the version current now: one, and a list
+        const cubes = await publish(on, "fgn_alice", { record: { id: "cubes", type: "game", payload: { parent: { id: "cube" }, uses: [{ id: "orb" }, { publisher: alice.address, repo: "parts", id: "cube" }] } }, pin: ["parent", "uses", "absent"] });
+        const p = (await app.engine.readRecord(alice.address, "parts", "cubes")).payload, me = alice.address.toLowerCase();
+        expect(p.parent).toEqual({ publisher: me, repo: "parts", id: "cube", cid: cube.cid, type: "game" });
+        expect(p.uses).toEqual([{ publisher: me, repo: "parts", id: "orb", cid: orb.cid, type: "asset" }, p.parent]);
+        expect(p.absent).toBeUndefined();
+        expect(cubes.src).toBeUndefined();
+
+        expect(await status(publish(on, "fgn_alice", { record: { id: "x", type: "memo" } }))).toBe(400); // not one of types
+        expect(await status(publish(on, "fgn_alice", { record: { id: "x", type: "game", payload: { parent: { id: "nope" } } }, pin: ["parent"] }))).toBe(400);
+        expect(await status(publish(on, "fgn_alice", { record: { id: "x", type: "game" }, file: { base64: "!!", mime: "a/b" } }))).toBe(400);
+        expect(await status(publish(on, "fgn_alice", { record: { id: "x", type: "game" }, file: { base64: "AA==" } }))).toBe(400); // bytes need mime
+        expect(await status(publish(on, "fgn_alice", { record: { id: "x", type: "game" }, file: { json: "x".repeat(5 * 1024 * 1024) } }))).toBe(400);
+        expect(await status(publish(on, "fgn_alice", { record: { id: "x", type: "game" }, pin: "parent" }))).toBe(400);
+        expect(await status(publish({ ...on, config: { repos: ["parts", "more"], publishPerDay: 9 } }, "fgn_alice", { record: { id: "x", type: "game" } }))).toBe(404); // two repos: name one
+        expect([...meta.values()]).toEqual([3]); // refused publishes aren't counted
+    } finally { restore(); }
+});

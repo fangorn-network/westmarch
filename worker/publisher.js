@@ -58,24 +58,82 @@ export async function publishAs({ fangorn, owner, sign, domain }, repo, record) 
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 
+export const MAX_FILE = 5 * 1024 * 1024; // ponytail: base64 through one JSON body; signed uploads straight to storage past this
+
+/** A publish's `file` → its bytes, or a 400. `{ json }` is stored as JSON, `{ base64, mime }` as the bytes. */
+function bytesOf(file) {
+    let bytes;
+    if (file && typeof file === "object" && "json" in file) bytes = new TextEncoder().encode(JSON.stringify(file.json));
+    else if (typeof file?.base64 === "string" && typeof file.mime === "string" && file.mime) {
+        try { bytes = Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0)); } catch { throw fail(400, "file.base64 isn't base64"); }
+    } else throw fail(400, "file is { json } or { base64, mime }");
+    if (bytes.length > MAX_FILE) throw fail(400, `files are up to ${MAX_FILE >> 20} MB`);
+    return bytes;
+}
+
 /**
- * POST /publish, `{ repo, record }` with a fangorn.network grant token as the bearer: publishAs, for the grant's
- * holder, into a repo both the app follows (for that holder) and the grant covers. Off unless `config.publishPerDay` is set:
- * the app pays the gas, so that many publishes per UTC day, across everyone, is what its plan allows. `meta`
- * ({ get, set }) keeps the count, `published:<day>`, which is also the app's usage to bill.
+ * The payload with each `pin` key's reference ({ publisher?, repo?, id }, or an array of them) replaced by that record
+ * at its current version: { publisher, repo, id, cid, type }. One head and one state read per repo, however many
+ * references it holds (a Worker run has few subrequests). A reference to nothing is a 400.
+ */
+async function pinned(fangorn, payload, pin, { owner, repo }) {
+    const repos = new Map();
+    const stateOf = (publisher, name) => {
+        const key = `${publisher.toLowerCase()}/${name}`;
+        if (!repos.has(key)) repos.set(key, (async () => {
+            const head = await fangorn.engine.resolveHeadCommit(publisher, name)
+                .catch((e) => { if (/has no on-chain commits/.test(e?.message)) return null; throw e; });
+            return head && { head, state: (await fangorn.engine.stateAt(head)).state };
+        })());
+        return repos.get(key);
+    };
+    const one = async (ref) => {
+        if (typeof ref?.id !== "string") throw fail(400, "a pinned reference is { publisher?, repo?, id }");
+        const publisher = ref.publisher ?? owner, name = ref.repo ?? repo, at = await stateOf(publisher, name), cid = at?.state.get(ref.id);
+        if (!cid) throw fail(400, `no record ${publisher}/${name}/${ref.id} to pin`);
+        const record = await fangorn.engine.decodeRecord(ref.id, cid, at.head);
+        return { publisher: publisher.toLowerCase(), repo: name, id: ref.id, cid: record.cid ?? cid.toString(), type: record.type };
+    };
+    const out = { ...payload };
+    for (const key of pin) {
+        if (out[key] == null) continue;
+        out[key] = Array.isArray(out[key]) ? await Promise.all(out[key].map(one)) : await one(out[key]);
+    }
+    return out;
+}
+
+/**
+ * POST /publish, `{ repo?, record, file?, pin? }` with a fangorn.network grant token as the bearer: publishAs, for
+ * the grant's holder, into a repo both the app follows (for that holder) and the grant covers. Off unless
+ * `config.publishPerDay` is set: the app pays the gas, so that many publishes per UTC day, across everyone, is what its
+ * plan allows. `meta` ({ get, set }) keeps the count, `published:<day>`, which is also the app's usage to bill.
+ * `file` goes to storage as `payload.src`; `pin` names payload keys whose references are pinned. See worker/API.md.
  * Throws an Error with an HTTP `status`.
  */
-export async function publish({ fangorn, config, meta, base = FANGORN, domain }, token, { repo, record } = {}) {
+export async function publish({ fangorn, config, meta, base = FANGORN, domain }, token, { repo, record, file, pin = [] } = {}) {
     const names = reposOf(config);
-    if (!config.publishPerDay || (names && !names.includes(repo))) throw fail(404, `this app doesn't publish to "${repo}"`);
-    if (!record?.id || !record?.type) throw fail(400, "the body is { repo, record: { id, type, payload } }");
+    repo ??= names?.length === 1 ? names[0] : undefined;
+    if (!config.publishPerDay || (names && !names.includes(repo))) throw fail(404, repo ? `this app doesn't publish to "${repo}"` : `name the repo: one of ${names?.join(", ") ?? "the app's"}`);
+    if (typeof record?.id !== "string" || typeof record?.type !== "string" || !record.id || !record.type)
+        throw fail(400, "the body is { repo, record: { id, type, payload }, file?, pin? }");
+    if (config.types && !Object.hasOwn(config.types, record.type)) throw fail(400, `type is one of ${Object.keys(config.types).join(", ")}`);
+    if (!Array.isArray(pin) || !pin.every((k) => typeof k === "string")) throw fail(400, "pin is a list of payload keys");
+    const bytes = file === undefined ? null : bytesOf(file);
     const grant = await grantOf(token, base).catch((e) => { throw fail(401, e.message); });
     if (!grant.repos?.includes(repo)) throw fail(403, `your grant doesn't cover "${repo}": connect the app again at fangorn.network`);
     if (!stitchFilter(patternsOf(config))(grant.address, repo)) throw fail(403, `this app doesn't follow ${grant.address}'s "${repo}"`);
     // ponytail: read, then write, so a burst can overshoot the quota by a few. A Durable Object if it must be exact.
     const day = `published:${new Date().toISOString().slice(0, 10)}`, used = (await meta.get(day)) ?? 0;
     if (used >= config.publishPerDay) throw fail(429, `this app's ${config.publishPerDay} publishes for today are used`);
-    const out = await publishAs({ fangorn, owner: grant.address, sign: signerFor(token, base), domain }, repo, record);
+
+    const payload = await pinned(fangorn, record.payload ?? {}, pin, { owner: grant.address, repo });
+    if (bytes) {
+        const json = "json" in file;
+        payload.src = await fangorn.getStorage().putFile(bytes, json ? `${record.id}.json` : record.id);
+        if (json) delete payload.mime; // a file without mime is JSON
+        else payload.mime = file.mime;
+    }
+    const out = await publishAs({ fangorn, owner: grant.address, sign: signerFor(token, base), domain }, repo, { ...record, payload });
     await meta.set(day, used + 1);
-    return out;
+    return bytes ? { ...out, src: payload.src } : out;
 }
