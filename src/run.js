@@ -56,8 +56,8 @@ function writeView(file, view) {
 /** A config file, checked. */
 export function readConfig(file) {
     const config = JSON.parse(readFileSync(file, "utf8"));
-    for (const k of ["publishers", "repos"])
-        if ((k === "repos" || k in config) && (!Array.isArray(config[k]) || !config[k].length)) throw new Error(`${file}: "${k}" must be a non-empty array`);
+    for (const k of ["follow", "publishers", "repos"])
+        if ((k === "repos" && !config.follow || k in config) && (!Array.isArray(config[k]) || !config[k].length)) throw new Error(`${file}: "${k}" must be a non-empty array`);
     return config;
 }
 

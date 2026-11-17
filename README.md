@@ -85,7 +85,7 @@ wrangler deploy
 node -e 'import("viem/accounts").then(m => process.stdout.write(m.generatePrivateKey()))' | wrangler secret put INDEXER_KEY   # then fund its address
 ```
 
-The seed is a local index's stitch and records, without vectors. It saves the Worker its first catch-up over the whole update log, which takes more requests than one run is allowed.
+The seed is a local index's stitch and records, without vectors. It saves the Worker its first catch-up over the whole update log, which takes more requests than one run is allowed. Given a config (`seed.js app.json`) instead of an index, it does that catch-up itself first, embedding nothing. `worker/deploy.sh <name> <config.json>` does all of the above for a new app: D1, seed, deploy, and a funded `INDEXER_KEY`.
 
 An app adds its own MCP tools, or replaces a base one by name, with a Worker of its own:
 

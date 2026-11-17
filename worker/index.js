@@ -8,19 +8,23 @@
 //                        With CONFIG.publishView, each new root's view also goes to Fangorn (storage, and a `view`
 //                        record in that repo), so a static page hosted anywhere finds it on chain.
 //   GET /search?q=&k=    records by meaning: the query embedded here, by the same model as the rows
+//   POST /publish        { repo, record } into the bearer's own repo, on their fangorn.network grant; the app pays the
+//                        gas, up to CONFIG.publishPerDay a day (unset: off). See worker/publisher.js.
 //   POST /mcp            search, repos, get, and the app's tools (streamable HTTP, stateless): add the URL to a client.
 //                        A bearer token reaches the tools as ctx.auth.
 //   anything else        ASSETS (a static site), when bound
 //
-// Bindings: DB (D1), AI (Workers AI), ASSETS?, CONFIG (a JSON var: repos, publishers?, network, publishView?, name?),
+// Bindings: DB (D1), AI (Workers AI), ASSETS?, CONFIG (a JSON var: follow (publisher/repo pairs) or repos and publishers?,
+// network, publishView?, name?, publishPerDay?),
 // and the secret INDEXER_KEY: it signs the stitch blocks' uploads and the view's commits, and pays their gas.
 
 import { Fangorn, FangornConfig, SupportedNetworks } from "@fangorn-network/sdk";
 import { DOCUMENT, QUERY, matryoshka } from "../src/gemma.js";
-import { stitcher } from "../src/stitcher.js";
+import { reposOf, stitcher } from "../src/stitcher.js";
 import { d1Index } from "../src/d1.js";
 import { publishView } from "../src/view.js";
 import { mcpCall } from "./mcp.js";
+import { publish } from "./publisher.js";
 
 const AI_MODEL = "@cf/google/embeddinggemma-300m"; // EmbeddingGemma-300m, as src/embed.js runs it locally
 const EMBED_PER_RUN = 100;
@@ -39,8 +43,9 @@ export async function update(env, log = console.log) {
     const registry = fangorn.getRegistry(), head = await registry.clock(), checked = await index.getMeta("checked");
     // The gate: restitching uploads a new stitch whenever ANY repo on the network moved, so first ask the chain,
     // filtered by repo name, whether one we follow did. (With publishers named, every run restitches.)
-    let moved = checked == null || config.publishers;
-    for (const repo of moved ? [] : config.repos)
+    const names = reposOf(config);
+    let moved = checked == null || config.publishers || !names;
+    for (const repo of moved ? [] : names)
         if ((await registry.log({ repo }, BigInt(checked) + 1n, head)).length) { moved = true; break; }
     if (moved) log(`root ${await stitcher(fangorn, config, { store: index.store, lens: index.lens }).update()}`);
     await index.setMeta("checked", head.toString());
@@ -85,6 +90,16 @@ export function indexer({ name, instructions, tools = [] } = {}) {
                     tools,
                 }, msg);
                 return answer ? json(answer) : new Response(null, { status: 202, headers: { "access-control-allow-origin": "*" } });
+            }
+            if (url.pathname === "/publish") {
+                if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
+                if (req.method !== "POST") return json({ error: "POST { repo, record }" }, 405);
+                const token = req.headers.get("authorization")?.match(/^Bearer\s+(\S+)/i)?.[1];
+                if (!token) return json({ error: "a fangorn.network grant token is the bearer" }, 401);
+                const body = await req.json().catch(() => null);
+                const meta = { get: index.getMeta, set: index.setMeta };
+                try { return json(await publish({ fangorn: fangornOf(env), config: env.CONFIG, meta }, token, body ?? {})); }
+                catch (e) { return json({ error: e.message }, e.status ?? 502); }
             }
             if (url.pathname === "/search") {
                 const q = url.searchParams.get("q")?.trim();
