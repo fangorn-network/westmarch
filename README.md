@@ -68,7 +68,7 @@ claude mcp add fangorn-sandbox -- node "$PWD/src/mcp.js" "$PWD/.sandbox/app.json
 
 ## On Cloudflare: [worker/](worker/)
 
-The same indexer as one Worker, configured by its `CONFIG` var: what it follows, on which network, and where it publishes its view. One codebase, many deployments at different levels: fangorn.network follows repos across publishers to make them discoverable, while an app follows its own repos to index the records inside them.
+The same indexer as one Worker, configured by its `CONFIG` var: what it follows, on which network, and where it publishes its view. One codebase, many deployments at different levels: an app follows its own repos to index the records inside them, while Fangorn's registry follows every repo (`"follow": ["*"]`) to make them discoverable.
 
 Every deployment serves the same API, specified in **[worker/API.md](worker/API.md)**: config, HTTP endpoints, MCP tools and errors. Build a UI against it with only a base URL.
 
@@ -76,6 +76,7 @@ Every deployment serves the same API, specified in **[worker/API.md](worker/API.
 - **Publishing the view.** With `CONFIG.publishView`, each new root's view also goes to Fangorn: storage, plus a `view` record in that repo. A static page hosted anywhere finds it on chain, and anyone can check its stitch with `verifyStitch`.
 - **`GET /view.json`** is the view. **`GET /search?q=`** ranks records by meaning, embedding the query with the same model, so a page needs no in-browser model. Everything else goes to `ASSETS` when one is bound (an app's static site).
 - **`POST /mcp`** is MCP over streamable HTTP, stateless: `claude mcp add --transport http <name> https://<worker>/mcp`. Its tools are `search`, `repos`, `get` (which inlines a record's JSON file) and, where the app publishes, `publish`.
+- **`CONFIG.index: "repos"`** indexes repos instead of records: one row per repo, holding its head and agent card ([src/repos.js](src/repos.js)). The stitch step only writes heads, so it catches up any number of repos in one run; moved repos' cards are re-read up to 50 a run. Its MCP tools are `find`, `repo` and `read`, and `GET /repos?q=&publisher=&k=` lists repos by meaning or newest first. With `"follow": ["*"]` it's Fangorn's registry (served at registry.fangorn.network, and through fangorn.network/mcp). Leave out `publishView` there: the view's own repo is in a `*` stitch, so each publish would trigger the next.
 - **`INDEXER_KEY`** (a secret) signs the stitch blocks the Worker uploads and the view commits, and pays their gas.
 
 Deploy it as is, with no code: copy [worker/wrangler.example.json](worker/wrangler.example.json) into a project that depends on westmarch, then:
@@ -87,7 +88,7 @@ wrangler deploy
 node -e 'import("viem/accounts").then(m => process.stdout.write(m.generatePrivateKey()))' | wrangler secret put INDEXER_KEY   # then fund its address
 ```
 
-The seed is a local index's stitch and records, without vectors. It saves the Worker its first catch-up over the whole update log, which takes more requests than one run is allowed. Given a config (`seed.js app.json`) instead of an index, it does that catch-up itself first, embedding nothing. `worker/deploy.sh <name> <config.json>` does all of the above for a new app: D1, seed, deploy, and a funded `INDEXER_KEY`.
+The seed is a local index's stitch and records, without vectors. It saves the Worker its first catch-up over the whole update log, which takes more requests than one run is allowed. Given a config (`seed.js app.json`) instead of an index, it does that catch-up itself first, embedding nothing. `worker/deploy.sh <name> <config.json>` does all of the above for a new app: D1, seed, deploy, and a funded `INDEXER_KEY`. A repos index isn't seeded: the Worker catches up itself.
 
 An app adds its own MCP tools, or replaces a base one by name, with a Worker of its own:
 
@@ -135,6 +136,7 @@ Without `--watch`, the server only reads `index.db`, and a separate `npm start` 
 | [src/client.js](src/client.js) | creates the SDK client from a config |
 | [src/fold.js](src/fold.js) | `fold`: shared app state, a pure reducer over the update log of the repos a set of patterns follows; resumable, and stoppable at a stitch |
 | [src/d1.js](src/d1.js) / [worker/](worker/) | the index on Cloudflare D1 (store, lens, view, search by meaning), and the Worker that runs it on a cron with Workers AI, its MCP tools, and publishing as a person |
+| [src/repos.js](src/repos.js) | `d1Repos`: the repos index on D1 (one row per repo: head and agent card, re-read a bounded batch per run), `find` and `get` |
 | [src/gemma.js](src/gemma.js) | EmbeddingGemma: the model, the prompts, matryoshka truncation and vector packing |
 | [src/sandbox.js](src/sandbox.js) | the local sandbox: anvil, the contracts, and `storageServer` (the upload worker and gateway, locally) |
 

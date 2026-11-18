@@ -234,6 +234,7 @@ The Worker's `CONFIG` var. In the ops repo, one `apps.json` entry per app, with 
 | `publishPerDay` | integer | no | Publishes per UTC day the app pays gas for, across all publishers. Unset: publishing is off |
 | `name` | string | no | Shown to agents and on the connect page |
 | `instructions` | string | no | Told to agents at MCP `initialize`. `{gateway}` is replaced with the network's IPFS gateway |
+| `index` | string | no | `"repos"`: index repos, not records: one row per repo (head and agent card). MCP tools become `find`, `repo`, `read`, and `GET /repos?q=&publisher=&k=` returns `{ stitch, repos }`. With `follow: ["*"]`, Fangorn's registry. Don't combine with `publishView` and `"*"` (each publish moves the root again) |
 | `types` | object | no | `{ "<type>": "<what a record of this type is>" }`. Documents `type` in `search` and `publish`; when set, `publish` refuses any other type |
 
 ### Manifest

@@ -38,12 +38,13 @@ console.log(JSON.stringify({
 }));
 EOF
 
-node --input-type=module -e 'import { SCHEMA } from "./src/d1.js"; console.log(SCHEMA)' >"$dir/schema.sql"
+node --input-type=module -e 'import { SCHEMA } from "./src/d1.js"; import { SCHEMA as REPOS } from "./src/repos.js"; console.log(SCHEMA + REPOS)' >"$dir/schema.sql"
 wrangler d1 execute "$name" --remote --file "$dir/schema.sql" --config "$dir/wrangler.json" >/dev/null
 # A new database: catch up here and seed it, before the Worker's first run would try to (worker/seed.js).
 stitched=$(wrangler d1 execute "$name" --remote --json --command "SELECT count(*) AS n FROM meta WHERE k = 'stitch'" \
     --config "$dir/wrangler.json" | node -pe 'JSON.parse(require("fs").readFileSync(0))[0].results[0].n')
-if [ "$stitched" = 0 ]; then
+# A repos index isn't seeded: its lens makes no reads, so the Worker's first run catches up itself.
+if [ "$stitched" = 0 ] && [ "$(node -pe 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).index ?? ""' "$config")" != repos ]; then
     node worker/seed.js "$config" >"$dir/seed.sql"
     wrangler d1 execute "$name" --remote --file "$dir/seed.sql" --config "$dir/wrangler.json" >/dev/null
     echo "seeded $name: $(grep -c '^INSERT OR REPLACE INTO records' "$dir/seed.sql") records" >&2
