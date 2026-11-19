@@ -23,8 +23,8 @@
 // own repo is in the stitch, so each publish would move the root and publish again.)
 //
 // Bindings: DB (D1), AI (Workers AI), ASSETS?, CONFIG (a JSON var: follow (publisher/repo pairs) or repos and publishers?,
-// network, publishView?, name?, publishPerDay?, instructions?, types?, index?),
-// and the secret INDEXER_KEY: it signs the stitch blocks' uploads and the view's commits, and pays their gas.
+// network, publishView?, name?, publishPerDay?, instructions?, types?, schema?, rules?, index?), VALIDATOR (a service
+// binding to the app's validator Worker, worker/validator.js) when CONFIG names rules, and the secret INDEXER_KEY: it signs the stitch blocks' uploads and the view's commits, and pays their gas.
 
 import { Fangorn, FangornConfig, SupportedNetworks } from "@fangorn-network/sdk";
 import { DOCUMENT, QUERY, matryoshka } from "../src/gemma.js";
@@ -34,15 +34,20 @@ import { d1Repos } from "../src/repos.js";
 import { publishView } from "../src/view.js";
 import { mcpCall, BASE, REPOS_INSTRUCTIONS } from "./mcp.js";
 import { publish, FANGORN } from "./publisher.js";
+import { checkerOf, fileOf, gatesOf, listOf } from "../src/validate.js";
 
 const AI_MODEL = "@cf/google/embeddinggemma-300m"; // EmbeddingGemma-300m, as src/embed.js runs it locally
 const EMBED_PER_RUN = 100;
+const CHECK_PER_RUN = 25; // each is a file read and a call to the validator Worker: subrequests
 // ponytail: no daily cap; rows are embedded once, so only a flood of publishes could run past Workers AI's free
 // allowance (~30k rows a day). Count rows per UTC day in meta when that's a risk.
 
 export const networkOf = (env) => ({ ...FangornConfig, ...SupportedNetworks[env.CONFIG.network ?? "baseSepolia"] });
-/** The index CONFIG.index names: "repos" (a row per repo: head and card, src/repos.js), else records (src/d1.js). */
-export const indexOf = (env, fangorn) => (env.CONFIG.index === "repos" ? d1Repos : d1Index)({ db: env.DB, fangorn });
+/**
+ * The index CONFIG.index names: "repos" (a row per repo: head and card, src/repos.js), else records (src/d1.js), gated
+ * by `gate` (gatesOf(CONFIG)): with schemas or rules in CONFIG, it serves only records that passed them.
+ */
+export const indexOf = (env, fangorn, gate) => (env.CONFIG.index === "repos" ? d1Repos : d1Index)({ db: env.DB, fangorn, gate });
 export const fangornOf = (env) => Fangorn.create({ privateKey: env.INDEXER_KEY, config: networkOf(env), storage: { signedUrl: {} } });
 const encode = (env, prompt) => async (texts) =>
     (await env.AI.run(AI_MODEL, { text: texts.map((t) => prompt + t) })).data.map((v) => matryoshka(v));
@@ -53,13 +58,13 @@ const json = (v, status = 200) => new Response(JSON.stringify(v), { status, head
 export function manifest(config, { origin, gateway, name }) {
     const repos = reposOf(config) ?? [], publish = Boolean(config.publishPerDay), mcp = `${origin}/mcp`;
     return {
-        name, network: config.network ?? "baseSepolia", gateway, repos, types: config.types ?? {}, publish, mcp,
+        name, network: config.network ?? "baseSepolia", gateway, repos, types: config.types ?? {}, schema: config.schema ?? null, rules: listOf(config.rules), publish, mcp,
         ...(publish && { connect: `${FANGORN}/#/connect?${new URLSearchParams({ app: origin, repos: repos.join(","), name, mcp })}` }),
     };
 }
 
 export async function update(env, log = console.log) {
-    const config = env.CONFIG, fangorn = fangornOf(env), index = indexOf(env, fangorn);
+    const config = env.CONFIG, fangorn = fangornOf(env), gate = await gatesOf(config), index = indexOf(env, fangorn, gate);
     const registry = fangorn.getRegistry(), head = await registry.clock(), checked = await index.getMeta("checked");
     // The gate: restitching uploads a new stitch whenever ANY repo on the network moved, so first ask the chain,
     // filtered by repo name, whether one we follow did. (With publishers named, every run restitches.)
@@ -71,14 +76,22 @@ export async function update(env, log = console.log) {
     await index.setMeta("checked", head.toString());
     const cards = await index.cardsMissing?.();
     if (cards) log(`cards read ${cards}`);
+    // The gate, before embedding: a refused record is never embedded. `verdicts` versions the view along with the root.
+    if (gate) {
+        const checker = await checkerOf(config, env.VALIDATOR);
+        const { checked, refused } = await index.checkMissing((r, c) => checker.check(r, { ...c, file: fileOf(fangorn, r) }), CHECK_PER_RUN);
+        if (checked) { log(`checked ${checked}, refused ${refused}`); await index.setMeta("verdicts", Date.now()); }
+    }
     const n = await index.embedMissing(encode(env, DOCUMENT), EMBED_PER_RUN);
     if (n) log(`embedded ${n}`);
-    // The view to Fangorn, once per root: `published` moves only when it landed, so a failed run retries.
-    const s = await index.getMeta("stitch");
-    if (config.publishView && s && s.root !== await index.getMeta("published")) {
-        const view = { root: s.root, stitch: s.stitch, gateway: networkOf(env).ipfsGateway, records: await index.rows() };
+    // The view to Fangorn, once per root (and per batch of verdicts): `published` moves only when it landed, so a
+    // failed run retries.
+    // ponytail: a backfill under a new checker publishes once a run until it's through; skip while records are unchecked if that gas matters
+    const s = await index.getMeta("stitch"), version = s && `${s.root}:${(await index.getMeta("verdicts")) ?? ""}`;
+    if (config.publishView && s && version !== await index.getMeta("published")) {
+        const view = { root: s.root, stitch: s.stitch, gateway: networkOf(env).ipfsGateway, records: await index.rows(), ...(gate && { refused: await index.refused() }) };
         log(`view published: ${await publishView(fangorn, config.publishView, view)}`);
-        await index.setMeta("published", s.root);
+        await index.setMeta("published", version);
     }
 }
 
@@ -91,7 +104,7 @@ export function indexer({ name, instructions, tools = [] } = {}) {
         async scheduled(_, env, ctx) { ctx.waitUntil(update(env)); },
 
         async fetch(req, env) {
-            const url = new URL(req.url), index = indexOf(env), gateway = networkOf(env).ipfsGateway;
+            const gate = await gatesOf(env.CONFIG), url = new URL(req.url), index = indexOf(env, undefined, gate), gateway = networkOf(env).ipfsGateway;
             const config = env.CONFIG, appName = name ?? config.name ?? "westmarch", meta = { get: index.getMeta, set: index.setMeta };
             const info = () => manifest(config, { origin: url.origin, gateway, name: appName });
             if (url.pathname === "/api.json") return json(info());
@@ -101,9 +114,10 @@ export function indexer({ name, instructions, tools = [] } = {}) {
                 // The view only changes with the root: cached at the edge under it, so every row is read once per root per
                 // Cloudflare location, and never stale. s-maxage is for that cache; browsers ask again each time.
                 // ponytail: the Cache API is a no-op on *.workers.dev, so there every request still reads every row.
-                const key = new Request(`${url.origin}/view.json?root=${s.root}`), hit = await caches.default.match(key);
+                const version = gate ? `&gate=${gate.all}&verdicts=${(await index.getMeta("verdicts")) ?? ""}` : "";
+                const key = new Request(`${url.origin}/view.json?root=${s.root}${version}`), hit = await caches.default.match(key);
                 if (hit) return hit;
-                const res = json({ root: s.root, stitch: s.stitch, gateway, records: await index.rows() });
+                const res = json({ root: s.root, stitch: s.stitch, gateway, records: await index.rows(), ...(gate && { refused: await index.refused() }) });
                 res.headers.set("cache-control", "public, s-maxage=31536000, max-age=0");
                 await caches.default.put(key, res.clone());
                 return res;
@@ -122,7 +136,7 @@ export function indexer({ name, instructions, tools = [] } = {}) {
                     name: appName,
                     instructions: typeof told === "function" ? told(gateway) : told?.replaceAll("{gateway}", gateway),
                     types: config.types, repos,
-                    ...(config.publishPerDay && { publish: (token, body) => publish({ fangorn, config, meta }, token, body), connect: info().connect }),
+                    ...(config.publishPerDay && { publish: (token, body) => publish({ fangorn, config, meta, check: checkOf(env) }, token, body), connect: info().connect }),
                     tools,
                 }, msg);
                 return answer ? json(answer) : new Response(null, { status: 202, headers: { "access-control-allow-origin": "*" } });
@@ -133,7 +147,8 @@ export function indexer({ name, instructions, tools = [] } = {}) {
                 const token = req.headers.get("authorization")?.match(/^Bearer\s+(\S+)/i)?.[1];
                 if (!token) return json({ error: "a fangorn.network grant token is the bearer" }, 401);
                 const body = await req.json().catch(() => null);
-                try { return json(await publish({ fangorn: fangornOf(env), config, meta }, token, body ?? {})); }
+                const fangorn = fangornOf(env);
+                try { return json(await publish({ fangorn, config, meta, check: checkOf(env) }, token, body ?? {})); }
                 catch (e) { return json({ error: e.message }, e.status ?? 502); }
             }
             if (url.pathname === "/repos" && index.find) {
@@ -151,5 +166,8 @@ export function indexer({ name, instructions, tools = [] } = {}) {
         },
     };
 }
+
+/** /publish's check: the app's checker (src/validate.js), built on first use, or null when it checks nothing. */
+const checkOf = (env) => async (record, ctx) => (await checkerOf(env.CONFIG, env.VALIDATOR))?.check(record, ctx) ?? null;
 
 export default indexer();

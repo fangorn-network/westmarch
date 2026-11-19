@@ -127,6 +127,7 @@ Publishes one record into the bearer's own repo. The Worker builds the commit, f
 | `401` | [`Error`](#error) | No bearer, or fangorn.network doesn't recognize it |
 | `403` | [`Error`](#error) | The grant doesn't cover `repo`, or the app doesn't follow the bearer's `repo` |
 | `404` | [`Error`](#error) | Publishing is off (`Config.publishPerDay` unset), or `repo` isn't one of the app's |
+| `422` | [`Error`](#error) | The app's checks refused the record (a schema, or a rule: `error` names the rule's CID): `error` says why. Doesn't count against the quota |
 | `429` | [`Error`](#error) | Today's `Config.publishPerDay` is used up |
 | `502` | [`Error`](#error) | Storage, signing or the chain failed. Safe to retry |
 
@@ -193,7 +194,7 @@ Every indexed repo.
 
 #### Tool `get`
 
-One record's current version, read live from Fangorn, so it can be newer than the index.
+One record's current version, read live from Fangorn, so it can be newer than the index. Where the app checks records (schemas or rules in `Config`), a version it hasn't checked yet, or refused, is an error.
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
@@ -235,7 +236,23 @@ The Worker's `CONFIG` var. In the ops repo, one `apps.json` entry per app, with 
 | `name` | string | no | Shown to agents and on the connect page |
 | `instructions` | string | no | Told to agents at MCP `initialize`. `{gateway}` is replaced with the network's IPFS gateway |
 | `index` | string | no | `"repos"`: index repos, not records: one row per repo (head and agent card). MCP tools become `find`, `repo`, `read`, and `GET /repos?q=&publisher=&k=` returns `{ stitch, repos }`. With `follow: ["*"]`, Fangorn's registry. Don't combine with `publishView` and `"*"` (each publish moves the root again) |
-| `types` | object | no | `{ "<type>": "<what a record of this type is>" }`. Documents `type` in `search` and `publish`; when set, `publish` refuses any other type |
+| `types` | object | no | `{ "<type>": "<what a record of this type is>" }`, or `{ "<type>": { "description", "schema"?, "rules"? } }`: that type's own checks, run after the base `schema` and `rules`. Documents `type` in `search` and `publish`; when set, `publish` refuses any other type, and so does the index when the app has any checks |
+| `schema` | object \| string | no | The base: a JSON Schema (2020-12) every payload must match, whatever its type, inline or as its CID (inlined at deploy). A type's `schema` takes the same forms |
+| `rules` | rule \| rule[] | no | The base checks, run on every record. A rule is `{ "check": "<publisher>/<repo>/<id>", "with": { …params } }`, or a bundle's CID. A type's `rules` take the same form and run after these. See [Checks](#checks) |
+
+### Checks
+
+For apps that follow publishers they don't know. A record's type is its publisher's claim, so it only picks which checks run. Each record must pass, in order, and the first refusal is the verdict:
+
+1. its `type` is one of `Config.types` (when set);
+2. `Config.schema`, then its type's `schema`;
+3. `Config.rules`, then its type's `rules`, in order.
+
+A rule names a check: `{ "check": "<publisher>/<repo>/<id>", "with": { …params } }`. The check is a record of type `check`, published like any other: its `payload.src` is its bundle, and its `payload.params` is the JSON Schema `with` must match (checked at deploy). At deploy each rule resolves to `{ check, record, src, with }`, the check record's CID and its bundle's, and that resolved config is what `/api.json` serves: the app's lockfile, saying exactly which checks run, at which version. A rule can also be a bundle's CID, bare.
+
+A bundle is JSON: `{ js }`, or `{ mainModule, modules }` where a module is a `.js` string, `{ js }`, `{ cjs }`, `{ text }`, `{ json }`, or `{ wasm }` / `{ data }` as base64. Its main module exports `validate(record, { publisher, repo, file, params }) → true | "reason"`. `record` is `{ id, type, cid, payload }`, `file` is the bytes at `payload.src` (up to 25 MB), and `params` is the rule's `with`. Anything but `true`, or a throw, refuses the record, and the reason is prefixed with the check's name. At deploy, every check goes into one Worker, `<name>-validator`, with no bindings, no secrets and no route, which the app calls over a service binding. Keep a check to the record and its file (no fetches), so anyone can rerun the checks over the stitch and get the same verdicts. A check whose record lists `needs` (capabilities) is refused at deploy for now.
+
+The checks run on every `publish`, before any gas, and on every record the index takes in. The index serves only records that passed (`search`, `get`, the view), and the view lists the rest under `refused`. Changing a type's checks rechecks only that type's records; changing the base rechecks all of them.
 
 ### Manifest
 
@@ -245,7 +262,9 @@ The Worker's `CONFIG` var. In the ops repo, one `apps.json` entry per app, with 
 | `network` | string | yes | |
 | `gateway` | string | yes | IPFS gateway base URL: files are at `<gateway>/ipfs/<src>` |
 | `repos` | string[] | yes | The app's repos |
-| `types` | object | yes | `Config.types`, or `{}` |
+| `types` | object | yes | `Config.types`, or `{}`, schemas included: what `publish` and the index accept |
+| `schema` | object \| null | yes | `Config.schema`, inlined: what every payload must match |
+| `rules` | rule[] | yes | `Config.rules`, resolved: `{ check, record, src, with }` each. Anyone can fetch them and rerun them over the stitch |
 | `publish` | boolean | yes | Whether publishing is on |
 | `mcp` | string | yes | This deployment's MCP URL |
 | `connect` | string | when `publish` | fangorn.network's connect page for this app. It names the API's own origin as the app, never a UI's, so a grant matches the API that uses it |
@@ -257,7 +276,8 @@ The Worker's `CONFIG` var. In the ops repo, one `apps.json` entry per app, with 
 | `root` | string | yes | The stitch's root |
 | `stitch` | string | yes | CID of the stitch the rows were built from; checkable with `verifyStitch` |
 | `gateway` | string | yes | IPFS gateway base URL |
-| `records` | [`Row`](#row)`[]` | yes | Every indexed record |
+| `records` | [`Row`](#row)`[]` | yes | Every indexed record (with schemas or rules in `Config`: every one that passed them) |
+| `refused` | `{ publisher, repo, id, cid, reason }[]` | with schemas or rules | The records the app's checks refused, and why. Records not yet checked are in neither list |
 
 ### Row
 

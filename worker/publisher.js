@@ -108,9 +108,11 @@ async function pinned(fangorn, payload, pin, { owner, repo }) {
  * `config.publishPerDay` is set: the app pays the gas, so that many publishes per UTC day, across everyone, is what its
  * plan allows. `meta` ({ get, set }) keeps the count, `published:<day>`, which is also the app's usage to bill.
  * `file` goes to storage as `payload.src`; `pin` names payload keys whose references are pinned. See worker/API.md.
+ * `check(record, { publisher, repo, file })` → null | reason (src/validate.js): the app's format and validator, as its
+ * index applies them, run on the record as it would land, before any gas; a reason is a 422.
  * Throws an Error with an HTTP `status`.
  */
-export async function publish({ fangorn, config, meta, base = FANGORN, domain }, token, { repo, record, file, pin = [] } = {}) {
+export async function publish({ fangorn, config, meta, check, base = FANGORN, domain }, token, { repo, record, file, pin = [] } = {}) {
     const names = reposOf(config);
     repo ??= names?.length === 1 ? names[0] : undefined;
     if (!config.publishPerDay || (names && !names.includes(repo))) throw fail(404, repo ? `this app doesn't publish to "${repo}"` : `name the repo: one of ${names?.join(", ") ?? "the app's"}`);
@@ -133,6 +135,10 @@ export async function publish({ fangorn, config, meta, base = FANGORN, domain },
         if (json) delete payload.mime; // a file without mime is JSON
         else payload.mime = file.mime;
     }
+    // ponytail: checked after the file's upload (a schema can require payload.src), so a refused record leaves an unpinned
+    // file in storage. Check before uploading, with src stubbed, if that adds up.
+    const reason = check && await check({ ...record, payload }, { publisher: grant.address.toLowerCase(), repo, file: bytes ?? undefined });
+    if (reason) throw fail(422, reason);
     const out = await publishAs({ fangorn, owner: grant.address, sign: signerFor(token, base), domain }, repo, { ...record, payload });
     await meta.set(day, used + 1);
     return bytes ? { ...out, src: payload.src } : out;

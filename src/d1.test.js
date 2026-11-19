@@ -56,3 +56,79 @@ test("diffSince: reads only the new commits, skips what the index already holds,
     expect((await diffSince(e, null, h1, new Map())).puts.map((r) => r.id).sort()).toEqual(["a", "b"]);
     expect(full).toBe(1);                                                                // a new repo: the full diff
 });
+
+test("d1 gate: a record is served only once checked, for its current CID; refused ones are listed, not served", async () => {
+    const net = memoryNetwork();
+    const [alice, mallory, indexer] = await Promise.all([net.client(), net.client(), net.client()]);
+    const db = await d1Shim();
+    await db.exec(SCHEMA);
+    const gate = { types: {}, other: "g1", all: "g1" }, index = d1Index({ db, fangorn: indexer, gate });
+    const s = stitcher(indexer, { repos: ["arcade"] }, { store: index.store, lens: index.lens });
+    const embedder = fakeEmbedder(), check = async (r) => (r.payload.title.includes("evil") ? "evil" : null);
+    const ids = async (ix = index) => (await ix.rows()).map((r) => r.id).sort();
+
+    await alice.initRepo("arcade");
+    await mallory.initRepo("arcade");
+    await alice.uploadBatch("arcade", [{ id: "t", type: "game", payload: { title: "table flip" } }]);
+    await mallory.uploadBatch("arcade", [{ id: "m", type: "game", payload: { title: "evil lamp" } }]);
+    await s.update();
+    expect(await ids()).toEqual([]);                                           // nothing checked: nothing served
+    expect(await index.embedMissing(embedder.embed)).toBe(0);                  // and nothing embedded
+    const t = (await db.prepare("SELECT cid FROM records WHERE id = 't'").first()).cid;
+    expect(await index.allows(alice.getAddress(), "arcade", "t", t)).toBe(false);
+
+    expect(await index.checkMissing(check, 1)).toEqual({ checked: 1, refused: expect.any(Number) }); // the budget holds
+    await index.checkMissing(check);
+    expect(await index.checkMissing(check)).toEqual({ checked: 0, refused: 0 });
+    expect(await ids()).toEqual(["t"]);
+    expect(await index.refused()).toEqual([expect.objectContaining({ id: "m", reason: "evil" })]);
+    expect(await index.allows(alice.getAddress(), "arcade", "t", t)).toBe(true);
+    expect(await index.allows(alice.getAddress(), "arcade", "t", "bafyOld")).toBe(false); // another version
+    expect(await index.embedMissing(embedder.embed)).toBe(1);
+    expect((await index.search(await embedder.query("lamp"))).map((h) => h.id)).toEqual(["t"]); // the evil lamp isn't searchable
+
+    // a changed record waits for a new check; a check that throws leaves its record for later
+    await mallory.uploadBatch("arcade", [{ id: "m", type: "game", payload: { title: "rug" } }]);
+    await s.update();
+    expect(await index.refused()).toEqual([]);                                 // the refused version is gone
+    expect(await index.checkMissing(async () => { throw new Error("down"); })).toEqual({ checked: 0, refused: 0 });
+    expect(await ids()).toEqual(["t"]);
+    await index.checkMissing(check);
+    expect(await ids()).toEqual(["m", "t"]);
+
+    // a new checker checks everything again; no gate serves everything, as before
+    expect(await ids(d1Index({ db, fangorn: indexer, gate: { types: {}, other: "g2", all: "g2" } }))).toEqual([]);
+    expect(await ids(d1Index({ db, fangorn: indexer }))).toEqual(["m", "t"]);
+    expect(await d1Index({ db, fangorn: indexer }).allows("0x0", "arcade", "nope", "x")).toBe(true);
+});
+
+test("d1 gate per type: changing one type's checks rechecks only that type", async () => {
+    const net = memoryNetwork();
+    const [alice, indexer] = await Promise.all([net.client(), net.client()]);
+    const db = await d1Shim();
+    await db.exec(SCHEMA);
+    const v1 = { types: { game: "game1", asset: "asset1" }, other: "other1", all: "v1" };
+    const index = d1Index({ db, fangorn: indexer, gate: v1 });
+    const s = stitcher(indexer, { repos: ["arcade"] }, { store: index.store, lens: index.lens });
+    await alice.initRepo("arcade");
+    await alice.uploadBatch("arcade", [
+        { id: "g", type: "game", payload: { title: "g" } },
+        { id: "a", type: "asset", payload: { title: "a" } },
+        { id: "x", type: "weird", payload: { title: "x" } },
+    ]);
+    await s.update();
+    const seen = [];
+    const check = async (r) => (seen.push(r.id), r.type === "weird" ? "type is one of game, asset" : null);
+    expect(await index.checkMissing(check)).toEqual({ checked: 3, refused: 1 });
+    const ids = async (ix) => (await ix.rows()).map((r) => r.id).sort();
+    expect(await ids(index)).toEqual(["a", "g"]);
+    expect((await index.refused()).map((r) => r.id)).toEqual(["x"]);
+
+    const v2 = { ...v1, types: { ...v1.types, asset: "asset2" }, all: "v2" };   // only asset's checks changed
+    const next = d1Index({ db, fangorn: indexer, gate: v2 });
+    expect(await ids(next)).toEqual(["g"]);                                     // the asset waits
+    seen.length = 0;
+    expect(await next.checkMissing(check)).toEqual({ checked: 1, refused: 0 });
+    expect(seen).toEqual(["a"]);
+    expect(await ids(next)).toEqual(["a", "g"]);
+});

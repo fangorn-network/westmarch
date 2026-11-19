@@ -138,6 +138,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotPublishing" }
+        "422": { $ref: "#/components/responses/Refused" }
         "429": { $ref: "#/components/responses/QuotaUsed" }
         "502": { $ref: "#/components/responses/Upstream" }
 
@@ -219,6 +220,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    Refused:
+      description: The app's checks (a schema, or a rule, named by its CID) refused the record; `error` says why. Not counted against the quota
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     QuotaUsed:
       description: Today's `publishPerDay` is used up
       content:
@@ -238,7 +244,7 @@ components:
     Manifest:
       description:
       type: object
-      required: [name, network, gateway, repos, types, publish, mcp]
+      required: [name, network, gateway, repos, types, schema, rules, publish, mcp]
       properties:
         name: { type: string }
         network: { type: string }
@@ -246,8 +252,26 @@ components:
         repos: { type: array, items: { type: string }, description: The app's repos }
         types:
           type: object
-          additionalProperties: { type: string }
-          description: The app's record types and what each one is; `{}` when it documents none
+          additionalProperties:
+            oneOf:
+              - { type: string }
+              - type: object
+                required: [description]
+                properties:
+                  description: { type: string }
+                  schema: { type: object, description: "JSON Schema (2020-12) a payload of this type must match, after the base schema" }
+                  rules: { type: array, description: "This type's checks, resolved like the base rules, run after them" }
+          description: The app's record types, what each one is and, where given, the schema its payload must match; `{}` when it documents none
+        schema: { type: [object, "null"], description: "The base JSON Schema every payload must match (Config.schema, inlined)" }
+        rules:
+          type: array
+          description: "The base checks (Config.rules), resolved at deploy: the lockfile. Anyone can rerun them over the stitch"
+          items:
+            oneOf:
+              - { type: string, description: "a bundle's CID" }
+              - type: object
+                required: [check, src]
+                properties: { check: { type: string }, record: { type: string }, src: { type: string }, with: { type: object } }
         publish: { type: boolean, description: Whether publishing is on }
         mcp: { type: string, format: uri }
         connect:
@@ -262,7 +286,14 @@ components:
         root: { type: string }
         stitch: { type: string, description: "CID of the stitch the rows were built from; checkable with verifyStitch" }
         gateway: { type: string, format: uri }
-        records: { type: array, items: { $ref: "#/components/schemas/Row" } }
+        records: { type: array, items: { $ref: "#/components/schemas/Row" }, description: "Every indexed record that passed the app's checks, if it has any" }
+        refused:
+          type: array
+          description: Present when the app checks records. The ones its checks refused, and why; records not yet checked are in neither list
+          items:
+            type: object
+            required: [publisher, repo, id, cid, reason]
+            properties: { publisher: { $ref: "#/components/schemas/Address" }, repo: { type: string }, id: { type: string }, cid: { type: string }, reason: { type: string } }
 
     Row:
       description: A record as indexed
