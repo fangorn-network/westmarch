@@ -51,6 +51,8 @@ const entrypoint = (mains) => `import { WorkerEntrypoint } from "cloudflare:work
 ${mains.map(([cid, main], i) => `import * as h${i} from ${JSON.stringify(`./rules/${cid}/${main}`)};`).join("\n")}
 const HOOKS = { ${mains.map(([cid], i) => `${JSON.stringify(cid)}: h${i}`).join(", ")} };
 export default class extends WorkerEntrypoint {
+    // Cloudflare refuses a Worker with no event handler (10068), and RPC methods don't count. It has no route, so this never runs.
+    fetch() { return new Response(null, { status: 404 }); }
     async validate(rules, record, ctx) {
         for (const { name, src, params } of rules) {
             const hook = HOOKS[src];
