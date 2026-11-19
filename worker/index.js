@@ -26,7 +26,7 @@
 // network, publishView?, name?, publishPerDay?, instructions?, types?, schema?, rules?, index?), VALIDATOR (a service
 // binding to the app's validator Worker, worker/validator.js) when CONFIG names rules, and the secret INDEXER_KEY: it signs the stitch blocks' uploads and the view's commits, and pays their gas.
 
-import { Fangorn, FangornConfig, SupportedNetworks } from "@fangorn-network/sdk";
+import { Fangorn, SupportedNetworks } from "@fangorn-network/sdk";
 import { DOCUMENT, QUERY, matryoshka } from "../src/gemma.js";
 import { reposOf, stitcher } from "../src/stitcher.js";
 import { d1Index } from "../src/d1.js";
@@ -42,7 +42,13 @@ const CHECK_PER_RUN = 25; // each is a file read and a call to the validator Wor
 // ponytail: no daily cap; rows are embedded once, so only a flood of publishes could run past Workers AI's free
 // allowance (~30k rows a day). Count rows per UTC day in meta when that's a risk.
 
-export const networkOf = (env) => ({ ...FangornConfig, ...SupportedNetworks[env.CONFIG.network ?? "baseSepolia"] });
+// The named network exactly as the SDK has it. Not spread over FangornConfig: a network without its own upload worker
+// or SettlementRegistry (Base mainnet) would inherit Base Sepolia's, and an unknown name would silently be Base Sepolia.
+export const networkOf = (env) => {
+    const net = env.CONFIG.network ?? "baseSepolia";
+    if (!SupportedNetworks[net]) throw new Error(`unknown network "${net}": one of ${Object.keys(SupportedNetworks).join(", ")}`);
+    return SupportedNetworks[net];
+};
 /**
  * The index CONFIG.index names: "repos" (a row per repo: head and card, src/repos.js), else records (src/d1.js), gated
  * by `gate` (gatesOf(CONFIG)): with schemas or rules in CONFIG, it serves only records that passed them.
