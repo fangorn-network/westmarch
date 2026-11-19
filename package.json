@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@cfworker/json-schema": "^4.1.6",
-    "@fangorn-network/sdk": "^0.2.0",
+    "@fangorn-network/sdk": "^0.2.1",
     "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "viem": "^2.56.3",

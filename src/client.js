@@ -2,7 +2,7 @@
 // `"network": "sandbox"` runs on `node src/sandbox.js` (its dir: `sandbox`, default .sandbox).
 // RPC_URL and IPFS_GATEWAY in the environment win over the config.
 
-import { Fangorn, FangornConfig, SupportedNetworks } from "@fangorn-network/sdk";
+import { Fangorn, SupportedNetworks } from "@fangorn-network/sdk";
 import { generatePrivateKey } from "viem/accounts";
 import { readSandbox } from "./sandbox.js";
 
@@ -21,7 +21,8 @@ export function client(config, key = process.env.INDEXER_KEY) {
     const fromBlock = config.fromBlock ?? config.deployment?.fromBlock;
     return Fangorn.create({
         privateKey: key ?? generatePrivateKey(),
-        config: { ...FangornConfig, ...SupportedNetworks[net], ...config.deployment,
+        // Not over FangornConfig: Base mainnet would inherit Base Sepolia's upload worker and SettlementRegistry.
+        config: { ...SupportedNetworks[net], ...config.deployment,
                   ...(fromBlock != null && { fromBlock: BigInt(fromBlock) }), ...(rpcUrl && { rpcUrl }) },
         storage: { signedUrl: gateway ? { gateway } : {} },
     });
