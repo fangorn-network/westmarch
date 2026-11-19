@@ -69,7 +69,11 @@ if [ -f "$dir/v/validator/wrangler.json" ]; then
     wrangler deploy --config "$dir/v/validator/wrangler.json" >/dev/null
     echo "validator $name-validator deployed" >&2
 fi
-url=$(wrangler deploy --config "$dir/wrangler.json" | grep -o 'https://[^ ]*workers\.dev' | head -1)
+# wrangler's output goes to stderr too, so a failure shows in the log. Retried once: right after a new Worker's upload,
+# wrangler asks Cloudflare's newer API (/workers/workers/<name>) about it, which can answer "does not exist" (10007)
+# for a few seconds; deploying again is safe and gets past it.
+deploy() { wrangler deploy --config "$dir/wrangler.json" | tee /dev/stderr | grep -o 'https://[^ ]*workers\.dev' | head -1; }
+url=$(deploy) || { echo "wrangler deploy failed; retrying once in 15s" >&2; sleep 15; url=$(deploy); }
 
 if ! wrangler secret list --config "$dir/wrangler.json" | grep -q INDEXER_KEY; then
     key=$(node -e 'import("viem/accounts").then((m) => process.stdout.write(m.generatePrivateKey()))')
