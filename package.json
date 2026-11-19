@@ -1,6 +1,6 @@
 {
   "name": "@fangorn-network/westmarch",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Follows Fangorn repos into a searchable index, locally or as a Cloudflare Worker, and serves it to agents over MCP",
   "license": "MIT",
   "type": "module",
@@ -18,11 +18,12 @@
     "sandbox": "node src/sandbox.js"
   },
   "dependencies": {
-    "@fangorn-network/sdk": "^0.1.6",
+    "@cfworker/json-schema": "^4.1.6",
+    "@fangorn-network/sdk": "^0.2.0",
+    "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "viem": "^2.56.3",
-    "zod": "^4.6.7",
-    "@huggingface/transformers": "^4.2.0"
+    "zod": "^4.6.7"
   },
   "engines": {
     "node": ">=22.13"

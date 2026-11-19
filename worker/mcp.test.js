@@ -37,6 +37,10 @@ test("the Worker's MCP: base tools on any index, and an app's tools added or rep
     expect(t).toMatchObject({ id: "t", url: `https://gw/ipfs/${src}` });
     expect(t.file).toBeUndefined(); // no mime, but not JSON: the url only
     expect((await call(ctx, "tools/call", { name: "get", arguments: { publisher: alice.getAddress(), repo: "notes", id: "nope" } })).isError).toBe(true);
+    // a gated app: get serves a version only once it passed
+    const gated = { ...ctx, index: { ...ctx.index, allows: async (p, r, id) => id !== "t" } };
+    const refused = await call(gated, "tools/call", { name: "get", arguments: { publisher: alice.getAddress(), repo: "notes", id: "t" } });
+    expect([refused.isError, refused.content[0].text]).toEqual([true, expect.stringMatching(/isn.t served here/)]);
     expect((await call(ctx, "tools/call", { name: "nope" })).isError).toBe(true);
 
     // an app: a new tool that reads ctx, and the base get replaced
@@ -87,5 +91,6 @@ test("GET /api.json: the deployment, with a connect URL for the API's own origin
     const q = new URLSearchParams(m.connect.split("?")[1]);
     expect(m.connect.startsWith("https://fangorn.network/#/connect?")).toBe(true);
     expect(Object.fromEntries(q)).toEqual({ app: "https://isw.fangorn.network", repos: "isw", name: "isw", mcp: "https://isw.fangorn.network/mcp" });
-    expect(manifest({ repos: ["a", "b"] }, at)).toEqual({ name: "isw", network: "baseSepolia", gateway: "https://gw", repos: ["a", "b"], types: {}, publish: false, mcp: "https://isw.fangorn.network/mcp" });
+    expect(manifest({ repos: ["a", "b"] }, at)).toEqual({ name: "isw", network: "baseSepolia", gateway: "https://gw", repos: ["a", "b"], types: {}, schema: null, rules: [], publish: false, mcp: "https://isw.fangorn.network/mcp" });
+    expect(manifest({ repos: ["a"], schema: { type: "object" }, rules: "bafyR" }, at)).toMatchObject({ schema: { type: "object" }, rules: ["bafyR"] });
 });

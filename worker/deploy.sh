@@ -20,21 +20,36 @@ cd "$here" # node and npx resolve viem, the SDK and wrangler from here
 wrangler() { npx -y wrangler@4 "$@"; }
 dir=$(mktemp -d)
 trap 'rm -rf "$dir"' EXIT
+# The app's validation, from the CIDs in its config (worker/validator.js): schemas inlined into the config deployed, and
+# its hooks built into its validator Worker, when it has any.
+node worker/validator.js "$config" "$name" "$dir/v"
+config="$dir/v/config.json"
+# CONFIG reaches the Worker as a JSON module, not a var: a var is at most 5 KB, and instructions, schemas and the
+# resolved checks pass that. The entry hands it to the Worker as env.CONFIG, so worker/index.js reads it as before.
+node -e 'const [f, name] = process.argv.slice(1), fs = require("fs"); fs.writeFileSync(f, JSON.stringify({ name, ...JSON.parse(fs.readFileSync(f, "utf8")) }))' "$config" "$name"
+cat >"$dir/v/entry.js" <<JS
+import CONFIG from "./config.json";
+import worker from "$here/worker/index.js";
+const withConfig = (env) => ({ ...env, CONFIG });
+export default { scheduled: (c, env, ctx) => worker.scheduled(c, withConfig(env), ctx), fetch: (req, env, ctx) => worker.fetch(req, withConfig(env), ctx) };
+JS
 
 uuid() { wrangler d1 info "$name" --json 2>/dev/null | node -pe 'JSON.parse(require("fs").readFileSync(0)).uuid'; }
 db=$(uuid) || { wrangler d1 create "$name" >/dev/null && db=$(uuid); }
 
 node --input-type=module - "$name" "$db" "$config" "$here" >"$dir/wrangler.json" <<'EOF'
-import { readFileSync } from "node:fs";
-const [name, db, config, here] = process.argv.slice(2);
+import { existsSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
+const [name, db, config, here] = process.argv.slice(2), cfg = JSON.parse(readFileSync(config, "utf8"));
 console.log(JSON.stringify({
-    name, main: `${here}/worker/index.js`,
+    name, main: `${dirname(config)}/entry.js`,
     compatibility_date: "2025-09-15", compatibility_flags: ["nodejs_compat"],
     d1_databases: [{ binding: "DB", database_name: name, database_id: db }],
     ai: { binding: "AI" },
     triggers: { crons: ["* * * * *"] },
     alias: { "@huggingface/transformers": `${here}/worker/no-model.js` },
-    vars: { CONFIG: { name, ...JSON.parse(readFileSync(config, "utf8")) } },
+    // The app's hooks: its own Worker, <name>-validator, deployed below (worker/validator.js).
+    ...(existsSync(`${dirname(config)}/validator/wrangler.json`) && { services: [{ binding: "VALIDATOR", service: `${name}-validator` }] }),
 }));
 EOF
 
@@ -48,6 +63,11 @@ if [ "$stitched" = 0 ] && [ "$(node -pe 'JSON.parse(require("fs").readFileSync(p
     node worker/seed.js "$config" >"$dir/seed.sql"
     wrangler d1 execute "$name" --remote --file "$dir/seed.sql" --config "$dir/wrangler.json" >/dev/null
     echo "seeded $name: $(grep -c '^INSERT OR REPLACE INTO records' "$dir/seed.sql") records" >&2
+fi
+# The validator first, so the app's binding has something to bind to.
+if [ -f "$dir/v/validator/wrangler.json" ]; then
+    wrangler deploy --config "$dir/v/validator/wrangler.json" >/dev/null
+    echo "validator $name-validator deployed" >&2
 fi
 url=$(wrangler deploy --config "$dir/wrangler.json" | grep -o 'https://[^ ]*workers\.dev' | head -1)
 

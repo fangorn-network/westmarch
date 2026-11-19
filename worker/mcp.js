@@ -4,6 +4,8 @@
 // A repos index (CONFIG.index "repos") has REPOS instead: find, repo, read.
 // An app adds its own tools, or replaces a base one by name: { name, description, inputSchema, run(args, ctx) }.
 
+import { describe } from "../src/validate.js";
+
 const text = (v) => ({ content: [{ type: "text", text: JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x)) }] });
 const MAX_INLINE = 5 * 1024 * 1024;
 const REF = { type: "object", required: ["id"], properties: { publisher: { type: "string", description: "0x address (default: yours)" }, repo: { type: "string", description: "default: the repo you publish to" }, id: { type: "string" } } };
@@ -43,9 +45,12 @@ export const BASE = {
             repo: { type: "string" },
             id: { type: "string" },
         } },
-        async run(a, { fangorn, gateway }) {
+        async run(a, { fangorn, gateway, index }) {
             const record = await fangorn.engine.readRecord(a.publisher, a.repo, a.id);
             if (!record) throw new Error(`no record ${a.publisher}/${a.repo}/${a.id}`);
+            // An app that checks what it serves serves this version only once it passed (or the index hasn't caught up to it).
+            if (index?.allows && !(await index.allows(a.publisher, a.repo, a.id, record.cid)))
+                throw new Error(`${a.publisher}/${a.repo}/${a.id} isn't served here: this app hasn't checked that version yet, or refused it (see /view.json's refused)`);
             const { src, mime } = record.payload ?? {};
             if (typeof src !== "string") return record;
             const out = { ...record, url: `${gateway}/ipfs/${src}` };
@@ -138,7 +143,7 @@ function baseTools({ publish, types, repos }) {
     const tools = { ...BASE };
     if (!publish) delete tools.publish;
     if (!types || !Object.keys(types).length) return tools;
-    const type = { type: "string", enum: Object.keys(types), description: Object.entries(types).map(([t, d]) => `${t}: ${d}`).join("; ") };
+    const type = { type: "string", enum: Object.keys(types), description: Object.entries(types).map(([t, d]) => `${t}: ${describe(d)}`).join("; ") };
     const { search, publish: pub } = tools;
     tools.search = { ...search, inputSchema: { ...search.inputSchema, properties: { ...search.inputSchema.properties, type: { ...type, description: `Only records of this type. ${type.description}` } } } };
     if (pub) {

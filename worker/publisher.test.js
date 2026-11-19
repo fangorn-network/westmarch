@@ -117,3 +117,21 @@ test("POST /publish: the repo by default, types checked, a file uploaded as src,
         expect([...meta.values()]).toEqual([3]); // refused publishes aren't counted
     } finally { restore(); }
 });
+
+test("POST /publish: the app's check refuses before any gas, with its reason, outside the quota", async () => {
+    const net = memoryNetwork(), app = await net.client(), alice = privateKeyToAccount(generatePrivateKey());
+    const meta = new Map(), restore = fakeFangornNetwork(alice, ["isw"]), seen = [];
+    const check = async (record, ctx) => (seen.push({ record, ctx }), record.payload.title === "evil" ? "no evil" : null);
+    const on = { fangorn: app, config: { repos: ["isw"], publishPerDay: 5 }, meta: { get: async (k) => meta.get(k), set: async (k, v) => meta.set(k, v) }, check, base: "https://f", domain: MEM_DOMAIN };
+    try {
+        const e = await publish(on, "fgn_alice", { record: { id: "x", type: "game", payload: { title: "evil" } }, file: { json: { html: "<p>" } } }).catch((e) => e);
+        expect([e.status, e.message]).toEqual([422, "no evil"]);
+        expect(await app.engine.readRecord(alice.address, "isw", "x").catch(() => null)).toBeFalsy();
+        expect(meta.size).toBe(0);                                              // not counted
+        // the check sees the record as it would land (src set) and the file's bytes
+        expect(seen[0].record.payload.src).toBeTruthy();
+        expect(seen[0].ctx).toMatchObject({ publisher: alice.address.toLowerCase(), repo: "isw" });
+        expect(new TextDecoder().decode(seen[0].ctx.file)).toBe('{"html":"<p>"}');
+        expect(await publish(on, "fgn_alice", { record: { id: "y", type: "game", payload: { title: "fine" } } })).toMatchObject({ id: "y" });
+    } finally { restore(); }
+});
