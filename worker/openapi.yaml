@@ -71,8 +71,8 @@ paths:
     get:
       tags: [index]
       operationId: search
-      summary: Records by meaning
-      description: The query is embedded with the same model as the rows.
+      summary: Records by relevance
+      description: Hybrid search combines semantic and full-text rankings by reciprocal rank.
       parameters:
         - name: q
           in: query
@@ -85,6 +85,13 @@ paths:
         - name: type
           in: query
           description: Only rows of this type
+          schema: { type: string }
+        - name: mode
+          in: query
+          schema: { type: string, enum: [hybrid, semantic, lexical], default: hybrid }
+        - name: keywords
+          in: query
+          description: Focused terms for full-text ranking. Defaults to q.
           schema: { type: string }
       responses:
         "200":

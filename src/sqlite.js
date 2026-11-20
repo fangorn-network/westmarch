@@ -8,6 +8,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import { textOf } from "./embed.js";
+import { lexicalTerms, fuseRanks } from "./ranking.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -28,7 +29,6 @@ const pack = (v) => new Uint8Array(new Float32Array(v).buffer);
 const unpack = (b) => new Float32Array(b.slice().buffer); // copy: a blob's offset needn't be 4-aligned
 const json = (v) => JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const RRF = 60; // reciprocal rank fusion's usual constant
 
 function cosine(q, v) {
     let dot = 0, qq = 0, vv = 0;
@@ -122,16 +122,14 @@ export function sqliteIndex({ path = ":memory:", fangorn, embedder }) {
         }
         if (mode !== "semantic") {
             // every word as a quoted phrase, OR'd: user text never reaches FTS syntax
-            const terms = (query.match(/[^\s"]+/g) ?? []).map((t) => `"${t}"`).join(" OR ");
+            const terms = lexicalTerms(query);
             lists.push(!terms ? [] : db.prepare(`SELECT r.rowid FROM fts JOIN records r ON r.rowid = fts.rowid
                 WHERE fts MATCH ?${and} ORDER BY bm25(fts) LIMIT ?`).all(terms, ...args, pool).map((r) => r.rowid));
         }
 
-        const score = new Map();
-        for (const list of lists) list.forEach((rowid, i) => score.set(rowid, (score.get(rowid) ?? 0) + 1 / (RRF + i + 1)));
-        return [...score].sort((a, b) => b[1] - a[1]).slice(0, k).map(([rowid, s]) => {
+        return fuseRanks(lists.map((list) => list.map((rowid) => ({ rowid })))).slice(0, k).map(({ rowid, score }) => {
             const r = byRowid.get(rowid);
-            return { publisher: r.publisher, repo: r.repo, id: r.id, cid: r.cid, type: r.type, payload: JSON.parse(r.payload), score: s };
+            return { publisher: r.publisher, repo: r.repo, id: r.id, cid: r.cid, type: r.type, payload: JSON.parse(r.payload), score };
         });
     }
 

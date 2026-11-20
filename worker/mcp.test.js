@@ -32,6 +32,9 @@ test("the Worker's MCP: base tools on any index, and an app's tools added or rep
     const [hit] = await tool(ctx, "search", { query: "furniture", k: 1 });
     expect(hit).toMatchObject({ payload: { title: expect.any(String) } });
     expect((await tool(ctx, "search", { query: "x", type: "memo" })).map((h) => h.id)).toEqual(["u"]);
+    const lexical = { ...ctx, query: () => { throw new Error("lexical mode should skip embeddings"); } };
+    expect(await tool(lexical, "search", { query: "furniture", keywords: "chair", mode: "lexical" }))
+        .toMatchObject([{ id: "u", cid: expect.any(String) }]);
     expect(await tool(ctx, "repos", {})).toEqual([{ publisher: alice.getAddress().toLowerCase(), repo: "notes", records: 2 }]);
     const t = await tool(ctx, "get", { publisher: alice.getAddress(), repo: "notes", id: "t" });
     expect(t).toMatchObject({ id: "t", url: `https://gw/ipfs/${src}` });

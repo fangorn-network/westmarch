@@ -21,6 +21,9 @@ test("d1: follows the stitch, embeds what has no vector a bounded batch at a tim
     const root = await s.update();
     expect((await index.rows()).map((r) => r.id).sort()).toEqual(["l", "t"]);
     expect(await index.search(await embedder.query("table"))).toEqual([]); // nothing embedded yet
+    expect(await index.search(null, { mode: "lexical", keywords: "table" })).toMatchObject([
+        { id: "t", cid: expect.any(String) },
+    ]);
 
     expect(await index.embedMissing(embedder.embed, 1)).toBe(1);           // the budget holds
     expect(await index.embedMissing(embedder.embed, 10)).toBe(1);
@@ -36,6 +39,8 @@ test("d1: follows the stitch, embeds what has no vector a bounded batch at a tim
     const s2 = stitcher(indexer, { repos: ["arcade"] }, { store: again.store, lens: again.lens });
     expect(await s2.update()).not.toBe(root);
     expect((await again.rows()).map((r) => [r.id, r.payload.title])).toEqual([["t", "table flip 2"]]);
+    expect(await again.search(null, { mode: "lexical", keywords: "lamp" })).toEqual([]);
+    expect(await again.search(null, { mode: "lexical", keywords: "2" })).toMatchObject([{ id: "t" }]);
     expect(await again.embedMissing(embedder.embed)).toBe(1);
 });
 
@@ -152,4 +157,24 @@ test("d1: vectors written as JSON (before int8) still search, and packVectors re
     expect(await index.packVectors()).toBe(1);
     expect(await index.packVectors()).toBe(0);
     expect(await ids()).toEqual(before);
+});
+
+test("d1 deploy schema backfills existing records once and hybrid search merges both rankings", async () => {
+    const db = await d1Shim();
+    const before = SCHEMA.slice(0, SCHEMA.indexOf("CREATE VIRTUAL TABLE"));
+    await db.exec(before);
+    const insert = db.prepare(`INSERT INTO records (publisher, repo, id, cid, type, payload, text)
+        VALUES ('p', 'r', ?, ?, ?, ?, ?)`);
+    await insert.bind("dream", "cid-dream", "dream", '{"text":"elevator steep steps","survey":"jasmine"}', "survey: jasmine").run();
+    await insert.bind("other", "cid-other", "memo", '{"text":"elevator steep steps"}', "elevator steep steps").run();
+    await db.exec(SCHEMA);
+    await db.exec(SCHEMA);
+    const index = d1Index({ db });
+    const opts = { mode: "lexical", keywords: "elevator steep steps", type: "dream" };
+    expect(await index.search(null, opts)).toMatchObject([{ id: "dream", cid: "cid-dream" }]);
+    expect(await index.search(null, { ...opts, keywords: "jasmine" })).toEqual([]);
+    const embedder = fakeEmbedder();
+    await index.embedMissing(embedder.embed);
+    expect(await index.search(await embedder.query("elevator"), { ...opts, mode: "hybrid" }))
+        .toMatchObject([{ id: "dream", score: 2 / 61 }]);
 });

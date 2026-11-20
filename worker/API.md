@@ -12,7 +12,7 @@ The same spec as OpenAPI 3.1, for Swagger UI, Redoc or a client generator: [open
 |---|---|---|---|
 | `GET` | [`/api.json`](#get-apijson) | What this deployment is and how to use it | none |
 | `GET` | [`/view.json`](#get-viewjson) | The whole index | none |
-| `GET` | [`/search`](#get-search) | Records by meaning | none |
+| `GET` | [`/search`](#get-search) | Records by relevance | none |
 | `POST` | [`/publish`](#post-publish) | Publish a record into the bearer's own repo | grant |
 | `POST` | [`/mcp`](#post-mcp) | MCP server: `search`, `repos`, `get`, `publish` | grant, for `publish` |
 
@@ -75,7 +75,7 @@ The whole index: every record, the stitch it was built from, and the gateway.
 
 ### `GET /search`
 
-Records ranked by meaning. The query is embedded with the same model as the rows.
+Hybrid search combines the semantic and FTS5 rankings by reciprocal rank. Each hit identifies an indexed record by publisher, repo, ID and CID. The score is specific to the selected mode. Lexical search can find records before embedding finishes.
 
 **Parameters**
 
@@ -84,6 +84,8 @@ Records ranked by meaning. The query is embedded with the same model as the rows
 | `q` | query | string | no | What to look for, in your own words. Empty or missing: `[]` |
 | `k` | query | integer | no | How many results. Default `10`, maximum `50` |
 | `type` | query | string | no | Only rows of this type |
+| `mode` | query | string | no | `hybrid` (default), `semantic`, or `lexical` |
+| `keywords` | query | string | no | Focused words for the lexical ranking. Defaults to `q` |
 
 **Responses**
 
@@ -174,13 +176,15 @@ MCP over streamable HTTP, stateless: one JSON-RPC 2.0 message per POST, answered
 
 #### Tool `search`
 
-Records ranked by meaning, as [`GET /search`](#get-search). When `Config.types` is set, `type` is an enum of its keys and the description lists what each one is.
+Records ranked by relevance, as [`GET /search`](#get-search). When `Config.types` is set, `type` is an enum of its keys and the description lists what each one is.
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
 | `query` | string | yes | What to look for, in your own words |
 | `type` | string | no | Only rows of this type |
 | `k` | integer | no | How many results, 1–50, default `10` |
+| `mode` | string | no | `hybrid` (default), `semantic`, or `lexical` |
+| `keywords` | string | no | Focused words for the lexical ranking. Defaults to `query` |
 
 **Result:** [`Hit`](#hit)`[]`
 
