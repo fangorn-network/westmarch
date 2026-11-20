@@ -19,6 +19,12 @@ CREATE TABLE IF NOT EXISTS verdicts (
 
 const json = (v) => JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x));
 const cosine = (q, v) => { let d = 0, a = 0, b = 0; for (let i = 0; i < q.length; i++) { d += q[i] * v[i]; a += q[i] * q[i]; b += v[i] * v[i]; } return a && b ? d / Math.sqrt(a * b) : 0; };
+// A vector is stored as 256 int8s (a BLOB: 256 bytes, ~20x smaller than JSON, nothing to parse). The column is declared
+// TEXT, which SQLite lets hold a BLOB as is; rows written before this hold JSON text until packVectors rewrites them.
+// ponytail: int8 at scale 127 on L2-normalized vectors; ranking barely moves. Go float32 (1 KB/row) if recall ever suffers
+const pack = (v) => Int8Array.from(v, (x) => Math.max(-127, Math.min(127, Math.round(x * 127)))).buffer; // D1 binds an ArrayBuffer as a BLOB
+const unpack = (b) => typeof b === "string" ? JSON.parse(b)
+    : b instanceof ArrayBuffer ? new Int8Array(b) : ArrayBuffer.isView(b) ? new Int8Array(b.buffer, b.byteOffset, b.byteLength) : Int8Array.from(b);
 const row = (r) => ({ publisher: r.publisher, repo: r.repo, id: r.id, cid: r.cid, type: r.type, payload: JSON.parse(r.payload) });
 
 /**
@@ -100,7 +106,7 @@ export function d1Index({ db, fangorn, gate = null }) {
             if (!results.length) return 0;
             const vecs = await embed(results.map((r) => r.text));
             await db.batch(results.map((r, i) => db.prepare("UPDATE records SET vec = ? WHERE publisher = ? AND repo = ? AND id = ?")
-                .bind(JSON.stringify(Array.from(vecs[i])), r.publisher, r.repo, r.id)));
+                .bind(pack(vecs[i]), r.publisher, r.repo, r.id)));
             return results.length;
         },
 
@@ -150,11 +156,31 @@ export function d1Index({ db, fangorn, gate = null }) {
             return results;
         },
 
+        /** Rewrites up to `max` vectors still stored as JSON text into int8 BLOBs. → how many. */
+        async packVectors(max = 2000) {
+            const { results } = await db.prepare("SELECT rowid, vec FROM records WHERE typeof(vec) = 'text' LIMIT ?").bind(max).all();
+            if (results.length) await db.batch(results.map((r) => db.prepare("UPDATE records SET vec = ? WHERE rowid = ?").bind(pack(JSON.parse(r.vec)), r.rowid)));
+            return results.length;
+        },
+
         /** The `k` records nearest the query vector `q`, best first. Rows not yet embedded are left out. */
-        // ponytail: every vector, every query, in the Worker: fine for thousands of rows; Vectorize past that
-        async search(q, { k = 10 } = {}) {
-            const { results } = await db.prepare(`SELECT publisher, repo, id, cid, type, payload, vec FROM records WHERE vec IS NOT NULL AND ${allowed}`).bind(...args).all();
-            return results.map((r) => ({ ...row(r), score: cosine(q, JSON.parse(r.vec)) })).sort((a, b) => b.score - a.score).slice(0, k);
+        // Vectors a page at a time (D1 caps one response at 50 MB), then only the top k rows' payloads.
+        // ponytail: every vector, every query, in the Worker: O(n), fine to ~100-200k rows; past that, search in the reader (local view)
+        async search(q, { k = 10, page = 2000 } = {}) {
+            let top = [], after = 0;
+            for (;;) {
+                const { results } = await db.prepare(`SELECT rowid, vec FROM records WHERE vec IS NOT NULL AND rowid > ? AND ${allowed} ORDER BY rowid LIMIT ?`).bind(after, ...args, page).all();
+                for (const r of results) {
+                    const score = cosine(q, unpack(r.vec));
+                    if (top.length < k || score > top[top.length - 1].score) top = [...top, { rowid: r.rowid, score }].sort((a, b) => b.score - a.score).slice(0, k);
+                }
+                if (results.length < page) break;
+                after = results[results.length - 1].rowid;
+            }
+            if (!top.length) return [];
+            const { results } = await db.prepare(`SELECT rowid, publisher, repo, id, cid, type, payload FROM records WHERE rowid IN (${top.map(() => "?").join(", ")})`).bind(...top.map((t) => t.rowid)).all();
+            const byRow = new Map(results.map((r) => [r.rowid, r]));
+            return top.filter((t) => byRow.has(t.rowid)).map((t) => ({ ...row(byRow.get(t.rowid)), score: t.score }));
         },
     };
 }

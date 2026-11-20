@@ -26,6 +26,9 @@ test("d1: follows the stitch, embeds what has no vector a bounded batch at a tim
     expect(await index.embedMissing(embedder.embed, 10)).toBe(1);
     expect(await index.embedMissing(embedder.embed, 10)).toBe(0);
     expect((await index.search(await embedder.query("furniture"), { k: 1 }))[0]).toMatchObject({ id: "t", payload: { title: "table flip" } });
+    const q = await embedder.query("furniture"); // paging (one row per page) finds the same, in the same order
+    expect((await index.search(q, { page: 1 })).map((h) => [h.id, h.score])).toEqual((await index.search(q)).map((h) => [h.id, h.score]));
+    expect((await db.prepare("SELECT typeof(vec) AS t FROM records").all()).results.map((r) => r.t)).toEqual(["blob", "blob"]); // int8, 256 bytes
 
     // a change clears that row's vector; a delete removes it; the stitch resumes from what was saved
     await alice.uploadBatch("arcade", [{ id: "t", type: "game", payload: { title: "table flip 2" } }], ["l"]);
@@ -131,4 +134,22 @@ test("d1 gate per type: changing one type's checks rechecks only that type", asy
     expect(await next.checkMissing(check)).toEqual({ checked: 1, refused: 0 });
     expect(seen).toEqual(["a"]);
     expect(await ids(next)).toEqual(["a", "g"]);
+});
+
+test("d1: vectors written as JSON (before int8) still search, and packVectors rewrites them with the same ranking", async () => {
+    const db = await d1Shim();
+    await db.exec(SCHEMA);
+    const index = d1Index({ db, fangorn: null }), embedder = fakeEmbedder();
+    const titles = { a: "table flip", b: "lamp light", c: "chair stack" };
+    const vecs = await embedder.embed(Object.values(titles));
+    for (const [i, [id, title]] of Object.entries(titles).entries())
+        await db.prepare("INSERT INTO records (publisher, repo, id, cid, type, payload, text, vec) VALUES ('p', 'r', ?, 'c', 'game', ?, ?, ?)")
+            .bind(id, JSON.stringify({ title }), title, JSON.stringify(Array.from(vecs[i]))).run();
+    const q = await embedder.query("furniture"), ids = async () => (await index.search(q)).map((h) => h.id);
+    const before = await ids();
+    expect(await index.packVectors(2)).toBe(2);   // bounded per run; a mix of JSON and int8 still searches
+    expect(await ids()).toEqual(before);
+    expect(await index.packVectors()).toBe(1);
+    expect(await index.packVectors()).toBe(0);
+    expect(await ids()).toEqual(before);
 });
