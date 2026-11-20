@@ -31,5 +31,5 @@ const stitch = db.prepare("SELECT v FROM meta WHERE k = 'stitch'").get();
 if (!stitch) throw new Error("no stitch in that index: run it first");
 out.push(`INSERT INTO meta (k, v) VALUES ('stitch', ${q(stitch.v)}) ON CONFLICT (k) DO UPDATE SET v = excluded.v;`);
 for (const r of db.prepare("SELECT publisher, repo, id, cid, type, payload, text FROM records").all())
-    out.push(`INSERT OR REPLACE INTO records (publisher, repo, id, cid, type, payload, text, vec) VALUES (${[r.publisher, r.repo, r.id, r.cid, r.type, r.payload, r.text].map(q).join(", ")}, NULL);`);
+    out.push(`INSERT INTO records (publisher, repo, id, cid, type, payload, text, vec) VALUES (${[r.publisher, r.repo, r.id, r.cid, r.type, r.payload, r.text].map(q).join(", ")}, NULL) ON CONFLICT (publisher, repo, id) DO UPDATE SET cid = excluded.cid, type = excluded.type, payload = excluded.payload, text = excluded.text, vec = NULL;`);
 console.log(out.join("\n"));

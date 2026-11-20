@@ -62,7 +62,7 @@ stitched=$(wrangler d1 execute "$name" --remote --json --command "SELECT count(*
 if [ "$stitched" = 0 ] && [ "$(node -pe 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).index ?? ""' "$config")" != repos ]; then
     node worker/seed.js "$config" >"$dir/seed.sql"
     wrangler d1 execute "$name" --remote --file "$dir/seed.sql" --config "$dir/wrangler.json" >/dev/null
-    echo "seeded $name: $(grep -c '^INSERT OR REPLACE INTO records' "$dir/seed.sql") records" >&2
+    echo "seeded $name: $(grep -c '^INSERT INTO records ' "$dir/seed.sql") records" >&2
 fi
 # The validator first, so the app's binding has something to bind to.
 if [ -f "$dir/v/validator/wrangler.json" ]; then

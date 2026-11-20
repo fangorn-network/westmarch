@@ -4,6 +4,7 @@
 // embed costs nothing but a retry, and rows seeded from elsewhere get vectors from this runtime only.
 
 import { textOf } from "./embed.js";
+import { lexicalTerms, fuseRanks } from "./ranking.js";
 import { gateFor } from "./validate.js";
 
 export const SCHEMA = `
@@ -15,7 +16,20 @@ CREATE TABLE IF NOT EXISTS records (
 CREATE TABLE IF NOT EXISTS verdicts (
     publisher TEXT NOT NULL, repo TEXT NOT NULL, id TEXT NOT NULL,
     cid TEXT NOT NULL, checker TEXT NOT NULL, reason TEXT,
-    PRIMARY KEY (publisher, repo, id));`;
+    PRIMARY KEY (publisher, repo, id));
+CREATE VIRTUAL TABLE IF NOT EXISTS record_fts USING fts5(text);
+CREATE TRIGGER IF NOT EXISTS record_fts_ai AFTER INSERT ON records BEGIN
+    INSERT INTO record_fts(rowid, text) VALUES (new.rowid, coalesce(new.payload ->> '$.text', new.text)); END;
+CREATE TRIGGER IF NOT EXISTS record_fts_ad AFTER DELETE ON records BEGIN
+    DELETE FROM record_fts WHERE rowid = old.rowid; END;
+CREATE TRIGGER IF NOT EXISTS record_fts_au AFTER UPDATE OF text, payload ON records BEGIN
+    DELETE FROM record_fts WHERE rowid = old.rowid;
+    INSERT INTO record_fts(rowid, text) VALUES (new.rowid, coalesce(new.payload ->> '$.text', new.text)); END;
+INSERT INTO record_fts(rowid, text)
+    SELECT rowid, coalesce(payload ->> '$.text', text) FROM records
+    WHERE NOT EXISTS (SELECT 1 FROM meta WHERE k = 'record_fts_v1')
+      AND NOT EXISTS (SELECT 1 FROM record_fts WHERE record_fts.rowid = records.rowid);
+INSERT OR IGNORE INTO meta(k, v) VALUES ('record_fts_v1', 'true');`;
 
 const json = (v) => JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x));
 const cosine = (q, v) => { let d = 0, a = 0, b = 0; for (let i = 0; i < q.length; i++) { d += q[i] * v[i]; a += q[i] * q[i]; b += v[i] * v[i]; } return a && b ? d / Math.sqrt(a * b) : 0; };
@@ -163,22 +177,40 @@ export function d1Index({ db, fangorn, gate = null }) {
             return results.length;
         },
 
-        /** The `k` records nearest the query vector `q`, best first. Rows not yet embedded are left out. */
-        // Vectors a page at a time (D1 caps one response at 50 MB), then only the top k rows' payloads.
-        // ponytail: every vector, every query, in the Worker: O(n), fine to ~100-200k rows; past that, search in the reader (local view)
-        async search(q, { k = 10, page = 2000 } = {}) {
-            let top = [], after = 0;
-            for (;;) {
-                const { results } = await db.prepare(`SELECT rowid, vec FROM records WHERE vec IS NOT NULL AND rowid > ? AND ${allowed} ORDER BY rowid LIMIT ?`).bind(after, ...args, page).all();
-                for (const r of results) {
-                    const score = cosine(q, unpack(r.vec));
-                    if (top.length < k || score > top[top.length - 1].score) top = [...top, { rowid: r.rowid, score }].sort((a, b) => b.score - a.score).slice(0, k);
+        /** Semantic, lexical or hybrid ranking over the current indexed records. */
+        async search(q, { k = 10, page = 2000, type, mode = "semantic", keywords = "" } = {}) {
+            const where = type ? `${allowed} AND records.type = ?` : allowed;
+            const params = type ? [...args, type] : args;
+            const pool = mode === "hybrid" ? Math.max(k, 50) : k;
+            let semantic = [], lexical = [];
+            if (mode !== "lexical") {
+                let after = 0;
+                for (;;) {
+                    const { results } = await db.prepare(`SELECT rowid, vec FROM records WHERE vec IS NOT NULL AND rowid > ? AND ${where} ORDER BY rowid LIMIT ?`)
+                        .bind(after, ...params, page).all();
+                    for (const r of results) {
+                        const score = cosine(q, unpack(r.vec));
+                        if (semantic.length < pool || score > semantic[pool - 1].score) {
+                            semantic = [...semantic, { rowid: r.rowid, score }].sort((a, b) => b.score - a.score).slice(0, pool);
+                        }
+                    }
+                    if (results.length < page) break;
+                    after = results.at(-1).rowid;
                 }
-                if (results.length < page) break;
-                after = results[results.length - 1].rowid;
             }
+            const terms = mode === "semantic" ? "" : lexicalTerms(keywords);
+            if (terms) {
+                const { results } = await db.prepare(`SELECT records.rowid, -bm25(record_fts) AS score
+                    FROM record_fts JOIN records ON records.rowid = record_fts.rowid
+                    WHERE record_fts MATCH ? AND ${where} ORDER BY score DESC, records.rowid LIMIT ?`)
+                    .bind(terms, ...params, pool).all();
+                lexical = results;
+            }
+            const top = (mode === "hybrid" ? fuseRanks([semantic, lexical]) : mode === "lexical" ? lexical : semantic).slice(0, k);
             if (!top.length) return [];
-            const { results } = await db.prepare(`SELECT rowid, publisher, repo, id, cid, type, payload FROM records WHERE rowid IN (${top.map(() => "?").join(", ")})`).bind(...top.map((t) => t.rowid)).all();
+            const { results } = await db.prepare(`SELECT rowid, publisher, repo, id, cid, type, payload FROM records
+                WHERE rowid IN (${top.map(() => "?").join(", ")}) AND ${where}`)
+                .bind(...top.map((t) => t.rowid), ...params).all();
             const byRow = new Map(results.map((r) => [r.rowid, r]));
             return top.filter((t) => byRow.has(t.rowid)).map((t) => ({ ...row(byRow.get(t.rowid)), score: t.score }));
         },

@@ -168,7 +168,10 @@ export function indexer({ name, instructions, tools = [] } = {}) {
                 const q = url.searchParams.get("q")?.trim();
                 if (!q) return json([]);
                 const query = async (text) => (await encode(env, QUERY)([text]))[0];
-                return json(await BASE.search.run({ query: q, k: url.searchParams.get("k"), type: url.searchParams.get("type") || undefined }, { index, query }));
+                const args = { query: q };
+                for (const key of ["k", "type", "mode", "keywords"])
+                    if (url.searchParams.has(key)) args[key] = url.searchParams.get(key);
+                return json(await BASE.search.run(args, { index, query }));
             }
             return env.ASSETS ? env.ASSETS.fetch(req) : new Response("not found", { status: 404 });
         },

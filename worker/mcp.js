@@ -14,17 +14,20 @@ const REF = { type: "object", required: ["id"], properties: { publisher: { type:
 export const BASE = {
     search: {
         name: "search",
-        description: "Find records by what they're about (semantic search). Each hit has publisher, repo, id, cid, type, payload and score.",
+        description: "Find records by meaning and full-text relevance. Each hit has publisher, repo, id, cid, type, payload and a ranking score.",
         inputSchema: { type: "object", required: ["query"], properties: {
             query: { type: "string", description: "What to look for, in your own words" },
             type: { type: "string", description: "Only records of this type" },
+            mode: { type: "string", enum: ["hybrid", "semantic", "lexical"], description: "Ranking mode (default hybrid)" },
+            keywords: { type: "string", description: "Optional focused terms for the full-text ranking" },
             k: { type: "integer", minimum: 1, maximum: 50, description: "How many results (default 10)" },
         } },
         async run(a, { index, query }) {
-            const k = Math.min(Math.max(Math.floor(Number(a.k)) || 10, 1), 50), vec = await query(String(a.query ?? ""));
-            // ponytail: overfetch then filter; a type column in the search once indexes are big
-            const hits = a.type ? (await index.search(vec, { k: k * 5 })).filter((h) => h.type === a.type) : await index.search(vec, { k });
-            return hits.slice(0, k);
+            const k = Math.min(Math.max(Math.floor(Number(a.k)) || 10, 1), 50);
+            const mode = a.mode === "semantic" || a.mode === "lexical" ? a.mode : "hybrid";
+            const phrase = String(a.query ?? "");
+            const vec = mode === "lexical" ? null : await query(phrase);
+            return index.search(vec, { k, mode, type: a.type, keywords: String(a.keywords ?? phrase) });
         },
     },
     repos: {
