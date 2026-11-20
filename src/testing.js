@@ -18,10 +18,13 @@ export function fakeEmbedder() {
 export async function d1Shim() {
     const { DatabaseSync } = await import("node:sqlite");
     const db = new DatabaseSync(":memory:");
+    // As D1 does: an ArrayBuffer binds as a BLOB, and a BLOB reads back as an array of byte values.
+    const arg = (v) => (v instanceof ArrayBuffer ? new Uint8Array(v) : v);
+    const out = (r) => r && Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v instanceof Uint8Array ? Array.from(v) : v]));
     const stmt = (sql, args = []) => ({
-        bind: (...a) => stmt(sql, a),
-        first: async () => db.prepare(sql).get(...args) ?? null,
-        all: async () => ({ results: db.prepare(sql).all(...args) }),
+        bind: (...a) => stmt(sql, a.map(arg)),
+        first: async () => out(db.prepare(sql).get(...args)) ?? null,
+        all: async () => ({ results: db.prepare(sql).all(...args).map(out) }),
         run: async () => db.prepare(sql).run(...args),
         now: () => db.prepare(sql).run(...args),
     });

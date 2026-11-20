@@ -90,6 +90,8 @@ export async function update(env, log = console.log) {
     }
     const n = await index.embedMissing(encode(env, DOCUMENT), EMBED_PER_RUN);
     if (n) log(`embedded ${n}`);
+    const packed = await index.packVectors?.();
+    if (packed) log(`vectors packed ${packed}`);
     // The view to Fangorn, once per root (and per batch of verdicts): `published` moves only when it landed, so a
     // failed run retries.
     // ponytail: a backfill under a new checker publishes once a run until it's through; skip while records are unchecked if that gas matters
