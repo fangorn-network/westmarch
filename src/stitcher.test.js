@@ -91,6 +91,36 @@ test("memoryStore: persists in memory, nothing committed to fangorn", async () =
     expect(s2.stitch).toBe(s.stitch);
 });
 
+test("step: a catch-up in bounded steps, each saved, ends where one fold does", async () => {
+    const net = memoryNetwork();
+    const [alice, eve, indexer] = await Promise.all([net.client(), net.client(), net.client()]);
+    await put(alice, "shop", "oak table");
+    for (const n of [1, 2, 3]) await put(eve, "shop", `not followed ${n}`); // steps that leave the root where it was
+    await put(alice, "shop", "pine chair");
+    const cfg = { publishers: [alice.getAddress()], repos: ["shop"] };
+    const whole = await stitcher(indexer, cfg, { store: memoryStore() }).update();
+
+    // each update is a fresh stitcher on the same store, as each Worker run is
+    const store = memoryStore(), roots = [];
+    let s, runs = 0;
+    do {
+        s = stitcher(indexer, cfg, { store, step: 2 });
+        roots.push(await s.update());
+        expect((await store.load()).stitch).toBe(s.stitch); // saved, even when the root didn't move
+        expect(++runs).toBeLessThan(20);
+    } while (!s.caughtUp);
+    expect(runs).toBeGreaterThan(2);
+    expect(roots.at(-1)).toBe(whole);
+    expect(new Set(roots).size).toBeGreaterThan(1); // the root moved partway, not only at the end
+
+    // caught up, with nothing new: the same stitch, still caught up
+    const last = s.stitch;
+    s = stitcher(indexer, cfg, { store, step: 2 });
+    expect(await s.update()).toBe(whole);
+    expect(s.stitch).toBe(last);
+    expect(s.caughtUp).toBe(true);
+});
+
 test("a burst of triggers runs at most one restitch now and one after", async () => {
     const net = memoryNetwork();
     const [alice, indexer] = await Promise.all([net.client(), net.client()]);

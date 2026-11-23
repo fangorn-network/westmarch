@@ -2,8 +2,9 @@
 // Deploy it as is (configured by CONFIG), or wrap it with an app's own MCP tools: indexer({ name, instructions, tools }).
 //
 //   cron (every minute)  one filtered log read: did any followed repo move? If so, restitch from the saved
-//                        stitch (src/stitcher.js) into D1 (src/d1.js). Then embed rows that have no vector yet,
-//                        with Workers AI, a bounded batch per run.
+//                        stitch (src/stitcher.js) into D1 (src/d1.js), at most FOLD_PER_RUN blocks a run: a catch-up
+//                        from far back takes a few runs, each saving its step. Then embed rows that have no vector
+//                        yet, with Workers AI, a bounded batch per run.
 // The API every deployment serves is specified in worker/API.md (and worker/openapi.yaml).
 //
 //   GET /api.json        what this deployment is: name, network, gateway, repos, types, mcp, and the connect URL
@@ -28,7 +29,7 @@
 
 import { Fangorn, SupportedNetworks } from "@fangorn-network/sdk";
 import { DOCUMENT, QUERY, matryoshka } from "../src/gemma.js";
-import { reposOf, stitcher } from "../src/stitcher.js";
+import { patternsOf, reposOf, stitcher } from "../src/stitcher.js";
 import { d1Index } from "../src/d1.js";
 import { d1Repos } from "../src/repos.js";
 import { publishView } from "../src/view.js";
@@ -39,6 +40,16 @@ import { checkerOf, fileOf, gatesOf, listOf } from "../src/validate.js";
 const AI_MODEL = "@cf/google/embeddinggemma-300m"; // EmbeddingGemma-300m, as src/embed.js runs it locally
 const EMBED_PER_RUN = 100;
 const CHECK_PER_RUN = 25; // each is a file read and a call to the validator Worker: subrequests
+// The most blocks one run folds: a catch-up from far back (a repos index starts from nothing) goes in steps that each
+// save, rather than one fold whose time and requests grow with the network's history. On Base Sepolia (2 s blocks, a
+// 50,000-block log window) that's about 46 days of log. Measured there (2026-11-23), a `follow: ["*"]` catch-up from
+// nothing took 5 steps: at most 18 s, 0.3 s of CPU and 314 RPC requests a step. Well inside a minute, so runs don't
+// overlap; keep it so if this changes.
+const FOLD_PER_RUN = 2_000_000;
+// How far below the head the gate looks again on the next run. Its log read is filtered by repo, so (unlike a fold)
+// it can't be checked against the contract's log root, and a load-balanced RPC's log backend can lag the one that
+// answered the clock, leaving out the newest entries. 30 blocks: a minute on Base Sepolia, one cron interval.
+const GATE_MARGIN = 30n;
 // ponytail: no daily cap; rows are embedded once, so only a flood of publishes could run past Workers AI's free
 // allowance (~30k rows a day). Count rows per UTC day in meta when that's a risk.
 
@@ -69,17 +80,27 @@ export function manifest(config, { origin, gateway, name }) {
     };
 }
 
-export async function update(env, log = console.log) {
-    const config = env.CONFIG, fangorn = fangornOf(env), gate = await gatesOf(config), index = indexOf(env, fangorn, gate);
-    const registry = fangorn.getRegistry(), head = await registry.clock(), checked = await index.getMeta("checked");
+/** One cron run. `fangorn` and `step` (blocks folded at most) are for tests; the Worker passes neither. */
+export async function update(env, log = console.log, { fangorn = fangornOf(env), step = FOLD_PER_RUN } = {}) {
+    const config = env.CONFIG, gate = await gatesOf(config), index = indexOf(env, fangorn, gate);
+    const registry = fangorn.getRegistry(), head = await registry.clock();
+    // Where the gate starts: after the block the saved stitch is folded up to (saved in the same batch as its records),
+    // or after the block an earlier run's gate found nothing up to (`checked`), whichever is later.
+    const saved = await index.getMeta("stitch"), checked = await index.getMeta("checked");
+    const marks = [saved?.t, checked].filter((v) => v != null).map(BigInt);
+    const from = marks.length ? marks.reduce((a, b) => (a > b ? a : b)) : null;
+    // Fold without asking: a new or reseeded database (nothing to start from), a catch-up that stopped a step short of
+    // the head, or a stitch of other patterns (the config changed: the stitcher starts over).
+    const behind = from == null || saved?.caughtUp === false || JSON.stringify(saved?.patterns) !== JSON.stringify(patternsOf(config));
     // The gate: restitching uploads a new stitch whenever ANY repo on the network moved, so first ask the chain,
     // filtered by repo name, whether one we follow did. (With publishers named, every run restitches.)
     const names = reposOf(config);
-    let moved = checked == null || config.publishers || !names;
+    let moved = behind || config.publishers || !names;
     for (const repo of moved ? [] : names)
-        if ((await registry.log({ repo }, BigInt(checked) + 1n, head)).length) { moved = true; break; }
-    if (moved) log(`root ${await stitcher(fangorn, config, { store: index.store, lens: index.lens }).update()}`);
-    await index.setMeta("checked", head.toString());
+        if ((await registry.log({ repo }, from + 1n, head)).length) { moved = true; break; }
+    if (moved) log(`root ${await stitcher(fangorn, config, { store: index.store, lens: index.lens, step }).update()}`);
+    // Nothing moved: the next gate starts GATE_MARGIN short of this head, in case the RPC's log lagged it.
+    else if (head - GATE_MARGIN > from) await index.setMeta("checked", (head - GATE_MARGIN).toString());
     const cards = await index.cardsMissing?.();
     if (cards) log(`cards read ${cards}`);
     // The gate, before embedding: a refused record is never embedded. `verdicts` versions the view along with the root.

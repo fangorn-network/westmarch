@@ -24,10 +24,15 @@ export function reposOf(config) {
  * moved, `[{ publisher, repo, from, to }]` (heads as `repoDiff` takes them, `from` null for a new repo).
  * The stitch is saved only after `apply` resolves, so the saved stitch is always what the lens has
  * absorbed; if it throws, the next update hands it the same changes again (so `apply` must be idempotent).
+ * What it saves: `{ stitch, root, patterns, t, caughtUp }`, `t` the block the stitch is folded up to (a string).
+ *
+ * `step`: fold at most that many blocks per update, saving every step, even one that left the root where it was (so
+ * the next update starts after it). For a run with hard limits (a Worker) and a store where a save is cheap (D1,
+ * SQLite), not `fangornStore` (a tx a save). `caughtUp` (saved too) says whether the last update reached the head.
  */
-export function stitcher(fangorn, config, { store = fangornStore(fangorn), lens } = {}) {
+export function stitcher(fangorn, config, { store = fangornStore(fangorn), lens, step } = {}) {
     const patterns = patternsOf(config);
-    let stitch, committed, loaded; // committed: the root last saved
+    let stitch, committed, loaded, caughtUp = true; // committed: the root last saved
     let running, queued;
 
     const headsOf = async (s) => new Map(s ? (await fangorn.stitchHeads(s)).map((h) => [`${h.publisher}/${h.repo}`, h]) : []);
@@ -46,13 +51,15 @@ export function stitcher(fangorn, config, { store = fangornStore(fangorn), lens 
         return it && JSON.stringify(it.patterns) === JSON.stringify(patterns) ? it : {};
     }
 
-    async function commit(root) {
-        await store.save({ stitch, root, patterns });
+    async function commit(root, t) {
+        await store.save({ stitch, root, patterns, t: t.toString(), caughtUp });
         committed = root;
     }
 
     return {
         get stitch() { return stitch; },
+        /** False when the last update stopped at its `step`, short of the head: update again. */
+        get caughtUp() { return caughtUp; },
 
         /**
          * Restitch from the last stitch and return its root, committing the stitch when the root moved.
@@ -61,11 +68,15 @@ export function stitcher(fangorn, config, { store = fangornStore(fangorn), lens 
          */
         async update() {
             if (!loaded) { ({ stitch, root: committed } = await load()); loaded = true; }
-            const next = await fangorn.restitch(patterns, stitch);
-            const { root } = await fangorn.readStitch(next);
+            const upTo = step === undefined ? undefined
+                : (stitch ? (await fangorn.readStitch(stitch)).t : fangorn.getConfig().fromBlock ?? 0n) + BigInt(step);
+            const next = await fangorn.restitch(patterns, stitch, upTo);
+            const { root, t } = await fangorn.readStitch(next);
             if (root !== committed && lens) await lens.apply(await changes(stitch, next));
+            const moved = next !== stitch;
             stitch = next;
-            if (root !== committed) await commit(root);
+            caughtUp = upTo === undefined || t < upTo; // a step stops at upTo; short of it, the fold reached the head
+            if (root !== committed || (step !== undefined && moved)) await commit(root, t);
             return root;
         },
 

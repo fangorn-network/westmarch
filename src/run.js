@@ -19,8 +19,11 @@ import { sqliteIndex } from "./sqlite.js";
 import { localEmbedder } from "./embed.js";
 import { client } from "./client.js";
 
-/** Open the index, watch the heads, catch up. Returns `{ index, tick, stop }`. */
-export async function run({ config, fangorn, embedder = localEmbedder(), path = config.db ?? "index.db", log = console.log }) {
+/**
+ * Open the index, watch the heads, catch up. Returns `{ index, tick, stop }`. With `once`, only catch up: no watch,
+ * and a failed catch-up throws (live, it's logged and the next event retries; once, there is no next event).
+ */
+export async function run({ config, fangorn, embedder = localEmbedder(), path = config.db ?? "index.db", log = console.log, once = false }) {
     if (config.publishView && stitchFilter(patternsOf(config))(fangorn.getAddress(), config.publishView))
         throw new Error(`publishView "${config.publishView}" is a repo this index follows: each view would trigger the next`);
     const index = sqliteIndex({ path, fangorn, embedder });
@@ -28,7 +31,7 @@ export async function run({ config, fangorn, embedder = localEmbedder(), path = 
     const count = index.db.prepare("SELECT count(*) AS n FROM records");
     let last, current = Promise.resolve();
 
-    const tick = () => (current = s.trigger().then(async (root) => {
+    const fold = () => s.trigger().then(async (root) => {
         if (root === last) return;
         log(`root ${root} (${count.get().n} records)`);
         if (config.view || config.publishView) {
@@ -38,8 +41,13 @@ export async function run({ config, fangorn, embedder = localEmbedder(), path = 
             if (config.publishView) log(`view published: ${await publishView(fangorn, config.publishView, view)}`);
         }
         last = root; // only once the view is out: if publishing failed, the next event tries again
-    }).catch((e) => log(`✗ ${e.message}`))); // the stitch stays where it was; the next event retries
+    });
+    const tick = () => (current = fold().catch((e) => log(`✗ ${e.message}`))); // the stitch stays where it was; the next event retries
 
+    if (once) {
+        await fold().catch((e) => { index.close(); throw e; });
+        return { index, tick, async stop() { index.close(); } };
+    }
     // Watch first, then catch up: an update landing in between still triggers a tick.
     const off = watchHeads(fangorn, config, tick, (e) => log(`✗ watch: ${e.message}`));
     await tick();
@@ -67,7 +75,8 @@ if (isMain(import.meta.url)) {
     const [file, ...flags] = process.argv.slice(2);
     if (!file) { console.error("usage: run.js app.json [--once]"); process.exit(2); }
     const config = readConfig(file);
-    const runner = await run({ config, fangorn: client(config) });
-    if (flags.includes("--once")) await runner.stop();
+    const once = flags.includes("--once");
+    const runner = await run({ config, fangorn: client(config), once });
+    if (once) await runner.stop();
     else process.on("SIGINT", () => runner.stop().then(() => process.exit(0)));
 }
