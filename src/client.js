@@ -22,7 +22,9 @@ export function client(config, key = process.env.INDEXER_KEY) {
     return Fangorn.create({
         privateKey: key ?? generatePrivateKey(),
         // Not over FangornConfig: Base mainnet would inherit Base Sepolia's upload worker and SettlementRegistry.
-        config: { ...SupportedNetworks[net], ...config.deployment,
+        // rpcRetry: a run here (a seed, a catch-up) waits out a rate-limited RPC, about 4 min a read, rather
+        // than failing on a 429. (The Worker keeps the SDK's short retries: its next cron run is the retry.)
+        config: { ...SupportedNetworks[net], rpcRetry: { retryCount: 8, retryDelay: 500 }, ...config.deployment,
                   ...(fromBlock != null && { fromBlock: BigInt(fromBlock) }), ...(rpcUrl && { rpcUrl }) },
         storage: { signedUrl: gateway ? { gateway } : {} },
     });

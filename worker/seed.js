@@ -19,10 +19,12 @@ import { client } from "../src/client.js";
 
 let file = process.argv[2] ?? "index.db";
 if (file.endsWith(".json")) {
-    const config = readConfig(file);
+    // No view: the Worker publishes its own (here, under a throwaway key with no gas, it could only fail).
+    const { view, publishView, ...config } = readConfig(file);
     file = join(mkdtempSync(join(tmpdir(), "seed-")), "index.db");
     const none = { id: "none", embed: async (texts) => texts.map(() => [0]) }; // a placeholder: the seed drops vectors
-    await (await run({ config, fangorn: client(config), embedder: none, path: file, log: console.error })).stop();
+    // once: a failed catch-up throws its own error (a 429, a log-root mismatch), not "no stitch" below
+    await (await run({ config, fangorn: client(config), embedder: none, path: file, log: console.error, once: true })).stop();
 }
 const db = new DatabaseSync(file, { readOnly: true });
 const q = (v) => v == null ? "NULL" : `'${String(v).replaceAll("'", "''")}'`;
