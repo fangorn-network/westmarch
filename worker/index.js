@@ -65,8 +65,8 @@ export const networkOf = (env) => {
  * by `gate` (gatesOf(CONFIG)): with schemas or rules in CONFIG, it serves only records that passed them.
  */
 export const indexOf = (env, fangorn, gate, perRun) => (env.CONFIG.index === "repos" ? d1Repos : d1Index)({ db: env.DB, fangorn, gate, perRun });
-// leanCars: a CAR is read without its records, which are fetched only when asked for. A 50k-record commit's CAR read
-// whole needs ~330 MB; a Worker has 128.
+// leanCars: read a CAR without its records and fetch them only when needed. Reading a 50k-record CAR whole takes
+// ~330 MB; a Worker has 128.
 export const fangornOf = (env) => Fangorn.create({ privateKey: env.INDEXER_KEY, config: networkOf(env), storage: { signedUrl: {} }, leanCars: true });
 const encode = (env, prompt) => async (texts) =>
     (await env.AI.run(AI_MODEL, { text: texts.map((t) => prompt + t) })).data.map((v) => matryoshka(v));
@@ -83,8 +83,8 @@ export function manifest(config, { origin, gateway, name }) {
 }
 
 /**
- * One cron run. `fangorn`, `step` (blocks folded at most) and `perRun` (record changes taken in at most) are for tests;
- * the Worker passes none. An update with more changes than `perRun` goes over several runs (src/d1.js, `cursor`).
+ * One cron run. `fangorn`, `step` (most blocks to fold) and `perRun` (most record changes to apply) are for tests; the
+ * Worker passes none. An update with more than `perRun` changes is split over several runs (see `cursor` in src/d1.js).
  */
 export async function update(env, log = console.log, { fangorn = fangornOf(env), step = FOLD_PER_RUN, perRun = CHANGES_PER_RUN } = {}) {
     const config = env.CONFIG, gate = await gatesOf(config), index = indexOf(env, fangorn, gate, perRun);
@@ -95,7 +95,7 @@ export async function update(env, log = console.log, { fangorn = fangornOf(env),
     const marks = [saved?.t, checked].filter((v) => v != null).map(BigInt);
     const from = marks.length ? marks.reduce((a, b) => (a > b ? a : b)) : null;
     // Fold without asking: a new or reseeded database (nothing to start from), a catch-up that stopped a step short of
-    // the head or an update taken in partway (both save caughtUp: false), or a stitch of other patterns (the config
+    // the head or an update split over runs (both save caughtUp: false), or a stitch of other patterns (the config
     // changed: the stitcher starts over).
     const behind = from == null || saved?.caughtUp === false || JSON.stringify(saved?.patterns) !== JSON.stringify(patternsOf(config));
     // The gate: restitching uploads a new stitch whenever ANY repo on the network moved, so first ask the chain,
@@ -149,7 +149,7 @@ export function indexer({ name, instructions, tools = [] } = {}) {
                 if (!s) return json({ error: "not indexed yet" }, 404);
                 // The view only changes with the root: cached at the edge under it, so every row is read once per root per
                 // Cloudflare location, and never stale. s-maxage is for that cache; browsers ask again each time.
-                // While an update is taken in over several runs, the rows move on under the same root: not cached then.
+                // Not cached while an update is split over runs: the rows change but the root doesn't.
                 // ponytail: the Cache API is a no-op on *.workers.dev, so there every request still reads every row.
                 const version = gate ? `&gate=${gate.all}&verdicts=${(await index.getMeta("verdicts")) ?? ""}` : "";
                 const partway = Boolean(await index.getMeta("cursor"));

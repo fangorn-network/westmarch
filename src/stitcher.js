@@ -37,8 +37,8 @@ export function reposOf({ follow, publishers, repos }) {
  * moved, `[{ publisher, repo, from, to }]` (heads as `repoDiff` takes them, `from` null for a new repo).
  * The stitch is saved only after `apply` resolves, so the saved stitch is always what the lens has
  * absorbed; if it throws, the next update hands it the same changes again (so `apply` must be idempotent).
- * A lens with limits can take in part of them and resolve `{ partial: true }`: the OLD stitch is saved again, with
- * `caughtUp: false` (and whatever the lens staged), so the next update hands it the same changes to resume.
+ * A lens can apply only some of the changes and return `{ partial: true }`. Then the old stitch is saved again with
+ * `caughtUp: false` (plus the lens's rows), so the next update gives it the same changes to finish.
  * What it saves: `{ stitch, root, patterns, t, caughtUp }`, `t` the block the stitch is folded up to (a string).
  *
  * `step`: fold at most that many blocks per update, saving every step, even one that left the root where it was (so
@@ -83,7 +83,7 @@ export function stitcher(fangorn, config, { store = fangornStore(fangorn), lens,
          */
         async update() {
             if (!loaded) { ({ stitch, root: committed } = await load()); loaded = true; }
-            // the block the current stitch is folded up to: where a step starts, and what a partial update saves again
+            // the block the current stitch reaches: where a step starts, and what a partial update saves again
             const folded = async () => (stitch ? (await fangorn.readStitch(stitch)).t : fangorn.getConfig().fromBlock ?? 0n);
             const upTo = step === undefined ? undefined : (await folded()) + BigInt(step);
             const next = await fangorn.restitch(patterns, stitch, upTo);

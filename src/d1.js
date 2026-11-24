@@ -41,16 +41,15 @@ const unpack = (b) => typeof b === "string" ? JSON.parse(b)
     : b instanceof ArrayBuffer ? new Int8Array(b) : ArrayBuffer.isView(b) ? new Int8Array(b.buffer, b.byteOffset, b.byteLength) : Int8Array.from(b);
 const row = (r) => ({ publisher: r.publisher, repo: r.repo, id: r.id, cid: r.cid, type: r.type, payload: JSON.parse(r.payload) });
 
-// The most changes (puts and deletes) one run takes in, across every moved repo. A bigger update goes over several
-// runs, each saving where it stopped (`cursor` in meta). Measured on a 50k-record repo (one 40.8 MB CAR) with the SDK's
-// lean CARs: 2,000 a run is ~5 s and fits a 48 MB heap.
+// The most records one run adds, updates or deletes, across all repos. A bigger update is split over several runs,
+// each saving where it stopped (`cursor` in meta). On a 50k-record repo, 2,000 a run takes ~5 s and under 48 MB.
 export const CHANGES_PER_RUN = 2000;
-const PAGE = 1000; // index rows read per query in a merge
+const PAGE = 1000; // index rows read per query
 const IDS_PER_QUERY = 90; // D1 binds at most 100 parameters a query
 
 const zero = (h) => !h || /^0x0*$/.test(h);
 
-/** The commits after `from` up to `to`, newest first, when each carries a diff event; else null (as eventsSince). */
+/** The commits after `from` up to `to`, newest first, or null if any of them has no diff event. */
 async function eventCommits(engine, from, to) {
     if (zero(from) || zero(to)) return null;
     const old = engine.hexToRootCid(from), path = [];
@@ -62,7 +61,7 @@ async function eventCommits(engine, from, to) {
     return null;
 }
 
-/** Streams of `[id, value]` in id order, merged into one; on an id in several, the first stream's value wins. */
+/** Merges id-sorted streams into one. If an id is in more than one, the first stream's entry is kept. */
 async function* firstWins(streams) {
     const heads = await Promise.all(streams.map(async (s) => ({ s, at: await s.next() })));
     try {
@@ -78,13 +77,12 @@ async function* firstWins(streams) {
 }
 
 /**
- * A moved repo's changes from head `from` to `to` that the index doesn't hold yet, in id order from just after
- * `after`: `[id, record CID]` to put, `[id, null]` to delete. `held` reads the index: `held.ids(ids)` → Map id → cid
- * for those it holds, `held.after(id, n)` → its next n rows `{ id, cid }` in id order. Memory stays with one page, never
- * the repo or the diff, so a 50k-record commit can be taken in a range at a time.
- *  - When every commit in between carries a diff event, it reads only those (each commit's diff tree, merged, the
- *    newest write winning) and the index rows they name.
- *  - Otherwise (a new repo, a reset, commits from before diff events), the new tree itself, against every index row.
+ * What changed in a repo between heads `from` and `to` that the index doesn't have yet, sorted by id, starting after
+ * `after`. Yields `[id, cid]` to add or update and `[id, null]` to delete. `held` looks things up in the index:
+ * `held.ids(ids)` gives a Map of id → cid for the ones it has, and `held.after(id, n)` gives the next n rows after `id`.
+ * It holds one page at a time, never the whole repo, so a big update can be split across runs.
+ *  - If every commit in between has a diff event, it reads just those diffs (the newest commit wins).
+ *  - Otherwise (a new repo, a reset, or older commits), it compares the whole new tree with the index.
  */
 export async function* changesSince(engine, { from, to, after = null }, held) {
     const commits = await eventCommits(engine, from, to);
@@ -111,7 +109,7 @@ export async function* changesSince(engine, { from, to, after = null }, held) {
         for (;;) {
             const r = await row(), id = t.done ? null : t.value[0];
             if (id === null && r === null) return;
-            if (id === null || (r && r.id < id)) { i++; yield [r.id, null]; continue; } // in the index, gone from the tree
+            if (id === null || (r && r.id < id)) { i++; yield [r.id, null]; continue; } // in the index, not in the repo: delete
             if (r && r.id === id) { i++; if (r.cid !== t.value[1].toString()) yield t.value; }
             else yield t.value;
             t = await tree.next();
@@ -129,7 +127,7 @@ export function d1Index({ db, fangorn, gate = null, perRun = CHANGES_PER_RUN }) 
     const getMeta = async (k) => { const r = await db.prepare("SELECT v FROM meta WHERE k = ?").bind(k).first(); return r && JSON.parse(r.v); };
     const setMeta = (k, v) => db.prepare("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v").bind(k, json(v));
     let pending = [];
-    // What `save` writes to meta.cursor with the staged rows: a cursor, null to clear it, undefined to leave it.
+    // The cursor `save` writes with the rows: an object to save, null to delete it, undefined to leave it alone.
     let pendingCursor;
     // The gate as SQL over `records`, and its parameters: a verdict for the row's CID, by its type's checker.
     const typed = Object.entries(gate?.types ?? {});
@@ -173,10 +171,10 @@ export function d1Index({ db, fangorn, gate = null, perRun = CHANGES_PER_RUN }) 
 
     const lens = {
         /**
-         * Takes in at most `perRun` changes. When there were more, it says `{ partial: true }` and `save` stores
-         * meta.cursor with the rows: which moved repos are done (`done`, as publisher/repo@head) and where the one it
-         * stopped in got to (`at`). Called again with the same changes, it resumes there. A cursor for other changes (a
-         * repo moved on since) is dropped: its rows are kept, and anything still different is taken in again.
+         * Applies at most `perRun` changes. If there are more, it returns `{ partial: true }`, and `save` stores a
+         * cursor with the rows: the repos already done (`done`, as publisher/repo@head) and where it stopped in the next
+         * one (`at`). The next call with the same changes picks up there. If a repo has moved again since, the cursor
+         * doesn't match and is ignored: rows already written stay, and anything still out of date is redone.
          */
         async apply(changes) {
             const saved = (await getMeta("cursor")) ?? { done: [] }, engine = fangorn.engine;
