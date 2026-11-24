@@ -1,5 +1,8 @@
 import { test, expect } from "vitest";
 import { memoryNetwork } from "@fangorn-network/sdk/lib/test/testbed.js";
+import { MemRegistry } from "@fangorn-network/sdk/lib/test/mem-registry.js";
+import { Fangorn, FangornConfig } from "@fangorn-network/sdk";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { SCHEMA } from "../src/d1.js";
 import { d1Shim } from "../src/testing.js";
 import { update } from "./index.js";
@@ -87,4 +90,57 @@ test("a changed config re-indexes, though nothing it follows has moved since", a
     env.CONFIG = { repos: ["blog"] };
     await update(env, quiet, { fangorn: indexer });
     expect(await ids(env)).toEqual(["first-post"]);
+});
+
+/** An indexer like the Worker's (fangornOf): CARs read without their records until asked for. */
+const leanIndexer = (net) => {
+    const sk = generatePrivateKey();
+    return Fangorn.create({ privateKey: sk, config: { ...FangornConfig, fromBlock: 0n }, storage: { backend: net.storage },
+        registry: new MemRegistry(privateKeyToAccount(sk).address, net.ledger), leanCars: true });
+};
+const rows = async (env) => (await env.DB.prepare("SELECT id, cid, payload FROM records ORDER BY id").all()).results;
+const track = (i, v = 1) => ({ id: `t-${String(i).padStart(3, "0")}`, type: "note", payload: { title: `track ${i}`, v } });
+
+test("an update bigger than a run is taken in over several, each saved, ending with the rows one run gives", async () => {
+    const net = memoryNetwork();
+    const alice = await net.client(), indexer = leanIndexer(net), config = { repos: ["shop"] };
+    await alice.initRepo("shop");
+    await alice.uploadBatch("shop", Array.from({ length: 30 }, (_, i) => track(i)));
+
+    /** Runs until caught up; each run's ids and saved stitch. */
+    const runAll = async (env, perRun, between = async () => {}) => {
+        const seen = [];
+        do {
+            await update(env, quiet, { fangorn: indexer, perRun });
+            seen.push({ ids: await ids(env), stitch: await meta(env, "stitch"), cursor: await meta(env, "cursor") });
+            await between(seen.length);
+            expect(seen.length).toBeLessThan(20);
+        } while (seen.at(-1).stitch.caughtUp === false);
+        return seen;
+    };
+
+    // a new repo: the tree itself, 7 records a run
+    const env = await envOf(config), first = await runAll(env, 7);
+    expect(first.map((r) => r.ids.length)).toEqual([7, 14, 21, 28, 30]);
+    expect(first.slice(0, -1).every((r) => r.stitch.root === undefined && r.cursor)).toBe(true); // the old (no) stitch, kept
+    expect(first.at(-1).cursor).toBeNull();
+    const whole = await envOf(config);
+    await update(whole, quiet, { fangorn: indexer });
+    expect(await rows(env)).toEqual(await rows(whole));
+    const root1 = first.at(-1).stitch.root;
+
+    // one commit: 20 changed, 3 deleted, 5 new (diff events), with another commit landing partway through
+    await alice.uploadBatch("shop", [...Array.from({ length: 20 }, (_, i) => track(i, 2)), ...Array.from({ length: 5 }, (_, i) => track(30 + i))],
+        ["t-025", "t-026", "t-027"]);
+    const second = await runAll(env, 7, async (n) => {
+        if (n === 2) await alice.uploadBatch("shop", [track(3, 3), track(40)], ["t-028"]);
+    });
+    expect(second.length).toBeGreaterThan(3);
+    expect(second.slice(0, -1).every((r) => r.stitch.root === root1 && r.cursor)).toBe(true);
+    expect(second.at(-1).cursor).toBeNull();
+    await update(whole, quiet, { fangorn: indexer });
+    expect(await rows(env)).toEqual(await rows(whole));
+    expect((await rows(env)).find((r) => r.id === "t-003").payload).toContain('"v":3');
+    expect(await ids(env)).not.toContain("t-028");
+    expect((await meta(env, "stitch")).root).toBe((await meta(whole, "stitch")).root);
 });

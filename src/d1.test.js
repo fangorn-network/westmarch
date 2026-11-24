@@ -1,7 +1,7 @@
 import { test, expect } from "vitest";
 import { memoryNetwork } from "@fangorn-network/sdk/lib/test/testbed.js";
 import { stitcher } from "./stitcher.js";
-import { d1Index, diffSince, SCHEMA } from "./d1.js";
+import { d1Index, changesSince, SCHEMA } from "./d1.js";
 import { d1Shim, fakeEmbedder } from "./testing.js";
 
 test("d1: follows the stitch, embeds what has no vector a bounded batch at a time, searches by meaning", async () => {
@@ -44,25 +44,35 @@ test("d1: follows the stitch, embeds what has no vector a bounded batch at a tim
     expect(await again.embedMissing(embedder.embed)).toBe(1);
 });
 
-test("diffSince: reads only the new commits, skips what the index already holds, falls back for a new repo", async () => {
+test("changesSince: with diff events reads only the new commits, skips what the index holds; else walks the new tree", async () => {
     const net = memoryNetwork();
     const [alice, reader] = await Promise.all([net.client(), net.client()]);
     const e = reader.engine, hex = (c) => "0x" + Buffer.from(c.multihash.digest).toString("hex");
     const head = async () => hex(await e.resolveHeadCommit(alice.getAddress(), "arcade"));
+    /** What the index holds, as changesSince reads it. */
+    const heldOf = (m) => ({
+        ids: async (ids) => new Map(ids.filter((id) => m.has(id)).map((id) => [id, m.get(id)])),
+        after: async (id, n) => [...m].filter(([k]) => k > id).sort().slice(0, n).map(([k, cid]) => ({ id: k, cid })),
+    });
+    const all = async (it) => { const out = []; for await (const [id, cid] of it) out.push([id, cid && cid.toString()]); return out; };
     await alice.initRepo("arcade");
     await alice.uploadBatch("arcade", [{ id: "a", type: "game", payload: { n: 1 } }, { id: "b", type: "game", payload: { n: 1 } }]);
     const h1 = await head(), known = new Map([...(await e.stateAt(e.hexToRootCid(h1))).state].map(([id, c]) => [id, c.toString()]));
     await alice.uploadBatch("arcade", [{ id: "a", type: "game", payload: { n: 2 } }, { id: "c", type: "game", payload: { n: 1 } }], ["b"]);
     await alice.uploadBatch("arcade", [{ id: "c", type: "game", payload: { n: 1 } }]); // a re-put of the same record
     const h3 = await head();
-    let full = 0; const repoDiff = e.repoDiff.bind(e); e.repoDiff = (...a) => (full++, repoDiff(...a));
-    const d = await diffSince(e, h1, h3, known);
-    expect(full).toBe(0);
-    expect(d.puts.map((r) => [r.id, r.payload.n]).sort()).toEqual([["a", 2], ["c", 1]]);
-    expect(d.deletes).toEqual(["b"]);
-    expect((await diffSince(e, h3, h3, known)).puts).toEqual([]);                        // nothing between
-    expect((await diffSince(e, null, h1, new Map())).puts.map((r) => r.id).sort()).toEqual(["a", "b"]);
-    expect(full).toBe(1);                                                                // a new repo: the full diff
+    let walks = 0; const entriesAt = e.entriesAt.bind(e); e.entriesAt = (...a) => (walks++, entriesAt(...a));
+    const d = await all(changesSince(e, { from: h1, to: h3 }, heldOf(known)));
+    expect(walks).toBe(0);                                                                 // only the diff events
+    expect(d.map(([id, cid]) => [id, cid === null])).toEqual([["a", false], ["b", true], ["c", false]]);
+    expect(await all(changesSince(e, { from: h1, to: h3, after: "a" }, heldOf(known)))).toEqual(d.slice(1)); // resumes
+    const now = new Map([...(await e.stateAt(e.hexToRootCid(h3))).state].map(([id, c]) => [id, c.toString()]));
+    expect(await all(changesSince(e, { from: h3, to: h3 }, heldOf(now)))).toEqual([]);   // nothing between
+    expect(await all(changesSince(e, { from: h1, to: h3 }, heldOf(now)))).toEqual([]);   // all held already
+    expect((await all(changesSince(e, { from: null, to: h1 }, heldOf(new Map())))).map(([id]) => id)).toEqual(["a", "b"]);
+    expect(walks).toBe(1);                                                                 // a new repo: the tree
+    // the tree against the index: a row the tree no longer has is a delete
+    expect(await all(changesSince(e, { from: null, to: h3 }, heldOf(known)))).toEqual(d);
 });
 
 test("d1 gate: a record is served only once checked, for its current CID; refused ones are listed, not served", async () => {

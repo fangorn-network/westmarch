@@ -30,7 +30,7 @@
 import { Fangorn, SupportedNetworks } from "@fangorn-network/sdk";
 import { DOCUMENT, QUERY, matryoshka } from "../src/gemma.js";
 import { patternsOf, reposOf, stitcher } from "../src/stitcher.js";
-import { d1Index } from "../src/d1.js";
+import { d1Index, CHANGES_PER_RUN } from "../src/d1.js";
 import { d1Repos } from "../src/repos.js";
 import { publishView } from "../src/view.js";
 import { mcpCall, BASE, REPOS_INSTRUCTIONS } from "./mcp.js";
@@ -64,8 +64,10 @@ export const networkOf = (env) => {
  * The index CONFIG.index names: "repos" (a row per repo: head and card, src/repos.js), else records (src/d1.js), gated
  * by `gate` (gatesOf(CONFIG)): with schemas or rules in CONFIG, it serves only records that passed them.
  */
-export const indexOf = (env, fangorn, gate) => (env.CONFIG.index === "repos" ? d1Repos : d1Index)({ db: env.DB, fangorn, gate });
-export const fangornOf = (env) => Fangorn.create({ privateKey: env.INDEXER_KEY, config: networkOf(env), storage: { signedUrl: {} } });
+export const indexOf = (env, fangorn, gate, perRun) => (env.CONFIG.index === "repos" ? d1Repos : d1Index)({ db: env.DB, fangorn, gate, perRun });
+// leanCars: read a CAR without its records and fetch them only when needed. Reading a 50k-record CAR whole takes
+// ~330 MB; a Worker has 128.
+export const fangornOf = (env) => Fangorn.create({ privateKey: env.INDEXER_KEY, config: networkOf(env), storage: { signedUrl: {} }, leanCars: true });
 const encode = (env, prompt) => async (texts) =>
     (await env.AI.run(AI_MODEL, { text: texts.map((t) => prompt + t) })).data.map((v) => matryoshka(v));
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type, authorization, mcp-protocol-version", "access-control-allow-methods": "POST" };
@@ -80,9 +82,12 @@ export function manifest(config, { origin, gateway, name }) {
     };
 }
 
-/** One cron run. `fangorn` and `step` (blocks folded at most) are for tests; the Worker passes neither. */
-export async function update(env, log = console.log, { fangorn = fangornOf(env), step = FOLD_PER_RUN } = {}) {
-    const config = env.CONFIG, gate = await gatesOf(config), index = indexOf(env, fangorn, gate);
+/**
+ * One cron run. `fangorn`, `step` (most blocks to fold) and `perRun` (most record changes to apply) are for tests; the
+ * Worker passes none. An update with more than `perRun` changes is split over several runs (see `cursor` in src/d1.js).
+ */
+export async function update(env, log = console.log, { fangorn = fangornOf(env), step = FOLD_PER_RUN, perRun = CHANGES_PER_RUN } = {}) {
+    const config = env.CONFIG, gate = await gatesOf(config), index = indexOf(env, fangorn, gate, perRun);
     const registry = fangorn.getRegistry(), head = await registry.clock();
     // Where the gate starts: after the block the saved stitch is folded up to (saved in the same batch as its records),
     // or after the block an earlier run's gate found nothing up to (`checked`), whichever is later.
@@ -90,7 +95,8 @@ export async function update(env, log = console.log, { fangorn = fangornOf(env),
     const marks = [saved?.t, checked].filter((v) => v != null).map(BigInt);
     const from = marks.length ? marks.reduce((a, b) => (a > b ? a : b)) : null;
     // Fold without asking: a new or reseeded database (nothing to start from), a catch-up that stopped a step short of
-    // the head, or a stitch of other patterns (the config changed: the stitcher starts over).
+    // the head or an update split over runs (both save caughtUp: false), or a stitch of other patterns (the config
+    // changed: the stitcher starts over).
     const behind = from == null || saved?.caughtUp === false || JSON.stringify(saved?.patterns) !== JSON.stringify(patternsOf(config));
     // The gate: restitching uploads a new stitch whenever ANY repo on the network moved, so first ask the chain,
     // filtered by repo name, whether one we follow did. (With publishers named, every run restitches.)
@@ -143,11 +149,14 @@ export function indexer({ name, instructions, tools = [] } = {}) {
                 if (!s) return json({ error: "not indexed yet" }, 404);
                 // The view only changes with the root: cached at the edge under it, so every row is read once per root per
                 // Cloudflare location, and never stale. s-maxage is for that cache; browsers ask again each time.
+                // Not cached while an update is split over runs: the rows change but the root doesn't.
                 // ponytail: the Cache API is a no-op on *.workers.dev, so there every request still reads every row.
                 const version = gate ? `&gate=${gate.all}&verdicts=${(await index.getMeta("verdicts")) ?? ""}` : "";
-                const key = new Request(`${url.origin}/view.json?root=${s.root}${version}`), hit = await caches.default.match(key);
+                const partway = Boolean(await index.getMeta("cursor"));
+                const key = new Request(`${url.origin}/view.json?root=${s.root}${version}`), hit = !partway && await caches.default.match(key);
                 if (hit) return hit;
                 const res = json({ root: s.root, stitch: s.stitch, gateway, records: await index.rows(), ...(gate && { refused: await index.refused() }) });
+                if (partway) return res;
                 res.headers.set("cache-control", "public, s-maxage=31536000, max-age=0");
                 await caches.default.put(key, res.clone());
                 return res;
