@@ -9,14 +9,14 @@ import { fangornStore } from "./store.js";
  * The stitch patterns (see the SDK's stitchFilter): `follow` as given (`publisher/repo` pairs, bare repo names…),
  * else every `publisher/repo` pair of publishers × repos. Without `publishers`, the bare repo names: that repo
  * of EVERY publisher, so a new publisher joins the stitch with no config change (an indexer as a service).
- * A repo name ending in * is a prefix (`lb-*`: every repo whose name starts with lb-), for an app that makes its
+ * A repo name ending in * is a prefix (for example `lb-*`: every repo whose name starts with `lb-`), for an app that makes its
  * repos as it goes; it becomes a regex here, since stitchFilter knows only names, `*` and `/regex/`.
  */
 export const patternsOf = ({ follow, publishers, repos }) =>
     (follow ?? (publishers ? publishers.flatMap((p) => repos.map((r) => `${p}/${r}`)) : [...repos])).map(globToRegex);
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-/** `0xabc/lb-*` or `lb-*` → `/^0xabc\/lb-.*$/` (publisher lowercased, as stitchFilter matches regexes); anything else as is. */
+/** A prefix pattern as a regex, e.g. `0xabc/lb-*` or `lb-*` → `/^0xabc\/lb-.*$/` (publisher lowercased, as stitchFilter matches regexes); anything else as is. */
 export function globToRegex(p) {
     if (p === "*" || p.startsWith("/") || !p.endsWith("*")) return p;
     const i = p.indexOf("/"), publisher = i < 0 ? null : p.slice(0, i), name = p.slice(i + 1, -1);
@@ -26,7 +26,7 @@ export function globToRegex(p) {
 /** Does a repo name match one of `names` (names, or prefixes ending in *)? */
 export const repoMatches = (names, repo) => names.some((n) => n.endsWith("*") ? repo.startsWith(n.slice(0, -1)) : n === repo);
 
-/** The repo names a config follows (prefixes like `lb-*` included), or null when a pattern (`*`, a regex) can't be named. */
+/** The repo names a config follows (prefixes ending in *, e.g. `lb-*`, included), or null when a pattern (`*`, a regex) can't be named. */
 export function reposOf({ follow, publishers, repos }) {
     const patterns = follow ?? (publishers ? publishers.flatMap((p) => repos.map((r) => `${p}/${r}`)) : [...repos]);
     return patterns.some((p) => p === "*" || p.startsWith("/")) ? null : [...new Set(patterns.map((p) => p.slice(p.indexOf("/") + 1)))];

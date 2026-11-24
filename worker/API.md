@@ -107,7 +107,7 @@ The body takes one of three shapes:
 | `{ repo?, records: [...], pin? }` | Up to 500 records, one commit | `{ publisher, repo, cids: { <id>: <cid> }, txHash }` |
 | `{ commits: [{ repo, records, pin? }, ...] }` | Up to 50 repos, one commit each, all in **one transaction** (through Multicall3), all or none | `{ publisher, txHash, commits: [{ repo, cids, txHash }] }` |
 
-A repo in the app's config may be a prefix (`lb-*`): the app publishes to any repo starting with `lb-`, and a grant for `lb-*` covers them all. That's for apps that make repos as they go, one per stream or per user. Each commit counts once against `Config.publishPerDay`, and each signs once against the grant's daily cap.
+A repo in the app's config may be a prefix: any name ending in `*`. For example, with `lb-*` the app publishes to any repo starting with `lb-`, and a grant for `lb-*` covers them all. The prefix is the app's choice; `lb-` is only an example. That's for apps that make repos as they go, one per stream or per user. Each commit counts once against `Config.publishPerDay`, and each signs once against the grant's daily cap.
 
 **Security:** grant
 
@@ -361,7 +361,7 @@ At most 5 MB decoded. Its CID is set as `payload.src`, overwriting any given one
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `repo` | string | when the app has more than one repo, or a prefix | One of the app's repos, or a repo matching one of its prefixes (`lb-*`) |
+| `repo` | string | when the app has more than one repo, or a prefix | One of the app's repos, or a repo matching one of its prefixes (names ending in `*`, e.g. `lb-*`) |
 | `record.id` | string | yes | Publishing an existing `id` replaces it |
 | `record.type` | string | yes | One of `Config.types`' keys, when set |
 | `record.payload` | object | no | |

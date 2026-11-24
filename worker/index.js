@@ -95,7 +95,7 @@ export async function update(env, log = console.log, { fangorn = fangornOf(env),
     // The gate: restitching uploads a new stitch whenever ANY repo on the network moved, so first ask the chain,
     // filtered by repo name, whether one we follow did. (With publishers named, every run restitches.)
     const names = reposOf(config);
-    // A prefix (lb-*) can't be asked for by name: restitch every run then.
+    // A prefix pattern (one ending in *, e.g. lb-*) can't be asked for by name: restitch every run then.
     let moved = checked == null || config.publishers || !names || names.some((n) => n.endsWith("*"));
     for (const repo of moved ? [] : names)
         if ((await registry.log({ repo }, from + 1n, head)).length) { moved = true; break; }
