@@ -12,8 +12,8 @@ importers:
         specifier: ^4.1.6
         version: 4.1.6
       '@fangorn-network/sdk':
-        specifier: ^0.2.3
-        version: 0.2.3(zod@4.6.7)
+        specifier: ^0.2.4
+        version: 0.2.4(zod@4.6.7)
       '@huggingface/transformers':
         specifier: ^4.2.0
         version: 4.3.2(@types/node@26.6.6)
@@ -59,8 +59,8 @@ packages:
   '@emnapi/wasi-threads@2.2.0':
     resolution: {integrity: sha512-JP7OYH38Q7+pyTAe14raZHLQIK7BDKbdwji+Xi3pcd/6QkJYQH3SX4wu6EplGrGJWRepoNzedfm0G3B9Z4e9Rw==}
 
-  '@fangorn-network/sdk@0.2.3':
-    resolution: {integrity: sha512-imBeF7fp7uEI71vPqHVphydkgy/5D87hqHa5L3ivLN7MmaxAlQpHf7qPeaqyIIf/R6fvnHRBAckrRXJpXw7aeg==}
+  '@fangorn-network/sdk@0.2.4':
+    resolution: {integrity: sha512-IVRTxkgJwed0u4Ka9lhTMpQP3H410UvXwk/am5hm+roPZI11CgJtra39Jf/HwKcymkg71DXDFIGn3U5NBpDTcw==}
     engines: {node: '>=20.19.0'}
     hasBin: true
 
@@ -1338,7 +1338,7 @@ snapshots:
       tslib: 2.9.1
     optional: true
 
-  '@fangorn-network/sdk@0.2.3(zod@4.6.7)':
+  '@fangorn-network/sdk@0.2.4(zod@4.6.7)':
     dependencies:
       '@clack/prompts': 1.9.0
       '@ipld/car': 5.4.7
