@@ -3,7 +3,7 @@
 //
 //   node src/sandbox.js [dir=.sandbox]
 //
-// - a fresh anvil with the contracts deployed from source (../contracts), via the SDK's chainNetwork;
+// - a fresh anvil with the contracts deployed from source (../contracts), via the SDK's chainNetwork, and Multicall3;
 // - a stand-in for the upload worker and the IPFS gateway, with blocks kept in <dir>/ipfs;
 // - funded keys for alice, bob, carol, eve and the indexer;
 // - <dir>/sandbox.json, which `"network": "sandbox"` in app.json reads, and <dir>/app.json to start from;
@@ -85,6 +85,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
     for (const who of ["alice", "bob", "carol", "eve", "indexer"]) keys[who] = await net.wallet();
 
     const { rpcUrl, dataRegistryContractAddress, settlementRegistryContractAddress } = net.config;
+    // Multicall3 at its usual address, as on every real network, so apps can move many repos in one tx (src/multicall.js).
+    const { MULTICALL3, MULTICALL3_CODE } = await import("./multicall.js");
+    await fetch(rpcUrl, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "anvil_setCode", params: [MULTICALL3, MULTICALL3_CODE] }) });
     const deployment = { rpcUrl, dataRegistryContractAddress, settlementRegistryContractAddress, fromBlock: "0",
                          signedUrlWorker: storage.worker, ipfsGateway: storage.gateway };
     writeFileSync(join(dir, "sandbox.json"), JSON.stringify({ deployment, keys }, null, 2));

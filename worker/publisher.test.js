@@ -3,7 +3,8 @@ import { memoryNetwork } from "@fangorn-network/sdk/lib/test/testbed.js";
 import { MEM_DOMAIN } from "@fangorn-network/sdk/lib/test/mem-registry.js";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { UPDATE_TYPES } from "@fangorn-network/sdk/lib/contracts/data-registry/index.js";
-import { publishAs, publish, grantOf, signerFor } from "./publisher.js";
+import { publishAs, publish, grantOf, signerFor, batchSignerFor } from "./publisher.js";
+import { relayEach } from "../src/multicall.js";
 
 test("the app publishes into the publisher's own repo, on the publisher's signature only", async () => {
     const net = memoryNetwork();
@@ -50,8 +51,10 @@ function fakeFangornNetwork(alice, repos) {
     globalThis.fetch = async (url, init) => {
         if (init.headers.authorization !== "Bearer fgn_alice") return ok({ error: "no such grant" }, 401);
         if (url.endsWith("/api/grant")) return ok({ address: alice.address, app: "test", repos });
-        const m = JSON.parse(init.body).message;
-        return ok({ signature: await alice.signTypedData({ domain: MEM_DOMAIN, types: UPDATE_TYPES, primaryType: "Update", message: { ...m, epoch: BigInt(m.epoch) } }) });
+        const sign = (m) => alice.signTypedData({ domain: MEM_DOMAIN, types: UPDATE_TYPES, primaryType: "Update", message: { ...m, epoch: BigInt(m.epoch) } });
+        const body = JSON.parse(init.body);
+        if (body.messages) return ok({ signatures: await Promise.all(body.messages.map(sign)) });
+        return ok({ signature: await sign(body.message) });
     };
     return () => { globalThis.fetch = real; };
 }
@@ -134,4 +137,43 @@ test("POST /publish: the app's check refuses before any gas, with its reason, ou
         expect(new TextDecoder().decode(seen[0].ctx.file)).toBe('{"html":"<p>"}');
         expect(await publish(on, "fgn_alice", { record: { id: "y", type: "game", payload: { title: "fine" } } })).toMatchObject({ id: "y" });
     } finally { restore(); }
+});
+
+test("POST /publish: many records in one commit, and commits to many repos (by prefix) in one call", async () => {
+    const net = memoryNetwork(), app = await net.client(), alice = privateKeyToAccount(generatePrivateKey());
+    const meta = new Map(), restore = fakeFangornNetwork(alice, ["lb-*"]);
+    const on = { fangorn: app, config: { repos: ["lb-*"], publishPerDay: 4 }, meta: { get: async (k) => meta.get(k), set: async (k, v) => meta.set(k, v) }, base: "https://f", domain: MEM_DOMAIN, relay: relayEach };
+    const status = (p) => p.then(() => 200, (e) => e.status);
+    const ev = (n) => ({ id: `e/${n}`, type: "event", payload: { n } });
+    try {
+        const one = await publish(on, "fgn_alice", { repo: "lb-storms", records: [ev(0), ev(1), ev(2)] });
+        expect(Object.keys(one.cids)).toEqual(["e/0", "e/1", "e/2"]);
+        expect((await app.engine.readRecord(alice.address, "lb-storms", "e/1")).cid).toBe(one.cids["e/1"]);
+
+        const out = await publish(on, "fgn_alice", { commits: [
+            { repo: "lb-storms", records: [ev(3), { id: "b/1", type: "batch", payload: { prev: { id: "e/2" } } }], pin: ["prev"] },
+            { repo: "lb-rivers", records: [ev(0)] },
+        ] });
+        expect(out.commits.map((c) => c.repo)).toEqual(["lb-storms", "lb-rivers"]);
+        expect((await app.engine.readRecord(alice.address, "lb-rivers", "e/0")).cid).toBe(out.commits[1].cids["e/0"]);
+        expect((await app.engine.readRecord(alice.address, "lb-storms", "b/1")).payload.prev).toMatchObject({ id: "e/2", cid: one.cids["e/2"] });
+        expect([...meta.values()]).toEqual([3]); // one per commit
+
+        expect(await status(publish(on, "fgn_alice", { commits: [{ repo: "lb-a", records: [ev(0)] }, { repo: "lb-b", records: [ev(0)] }] }))).toBe(429); // 3 + 2 > 4
+        expect(await status(publish(on, "fgn_alice", { commits: [{ repo: "notes", records: [ev(0)] }] }))).toBe(404);          // not the app's
+        expect(await status(publish(on, "fgn_alice", { commits: [{ repo: "lb-a", records: [ev(0)] }, { repo: "lb-a", records: [ev(1)] }] }))).toBe(400);
+        expect(await status(publish(on, "fgn_alice", { records: [ev(0)] }))).toBe(404);                                        // a prefix isn't a default repo
+        expect(await status(publish(on, "fgn_alice", { repo: "lb-a", records: [ev(0)], file: { json: {} } }))).toBe(400);
+        expect(await status(publish({ ...on, config: { repos: ["lb-*", "x-*"], publishPerDay: 9 } }, "fgn_alice", { repo: "x-1", records: [ev(0)] }))).toBe(403); // the app's, not granted
+    } finally { restore(); }
+});
+
+test("batch signing: one /api/sign call with every message, epochs as strings", async () => {
+    const seen = [], real = globalThis.fetch;
+    globalThis.fetch = async (url, init) => { seen.push(JSON.parse(init.body)); return new Response(JSON.stringify({ signatures: ["0x1", "0x2"] }), { headers: { "content-type": "application/json" } }); };
+    try {
+        const t = (repo) => ({ message: { publisher: "0xA", repo, epoch: 7n } });
+        expect(await batchSignerFor("fgn_ok", "https://f")([t("a"), t("b")])).toEqual(["0x1", "0x2"]);
+        expect(seen).toEqual([{ messages: [{ publisher: "0xA", repo: "a", epoch: "7" }, { publisher: "0xA", repo: "b", epoch: "7" }] }]);
+    } finally { globalThis.fetch = real; }
 });
