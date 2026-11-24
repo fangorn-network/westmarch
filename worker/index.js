@@ -96,7 +96,7 @@ export async function update(env, log = console.log, { fangorn = fangornOf(env),
     // filtered by repo name, whether one we follow did. (With publishers named, every run restitches.)
     const names = reposOf(config);
     // A prefix pattern (one ending in *, e.g. lb-*) can't be asked for by name: restitch every run then.
-    let moved = checked == null || config.publishers || !names || names.some((n) => n.endsWith("*"));
+    let moved = behind || config.publishers || !names || names.some((n) => n.endsWith("*"));
     for (const repo of moved ? [] : names)
         if ((await registry.log({ repo }, from + 1n, head)).length) { moved = true; break; }
     if (moved) log(`root ${await stitcher(fangorn, config, { store: index.store, lens: index.lens, step }).update()}`);
