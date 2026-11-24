@@ -13,7 +13,7 @@ The same spec as OpenAPI 3.1, for Swagger UI, Redoc or a client generator: [open
 | `GET` | [`/api.json`](#get-apijson) | What this deployment is and how to use it | none |
 | `GET` | [`/view.json`](#get-viewjson) | The whole index | none |
 | `GET` | [`/search`](#get-search) | Records by relevance | none |
-| `POST` | [`/publish`](#post-publish) | Publish a record into the bearer's own repo | grant |
+| `POST` | [`/publish`](#post-publish) | Publish records into the bearer's own repos: one record, one commit, or one commit per repo in one transaction | grant |
 | `POST` | [`/mcp`](#post-mcp) | MCP server: `search`, `repos`, `get`, `publish` | grant, for `publish` |
 
 ### Authentication
@@ -97,7 +97,17 @@ Hybrid search combines the semantic and FTS5 rankings by reciprocal rank. Each h
 
 ### `POST /publish`
 
-Publishes one record into the bearer's own repo. The Worker builds the commit, fangorn.network signs it with the bearer's wallet (if their grant covers the repo), and the Worker relays it and pays the gas. It answers once the record has been read back from the chain at its new `cid`.
+Publishes into the bearer's own repos. The Worker builds each commit, fangorn.network signs them with the bearer's wallet (if their grant covers the repos), and the Worker relays them and pays the gas. It answers once every commit has been read back from the chain.
+
+The body takes one of three shapes:
+
+| Shape | What it does | Answer |
+|---|---|---|
+| `{ repo?, record, file?, pin? }` | One record, one commit | [`PublishResult`](#publishresult) |
+| `{ repo?, records: [...], pin? }` | Up to 500 records, one commit | `{ publisher, repo, cids: { <id>: <cid> }, txHash }` |
+| `{ commits: [{ repo, records, pin? }, ...] }` | Up to 50 repos, one commit each, all in **one transaction** (through Multicall3), all or none | `{ publisher, txHash, commits: [{ repo, cids, txHash }] }` |
+
+A repo in the app's config may be a prefix (`lb-*`): the app publishes to any repo starting with `lb-`, and a grant for `lb-*` covers them all. That's for apps that make repos as they go, one per stream or per user. Each commit counts once against `Config.publishPerDay`, and each signs once against the grant's daily cap.
 
 **Security:** grant
 
@@ -236,7 +246,8 @@ The Worker's `CONFIG` var. In the ops repo, one `apps.json` entry per app, with 
 | `repos` | string[] | one of `follow`, `repos` | Repo names, followed across every publisher |
 | `publishers` | string[] | no | With `repos`: only these 0x addresses |
 | `publishView` | string | no | Repo the view is published to on each new root |
-| `publishPerDay` | integer | no | Publishes per UTC day the app pays gas for, across all publishers. Unset: publishing is off |
+| `publishPerDay` | integer | no | Commits per UTC day the app pays gas for, across all publishers. Unset: publishing is off |
+| `grantPerDay` | integer | no | The daily signature cap the connect link asks each person to approve (fangorn.network's default: 100, up to 10,000) |
 | `name` | string | no | Shown to agents and on the connect page |
 | `instructions` | string | no | Told to agents at MCP `initialize`. `{gateway}` is replaced with the network's IPFS gateway |
 | `index` | string | no | `"repos"`: index repos, not records: one row per repo (head and agent card). MCP tools become `find`, `repo`, `read`, and `GET /repos?q=&publisher=&k=` returns `{ stitch, repos }`. With `follow: ["*"]`, Fangorn's registry. Don't combine with `publishView` and `"*"` (each publish moves the root again) |
@@ -350,7 +361,7 @@ At most 5 MB decoded. Its CID is set as `payload.src`, overwriting any given one
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `repo` | string | when the app has more than one repo | One of the app's repos |
+| `repo` | string | when the app has more than one repo, or a prefix | One of the app's repos, or a repo matching one of its prefixes (`lb-*`) |
 | `record.id` | string | yes | Publishing an existing `id` replaces it |
 | `record.type` | string | yes | One of `Config.types`' keys, when set |
 | `record.payload` | object | no | |

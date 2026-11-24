@@ -23,7 +23,7 @@
 // own repo is in the stitch, so each publish would move the root and publish again.)
 //
 // Bindings: DB (D1), AI (Workers AI), ASSETS?, CONFIG (a JSON var: follow (publisher/repo pairs) or repos and publishers?,
-// network, publishView?, name?, publishPerDay?, instructions?, types?, schema?, rules?, index?), VALIDATOR (a service
+// network, publishView?, name?, publishPerDay?, grantPerDay?, instructions?, types?, schema?, rules?, index?), VALIDATOR (a service
 // binding to the app's validator Worker, worker/validator.js) when CONFIG names rules, and the secret INDEXER_KEY: it signs the stitch blocks' uploads and the view's commits, and pays their gas.
 
 import { Fangorn, SupportedNetworks } from "@fangorn-network/sdk";
@@ -65,7 +65,7 @@ export function manifest(config, { origin, gateway, name }) {
     const repos = reposOf(config) ?? [], publish = Boolean(config.publishPerDay), mcp = `${origin}/mcp`;
     return {
         name, network: config.network ?? "baseSepolia", gateway, repos, types: config.types ?? {}, schema: config.schema ?? null, rules: listOf(config.rules), publish, mcp,
-        ...(publish && { connect: `${FANGORN}/#/connect?${new URLSearchParams({ app: origin, repos: repos.join(","), name, mcp })}` }),
+        ...(publish && { connect: `${FANGORN}/#/connect?${new URLSearchParams({ app: origin, repos: repos.join(","), name, mcp, ...(config.grantPerDay && { perDay: String(config.grantPerDay) }) })}` }),
     };
 }
 
@@ -75,7 +75,8 @@ export async function update(env, log = console.log) {
     // The gate: restitching uploads a new stitch whenever ANY repo on the network moved, so first ask the chain,
     // filtered by repo name, whether one we follow did. (With publishers named, every run restitches.)
     const names = reposOf(config);
-    let moved = checked == null || config.publishers || !names;
+    // A prefix (lb-*) can't be asked for by name: restitch every run then.
+    let moved = checked == null || config.publishers || !names || names.some((n) => n.endsWith("*"));
     for (const repo of moved ? [] : names)
         if ((await registry.log({ repo }, BigInt(checked) + 1n, head)).length) { moved = true; break; }
     if (moved) log(`root ${await stitcher(fangorn, config, { store: index.store, lens: index.lens }).update()}`);
@@ -151,7 +152,7 @@ export function indexer({ name, instructions, tools = [] } = {}) {
             }
             if (url.pathname === "/publish") {
                 if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
-                if (req.method !== "POST") return json({ error: "POST { repo, record }" }, 405);
+                if (req.method !== "POST") return json({ error: "POST { repo, record }, { repo, records }, or { commits }" }, 405);
                 const token = req.headers.get("authorization")?.match(/^Bearer\s+(\S+)/i)?.[1];
                 if (!token) return json({ error: "a fangorn.network grant token is the bearer" }, 401);
                 const body = await req.json().catch(() => null);
