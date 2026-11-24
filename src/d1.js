@@ -41,24 +41,82 @@ const unpack = (b) => typeof b === "string" ? JSON.parse(b)
     : b instanceof ArrayBuffer ? new Int8Array(b) : ArrayBuffer.isView(b) ? new Int8Array(b.buffer, b.byteOffset, b.byteLength) : Int8Array.from(b);
 const row = (r) => ({ publisher: r.publisher, repo: r.repo, id: r.id, cid: r.cid, type: r.type, payload: JSON.parse(r.payload) });
 
-/**
- * What changed in a repo from head `from` to `to`, against `known` (id → record CID, what the index holds now),
- * reading only the commits in between: their diff events, and the records they put.
- * `repoDiff` looks every changed id up in the OLD tree, and an old tree node resolves by walking the repo's
- * history one CAR at a time: 226 fetches for a 3-record commit on a 300-record repo, where a free-plan run may make 50.
- */
-// ponytail: a put whose record CID an older commit introduced (a revert) still walks back to it; rare
-export async function diffSince(engine, from, to, known) {
-    const zero = (h) => !h || /^0x0*$/.test(h);
-    const tip = zero(to) ? null : engine.hexToRootCid(to);
-    const events = !zero(from) && tip && await engine.eventsSince(engine.hexToRootCid(from), tip);
-    if (!events) return engine.repoDiff(from, to); // a new or emptied repo, a reset, or commits without diff events
-    const puts = [], deletes = [];
-    for (const [id, after] of events) {
-        if (!after) { if (known.has(id)) deletes.push(id); }
-        else if (known.get(id) !== after.toString()) puts.push(await engine.decodeRecord(id, after, tip));
+// The most changes (puts and deletes) one run takes in, across every moved repo. A bigger update goes over several
+// runs, each saving where it stopped (`cursor` in meta). Measured on a 50k-record repo (one 40.8 MB CAR) with the SDK's
+// lean CARs: 2,000 a run is ~5 s and fits a 48 MB heap.
+export const CHANGES_PER_RUN = 2000;
+const PAGE = 1000; // index rows read per query in a merge
+const IDS_PER_QUERY = 90; // D1 binds at most 100 parameters a query
+
+const zero = (h) => !h || /^0x0*$/.test(h);
+
+/** The commits after `from` up to `to`, newest first, when each carries a diff event; else null (as eventsSince). */
+async function eventCommits(engine, from, to) {
+    if (zero(from) || zero(to)) return null;
+    const old = engine.hexToRootCid(from), path = [];
+    for await (const { cid, commit } of engine.walkParents(engine.hexToRootCid(to))) {
+        if (cid.equals(old)) return path;
+        if (!commit.diff || !commit.parent) return null;
+        path.push(cid);
     }
-    return { puts, deletes };
+    return null;
+}
+
+/** Streams of `[id, value]` in id order, merged into one; on an id in several, the first stream's value wins. */
+async function* firstWins(streams) {
+    const heads = await Promise.all(streams.map(async (s) => ({ s, at: await s.next() })));
+    try {
+        for (;;) {
+            const live = heads.filter((h) => !h.at.done);
+            if (!live.length) return;
+            const id = live.reduce((min, h) => (h.at.value[0] < min ? h.at.value[0] : min), live[0].at.value[0]);
+            let won;
+            for (const h of live) if (h.at.value[0] === id) { won ??= h.at.value; h.at = await h.s.next(); }
+            yield won;
+        }
+    } finally { await Promise.all(streams.map((s) => s.return?.())); }
+}
+
+/**
+ * A moved repo's changes from head `from` to `to` that the index doesn't hold yet, in id order from just after
+ * `after`: `[id, record CID]` to put, `[id, null]` to delete. `held` reads the index: `held.ids(ids)` → Map id → cid
+ * for those it holds, `held.after(id, n)` → its next n rows `{ id, cid }` in id order. Memory stays with one page, never
+ * the repo or the diff, so a 50k-record commit can be taken in a range at a time.
+ *  - When every commit in between carries a diff event, it reads only those (each commit's diff tree, merged, the
+ *    newest write winning) and the index rows they name.
+ *  - Otherwise (a new repo, a reset, commits from before diff events), the new tree itself, against every index row.
+ */
+export async function* changesSince(engine, { from, to, after = null }, held) {
+    const commits = await eventCommits(engine, from, to);
+    if (commits) {
+        const diffs = firstWins(commits.map((c) => engine.diffEntriesAt(c, { after })));
+        let batch = [];
+        async function* settle() {
+            const have = await held.ids(batch.map(([id]) => id));
+            for (const [id, cid] of batch) if (cid ? have.get(id) !== cid.toString() : have.has(id)) yield [id, cid];
+            batch = [];
+        }
+        for await (const e of diffs) if (batch.push(e) === IDS_PER_QUERY) yield* settle();
+        yield* settle();
+        return;
+    }
+    const tree = zero(to) ? null : engine.entriesAt(engine.hexToRootCid(to), { after });
+    let page = [], i = 0, last = after ?? "", more = true;
+    const row = async () => {
+        if (i === page.length && more) { page = await held.after(last, PAGE); i = 0; more = page.length === PAGE; if (page.length) last = page.at(-1).id; }
+        return page[i] ?? null;
+    };
+    try {
+        let t = tree ? await tree.next() : { done: true };
+        for (;;) {
+            const r = await row(), id = t.done ? null : t.value[0];
+            if (id === null && r === null) return;
+            if (id === null || (r && r.id < id)) { i++; yield [r.id, null]; continue; } // in the index, gone from the tree
+            if (r && r.id === id) { i++; if (r.cid !== t.value[1].toString()) yield t.value; }
+            else yield t.value;
+            t = await tree.next();
+        }
+    } finally { await tree?.return(); }
 }
 
 /**
@@ -67,10 +125,12 @@ export async function diffSince(engine, from, to, known) {
  * CID and its type's checker, that let it in: a new record, a changed one, or every one of a type whose checks changed
  * waits for checkMissing.
  */
-export function d1Index({ db, fangorn, gate = null }) {
+export function d1Index({ db, fangorn, gate = null, perRun = CHANGES_PER_RUN }) {
     const getMeta = async (k) => { const r = await db.prepare("SELECT v FROM meta WHERE k = ?").bind(k).first(); return r && JSON.parse(r.v); };
     const setMeta = (k, v) => db.prepare("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v").bind(k, json(v));
     let pending = [];
+    // What `save` writes to meta.cursor with the staged rows: a cursor, null to clear it, undefined to leave it.
+    let pendingCursor;
     // The gate as SQL over `records`, and its parameters: a verdict for the row's CID, by its type's checker.
     const typed = Object.entries(gate?.types ?? {});
     const checker = typed.length ? `CASE records.type ${typed.map(() => "WHEN ? THEN ?").join(" ")} ELSE ? END` : "?";
@@ -91,23 +151,59 @@ export function d1Index({ db, fangorn, gate = null }) {
                     ON CONFLICT (publisher, repo, id) DO UPDATE SET cid = excluded.cid, type = excluded.type,
                     payload = excluded.payload, text = excluded.text, vec = NULL`)
                     .bind(op.publisher, op.repo, op.id, op.cid, op.type, op.payload, op.text));
+            if (pendingCursor) ops.push(setMeta("cursor", pendingCursor));
+            else if (pendingCursor === null) ops.push(db.prepare("DELETE FROM meta WHERE k = 'cursor'"));
             ops.push(setMeta("stitch", it));
             await db.batch(ops);
             pending = [];
+            pendingCursor = undefined;
         },
     };
 
+    const heldIn = (p, repo) => ({
+        async ids(ids) {
+            if (!ids.length) return new Map();
+            const { results } = await db.prepare(`SELECT id, cid FROM records WHERE publisher = ? AND repo = ? AND id IN (${ids.map(() => "?").join(", ")})`)
+                .bind(p, repo, ...ids).all();
+            return new Map(results.map((r) => [r.id, r.cid]));
+        },
+        after: async (id, n) => (await db.prepare("SELECT id, cid FROM records WHERE publisher = ? AND repo = ? AND id > ? ORDER BY id LIMIT ?")
+            .bind(p, repo, id, n).all()).results,
+    });
+
     const lens = {
+        /**
+         * Takes in at most `perRun` changes. When there were more, it says `{ partial: true }` and `save` stores
+         * meta.cursor with the rows: which moved repos are done (`done`, as publisher/repo@head) and where the one it
+         * stopped in got to (`at`). Called again with the same changes, it resumes there. A cursor for other changes (a
+         * repo moved on since) is dropped: its rows are kept, and anything still different is taken in again.
+         */
         async apply(changes) {
-            const staged = [];
+            const saved = (await getMeta("cursor")) ?? { done: [] }, engine = fangorn.engine;
+            const staged = [], done = [];
+            let room = perRun, at = null;
             for (const { publisher, repo, from, to } of changes) {
-                const p = publisher.toLowerCase();
-                const { results } = await db.prepare("SELECT id, cid FROM records WHERE publisher = ? AND repo = ?").bind(p, repo).all();
-                const { puts, deletes } = await diffSince(fangorn.engine, from, to, new Map(results.map((r) => [r.id, r.cid])));
-                for (const id of deletes) staged.push({ publisher: p, repo, id });
-                for (const r of puts) staged.push({ publisher: p, repo, id: r.id, cid: r.cid, type: r.type ?? null, payload: json(r.payload), text: textOf(r.payload) });
+                const p = publisher.toLowerCase(), key = `${p}/${repo}@${to}`;
+                if (saved.done.includes(key)) { done.push(key); continue; }
+                const resume = saved.at?.key === key ? saved.at.after : null;
+                if (room === 0) { at = { key, after: resume }; break; }
+                const puts = [];
+                let last = resume;
+                for await (const [id, cid] of changesSince(engine, { from, to, after: resume }, heldIn(p, repo))) {
+                    if (room === 0) { at = { key, after: last }; break; }
+                    room--;
+                    last = id;
+                    if (cid) puts.push([id, cid]);
+                    else staged.push({ publisher: p, repo, id });
+                }
+                if (puts.length) for (const r of await engine.getRecords(puts, engine.hexToRootCid(to)))
+                    staged.push({ publisher: p, repo, id: r.id, cid: r.cid, type: r.type ?? null, payload: json(r.payload), text: textOf(r.payload) });
+                if (at) break;
+                done.push(key);
             }
             pending.push(...staged);
+            pendingCursor = at && { done, at };
+            return at ? { partial: true } : undefined;
         },
     };
 
