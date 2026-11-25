@@ -42,18 +42,19 @@ The first run downloads EmbeddingGemma-300m (about 300 MB) and indexes everythin
 
 - a fresh anvil, with the contracts deployed from `../contracts` (`FANGORN_CONTRACTS_DIR` points it elsewhere);
 - a local stand-in for the upload worker and the IPFS gateway, with blocks stored in `.sandbox/ipfs`;
-- funded keys for alice, bob, carol and the indexer.
+- funded keys for alice, bob, carol, eve and the indexer.
 
-It needs `anvil` and `forge`. In another terminal:
+It needs `anvil` and `forge`. In another terminal, from this checkout:
 
 ```sh
+WESTMARCH="$PWD"                                      # this checkout
 mkdir -p /tmp/shop && cd /tmp/shop
 echo '[{"id":"t1","name":"oak table"}]' > items.json
-~/fangorn/indexer/.sandbox/fangorn repo init shop    # the real fangorn CLI, on the sandbox, as alice
-~/fangorn/indexer/.sandbox/fangorn add items.json && ~/fangorn/indexer/.sandbox/fangorn commit && ~/fangorn/indexer/.sandbox/fangorn push
-AS=bob ~/fangorn/indexer/.sandbox/fangorn …          # as bob
+"$WESTMARCH/.sandbox/fangorn" repo init shop          # the SDK's fangorn CLI, on the sandbox, as alice
+"$WESTMARCH/.sandbox/fangorn" add items.json && "$WESTMARCH/.sandbox/fangorn" commit && "$WESTMARCH/.sandbox/fangorn" push
+AS=bob "$WESTMARCH/.sandbox/fangorn" …                # as bob
 
-cd ~/fangorn/indexer
+cd "$WESTMARCH"
 node src/run.js .sandbox/app.json                     # index alice's and bob's "shop"
 claude mcp add fangorn-sandbox -- node "$PWD/src/mcp.js" "$PWD/.sandbox/app.json" --watch
 ```
