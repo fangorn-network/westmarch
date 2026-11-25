@@ -1,6 +1,6 @@
 # westmarch Worker API
 
-**Version:** 0.4 · **Base URL:** `https://<app>.fangorn.network`, or any westmarch Worker deployment
+**Version:** 0.4 · **Base URL:** `https://<app>.fangorn.network`, any westmarch Worker deployment, or an app in [the pool](#the-pool) (`https://<pool>/apps/<app>`)
 
 Every westmarch Worker deployment serves this API. Apps differ only in their [`Config`](#config): which repos the Worker follows, on which network, what it calls itself and the record types it documents. A UI is built against this API with a base URL; no app code runs in the Worker.
 
@@ -385,6 +385,52 @@ At most 5 MB decoded. Its CID is set as `payload.src`, overwriting any given one
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `error` | string | yes | What went wrong, for a person to read |
+
+---
+
+## The pool
+
+[worker/pool.js](pool.js) runs many apps in one Worker. Each app serves the API above, at `https://<name>.<POOL_ZONE>` or `https://<pool>/apps/<name>`. The pool Worker adds its own admin API, below. It isn't part of an app's API, so it isn't in [openapi.yaml](openapi.yaml).
+
+| Method | Path | Summary |
+|---|---|---|
+| `GET` | `/_pool/apps` | Every app, as a [`Fleet`](#fleet) |
+| `PUT` | `/_pool/apps/<name>` | Create or update the app from a [`Config`](#config) body → its [`AppStatus`](#appstatus). A new app gets a gas wallet, its first run now, and its hostname |
+| `GET` | `/_pool/apps/<name>` | Its [`AppStatus`](#appstatus) |
+| `POST` | `/_pool/apps/<name>/pause` | Stop its runs; it keeps serving what it has → its [`AppStatus`](#appstatus) |
+| `POST` | `/_pool/apps/<name>/resume` | Run again now, from its saved stitch → its [`AppStatus`](#appstatus) |
+| `DELETE` | `/_pool/apps/<name>` | Remove it: hostname, runs, index and gas key → `{ "removed": "<name>" }`. Drain its wallet first |
+
+- **Auth.** Every `/_pool` route takes `Authorization: Bearer <ADMIN_TOKEN>`, else `401`.
+- **Names.** Lowercase letters, digits and dashes, up to 58, and not reserved (`pool`, `www`, `registry`, …). Else `400`.
+- **Config.** A [`Config`](#config), minus `rules`, `index` and `x402`, which the pool doesn't run. Schemas must be inline JSON Schema. Following `*` is the registry's job. A config the pool won't take is a `400` saying why. `name` defaults to the app's name.
+- **Errors.** An unknown app is `404`. Every error body is an [`Error`](#error).
+- **Path routing.** An app reached by path is told its public base in the `x-westmarch-origin` header, so its [`Manifest`](#manifest) URLs carry the path. The pool sets that header itself and drops any a client sends.
+
+### AppStatus
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | The app's name in the pool |
+| `config` | [`Config`](#config) | yes | As the pool holds it |
+| `wallet` | string | yes | The app's gas wallet. Fund it if the app publishes (`publishView`, `publishPerDay`) |
+| `hostname` | string \| null | yes | Its Custom Domain, or null when it's served by path only |
+| `hostnameError` | string | after a `PUT`, when making the hostname failed | Why: for example, another Worker serves that name |
+| `paused` | boolean | yes | Whether its runs are stopped |
+| `nextRun` | string \| null | yes | When its next run is due (ISO 8601), or null while paused |
+| `stitch` | object \| null | yes | `{ root, block, caughtUp }`: the saved stitch, the block it's folded up to, and whether it has caught up with the chain. Null before the first run |
+| `records` | integer | yes | Records in its index |
+| `embedded` | integer | yes | Records with a vector |
+| `embedCache` | object \| null | yes | `{ hits, misses, written }` in the shared cache over its runs, or null without one. `misses` counts rows looked up, embedded or not yet |
+| `lastRun` | string \| null | yes | When its last run ended (ISO 8601) |
+| `lastError` | string \| null | yes | Why the last run failed, or null |
+
+### Fleet
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `apps` | object[] | yes | Each app's [`AppStatus`](#appstatus) without `config`, plus `created` (ISO 8601) and `follow` (its patterns) |
+| `embedCache` | object \| null | yes | `{ n }`: vectors in the shared cache, or null without one |
 
 ---
 

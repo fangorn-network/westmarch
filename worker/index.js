@@ -71,6 +71,8 @@ export const fangornOf = (env) => Fangorn.create({ privateKey: env.INDEXER_KEY, 
 const encode = (env, prompt) => async (texts) =>
     (await env.AI.run(AI_MODEL, { text: texts.map((t) => prompt + t) })).data.map((v) => matryoshka(v));
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type, authorization, mcp-protocol-version", "access-control-allow-methods": "POST" };
+/** Set by worker/pool.js (and stripped from what clients send): the app's public base URL when it's served under a path. */
+export const ORIGIN_HEADER = "x-westmarch-origin";
 const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json", "access-control-allow-origin": "*" } });
 
 /** GET /api.json: what this deployment is and how to use it (worker/API.md, Manifest). `origin` is the API's own. */
@@ -116,8 +118,14 @@ export async function update(env, log = console.log, { fangorn = fangornOf(env),
         const { checked, refused } = await index.checkMissing((r, c) => checker.check(r, { ...c, file: fileOf(fangorn, r) }), CHECK_PER_RUN);
         if (checked) { log(`checked ${checked}, refused ${refused}`); await index.setMeta("verdicts", Date.now()); }
     }
-    const n = await index.embedMissing(encode(env, DOCUMENT), EMBED_PER_RUN);
-    if (n) log(`embedded ${n}`);
+    // EMBED_CACHE (worker/embeds.js, set by worker/pool.js): vectors other apps already made come from there, past the budget.
+    const cache = env.EMBED_CACHE?.({ model: AI_MODEL, prompt: DOCUMENT });
+    const n = await index.embedMissing(encode(env, DOCUMENT), EMBED_PER_RUN, { cache });
+    if (n) log(`embedded ${n}${cache ? ` (cache: ${cache.hits} hits, ${cache.misses} misses)` : ""}`);
+    if (cache && (cache.hits || cache.misses)) {
+        const c = (await index.getMeta("embedCache")) ?? { hits: 0, misses: 0, written: 0 };
+        await index.setMeta("embedCache", { hits: c.hits + cache.hits, misses: c.misses + cache.misses, written: c.written + cache.written });
+    }
     const packed = await index.packVectors?.();
     if (packed) log(`vectors packed ${packed}`);
     // The view to Fangorn, once per root (and per batch of verdicts): `published` moves only when it landed, so a
@@ -142,7 +150,9 @@ export function indexer({ name, instructions, tools = [] } = {}) {
         async fetch(req, env) {
             const gate = await gatesOf(env.CONFIG), url = new URL(req.url), index = indexOf(env, undefined, gate), gateway = networkOf(env).ipfsGateway;
             const config = env.CONFIG, appName = name ?? config.name ?? "westmarch", meta = { get: index.getMeta, set: index.setMeta };
-            const info = () => manifest(config, { origin: url.origin, gateway, name: appName });
+            // The app's public base: its own origin, or the one a router in front gives (worker/pool.js, for /apps/<name>/).
+            const origin = req.headers.get(ORIGIN_HEADER) ?? url.origin;
+            const info = () => manifest(config, { origin, gateway, name: appName });
             if (url.pathname === "/api.json") return json(info());
             if (url.pathname === "/view.json") {
                 const s = await index.getMeta("stitch");
@@ -153,12 +163,12 @@ export function indexer({ name, instructions, tools = [] } = {}) {
                 // ponytail: the Cache API is a no-op on *.workers.dev, so there every request still reads every row.
                 const version = gate ? `&gate=${gate.all}&verdicts=${(await index.getMeta("verdicts")) ?? ""}` : "";
                 const partway = Boolean(await index.getMeta("cursor"));
-                const key = new Request(`${url.origin}/view.json?root=${s.root}${version}`), hit = !partway && await caches.default.match(key);
+                const key = new Request(`${url.origin}/view.json?root=${s.root}${version}`), edge = globalThis.caches?.default, hit = !partway && await edge?.match(key);
                 if (hit) return hit;
                 const res = json({ root: s.root, stitch: s.stitch, gateway, records: await index.rows(), ...(gate && { refused: await index.refused() }) });
                 if (partway) return res;
                 res.headers.set("cache-control", "public, s-maxage=31536000, max-age=0");
-                await caches.default.put(key, res.clone());
+                await edge?.put(key, res.clone()); // none inside a Durable Object (worker/pool.js)
                 return res;
             }
             if (url.pathname === "/mcp") {
@@ -169,7 +179,7 @@ export function indexer({ name, instructions, tools = [] } = {}) {
                 if (Array.isArray(msg)) return json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "one message per request" } }, 400);
                 const fangorn = fangornOf(env), repos = config.index === "repos", told = instructions ?? config.instructions ?? (repos ? REPOS_INSTRUCTIONS : undefined);
                 const answer = await mcpCall({
-                    index, fangorn, gateway, env, origin: url.origin,
+                    index, fangorn, gateway, env, origin,
                     auth: req.headers.get("authorization")?.match(/^Bearer\s+(\S+)/i)?.[1],
                     query: async (q) => (await encode(env, QUERY)([q]))[0],
                     name: appName,

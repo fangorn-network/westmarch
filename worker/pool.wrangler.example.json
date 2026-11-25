@@ -1,0 +1,17 @@
+{
+  "name": "westmarch-pool",
+  "main": "node_modules/@fangorn-network/westmarch/worker/pool.js",
+  "compatibility_date": "2025-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "ai": { "binding": "AI" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "APPS", "class_name": "App" },
+      { "name": "DIRECTORY", "class_name": "Directory" },
+      { "name": "EMBEDS", "class_name": "Embeds" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["App", "Directory", "Embeds"] }],
+  "alias": { "@huggingface/transformers": "./node_modules/@fangorn-network/westmarch/worker/no-model.js" },
+  "vars": { "POOL_ZONE": "fangorn.network", "POOL_SERVICE": "westmarch-pool", "CF_ACCOUNT_ID": "<account id>" }
+}
