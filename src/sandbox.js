@@ -90,6 +90,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
     writeFileSync(join(dir, "sandbox.json"), JSON.stringify({ deployment, keys }, null, 2));
     // The fangorn CLI, on the sandbox, as alice (or AS=bob …). It gets its own HOME, so it never picks up
     // ~/.fangorn (your real key and storage).
+    // The CLI the SDK ships (its `bin`), run by the node running this: no global `fangorn` needed, and always the
+    // SDK version westmarch depends on.
+    const cli = fileURLToPath(import.meta.resolve("@fangorn-network/sdk/lib/cli/cli.js"));
     const addr = (who) => privateKeyToAccount(keys[who]).address;
     mkdirSync(join(dir, "home"), { recursive: true });
     writeFileSync(join(dir, "fangorn"), [
@@ -100,7 +103,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
         `export HOME=${join(dir, "home")} CHAIN_NAME=baseSepolia FANGORN_RPC_URL=${rpcUrl}`,
         `export FANGORN_DATA_REGISTRY=${dataRegistryContractAddress} FANGORN_SETTLEMENT_REGISTRY=${settlementRegistryContractAddress}`,
         `export SIGNED_URL_WORKER_URL=${storage.worker} PINATA_GATEWAY=${storage.gateway}`,
-        `exec fangorn "$@"`, "",
+        `exec '${process.execPath}' '${cli}' "$@"`, "",
     ].join("\n"), { mode: 0o755 });
     // An indexer config to start from: alice's and bob's "shop".
     writeFileSync(join(dir, "app.json"), JSON.stringify({ publishers: [addr("alice"), addr("bob")], repos: ["shop"],
