@@ -91,6 +91,34 @@ node -e 'import("viem/accounts").then(m => process.stdout.write(m.generatePrivat
 
 The seed is a local index's stitch and records, without vectors. It saves the Worker its first catch-up over the whole update log, which takes more requests than one run is allowed. Given a config (`seed.js app.json`) instead of an index, it does that catch-up itself first, embedding nothing. It waits out a rate-limited RPC (a read retries for about four minutes), and if the catch-up still fails, it exits with that error. `worker/deploy.sh <name> <config.json>` does all of the above for a new app: D1, seed, deploy, and a funded `INDEXER_KEY`. A repos index isn't seeded: the Worker catches up itself, in steps.
 
+### Many apps in one Worker: [worker/pool.js](worker/pool.js)
+
+The pool runs any number of apps in one Worker. Each app is one Durable Object, with its own SQLite index, config,
+gas key and alarm. The alarm replaces the cron, and each object runs `worker/index.js` unchanged, over its SQLite
+through a D1-shaped wrapper ([worker/sql.js](worker/sql.js)). Adding an app is an API call, not a deploy, and an idle
+app costs only its storage.
+
+```sh
+A="authorization: Bearer $ADMIN_TOKEN"
+curl -X PUT  https://<pool>/_pool/apps/my-app -H "$A" -d '{ "follow": ["0x…/shop"] }'   # create or update
+curl         https://<pool>/_pool/apps -H "$A"                  # every app's status, and the shared cache's size
+curl -X POST https://<pool>/_pool/apps/my-app/pause -H "$A"     # stop its runs; it keeps serving (…/resume to restart)
+curl -X DELETE https://<pool>/_pool/apps/my-app -H "$A"         # gone, with its hostname, index and key
+curl https://my-app.fangorn.network/search?q=table              # or https://<pool>/apps/my-app/search?q=table
+```
+
+- **Hostnames.** With `CF_API_TOKEN` set, each new app gets `<name>.<POOL_ZONE>` as a Workers Custom Domain on the
+  pool ([worker/domains.js](worker/domains.js)). That's free, since a first-level name needs no extra certificate.
+  A hostname another Worker already serves is refused, never moved. Without the token, apps are served by path.
+- **Shared embeddings.** With the `EMBEDS` binding, a vector made once for a text is reused by every app that embeds
+  the same text with the same model ([worker/embeds.js](worker/embeds.js)). Cache hits don't count against a run's
+  embedding budget, so an app following repos another app already indexed catches up much faster.
+- **Config** is the same as the per-app Worker's, minus what needs its own deploy: `rules` (check code; inline schemas
+  work), `index: "repos"` (the registry stays its own Worker) and `x402`.
+
+Copy [worker/pool.wrangler.example.json](worker/pool.wrangler.example.json), set the secrets `ADMIN_TOKEN`,
+`MASTER_KEY` (32 bytes of hex, which seals each app's gas key) and optionally `CF_API_TOKEN`, then `wrangler deploy`.
+
 An app adds its own MCP tools, or replaces a base one by name, with a Worker of its own:
 
 ```js

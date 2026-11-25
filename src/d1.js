@@ -208,14 +208,24 @@ export function d1Index({ db, fangorn, gate = null, perRun = CHANGES_PER_RUN }) 
     return {
         store, lens, getMeta, setMeta: (k, v) => setMeta(k, v).run(),
 
-        /** Vectors for up to `max` rows that have none, by `embed(texts) → vectors`. Returns how many. */
-        async embedMissing(embed, max = 100) {
-            const { results } = await db.prepare(`SELECT publisher, repo, id, text FROM records WHERE vec IS NULL AND ${allowed} LIMIT ?`).bind(...args, max).all();
+        /**
+         * Vectors for rows that have none: up to `max` by `embed(texts) → vectors`. Returns how many rows got one.
+         * With a `cache` (worker/embeds.js: `get(texts) → [packed | null]`, `put([[text, packed]])`), vectors already
+         * made for the same text (by any app sharing it) come from there first and don't count against `max`: a run
+         * looks at up to `scan` rows, fills the hits, and embeds at most `max` of the misses.
+         */
+        async embedMissing(embed, max = 100, { cache, scan = max * 10 } = {}) {
+            const { results } = await db.prepare(`SELECT publisher, repo, id, text FROM records WHERE vec IS NULL AND ${allowed} LIMIT ?`)
+                .bind(...args, cache ? scan : max).all();
             if (!results.length) return 0;
-            const vecs = await embed(results.map((r) => r.text));
-            await db.batch(results.map((r, i) => db.prepare("UPDATE records SET vec = ? WHERE publisher = ? AND repo = ? AND id = ?")
-                .bind(pack(vecs[i]), r.publisher, r.repo, r.id)));
-            return results.length;
+            const cached = cache ? await cache.get(results.map((r) => r.text)) : results.map(() => null);
+            const misses = results.filter((_, i) => !cached[i]).slice(0, max);
+            const made = misses.length ? (await embed(misses.map((r) => r.text))).map(pack) : [];
+            if (cache && made.length) await cache.put(misses.map((r, i) => [r.text, made[i]]));
+            const fill = [...results.flatMap((r, i) => (cached[i] ? [[r, cached[i]]] : [])), ...misses.map((r, i) => [r, made[i]])];
+            await db.batch(fill.map(([r, vec]) => db.prepare("UPDATE records SET vec = ? WHERE publisher = ? AND repo = ? AND id = ?")
+                .bind(vec, r.publisher, r.repo, r.id)));
+            return fill.length;
         },
 
         /**
