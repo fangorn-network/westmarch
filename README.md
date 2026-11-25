@@ -91,34 +91,6 @@ node -e 'import("viem/accounts").then(m => process.stdout.write(m.generatePrivat
 
 The seed is a local index's stitch and records, without vectors. It saves the Worker its first catch-up over the whole update log, which takes more requests than one run is allowed. Given a config (`seed.js app.json`) instead of an index, it does that catch-up itself first, embedding nothing. It waits out a rate-limited RPC (a read retries for about four minutes), and if the catch-up still fails, it exits with that error. `worker/deploy.sh <name> <config.json>` does all of the above for a new app: D1, seed, deploy, and a funded `INDEXER_KEY`. A repos index isn't seeded: the Worker catches up itself, in steps.
 
-### Many apps in one Worker: [worker/pool.js](worker/pool.js)
-
-The pool runs any number of apps in one Worker. Each app is one Durable Object, with its own SQLite index, config,
-gas key and alarm. The alarm replaces the cron, and each object runs `worker/index.js` unchanged, over its SQLite
-through a D1-shaped wrapper ([worker/sql.js](worker/sql.js)). Adding an app is an API call, not a deploy, and an idle
-app costs only its storage.
-
-```sh
-A="authorization: Bearer $ADMIN_TOKEN"
-curl -X PUT  https://<pool>/_pool/apps/my-app -H "$A" -d '{ "follow": ["0x…/shop"] }'   # create or update
-curl         https://<pool>/_pool/apps -H "$A"                  # every app's status, and the shared cache's size
-curl -X POST https://<pool>/_pool/apps/my-app/pause -H "$A"     # stop its runs; it keeps serving (…/resume to restart)
-curl -X DELETE https://<pool>/_pool/apps/my-app -H "$A"         # gone, with its hostname, index and key
-curl https://my-app.fangorn.network/search?q=table              # or https://<pool>/apps/my-app/search?q=table
-```
-
-- **Hostnames.** With `CF_API_TOKEN` set, each new app gets `<name>.<POOL_ZONE>` as a Workers Custom Domain on the
-  pool ([worker/domains.js](worker/domains.js)). That's free, since a first-level name needs no extra certificate.
-  A hostname another Worker already serves is refused, never moved. Without the token, apps are served by path.
-- **Shared embeddings.** With the `EMBEDS` binding, a vector made once for a text is reused by every app that embeds
-  the same text with the same model ([worker/embeds.js](worker/embeds.js)). Cache hits don't count against a run's
-  embedding budget, so an app following repos another app already indexed catches up much faster.
-- **Config** is the same as the per-app Worker's, minus what needs its own deploy: `rules` (check code; inline schemas
-  work), `index: "repos"` (the registry stays its own Worker) and `x402`.
-
-Copy [worker/pool.wrangler.example.json](worker/pool.wrangler.example.json), set the secrets `ADMIN_TOKEN`,
-`MASTER_KEY` (32 bytes of hex, which seals each app's gas key) and optionally `CF_API_TOKEN`, then `wrangler deploy`.
-
 An app adds its own MCP tools, or replaces a base one by name, with a Worker of its own:
 
 ```js
@@ -134,6 +106,35 @@ export default indexer({
 ```
 
 `worker/publisher.js` publishes a record into a person's own repo on their signature, through the grant they gave the app at fangorn.network. The app relays the commit, and holds no keys of theirs.
+
+### Many apps in one Worker: [worker/pool.js](worker/pool.js)
+
+The pool runs any number of apps in one Worker, instead of a Worker, a D1 database and a cron for each. Each app is one Durable Object with its own SQLite index, config, gas key and alarm. The alarm takes the cron's place, every minute, and each object runs `worker/index.js` unchanged, over its SQLite through a D1-shaped wrapper ([worker/sql.js](worker/sql.js)). So an app in the pool serves the same API as its own Worker would ([worker/API.md](worker/API.md)), and adding one is an API call, not a deploy.
+
+```sh
+A="authorization: Bearer $ADMIN_TOKEN"
+curl -X PUT    https://<pool>/_pool/apps/my-app -H "$A" -d '{ "follow": ["0x…/shop"] }'   # create or update
+curl           https://<pool>/_pool/apps -H "$A"                  # every app's status, and the shared cache's size
+curl -X POST   https://<pool>/_pool/apps/my-app/pause -H "$A"     # stop its runs; it keeps serving (…/resume to restart)
+curl -X DELETE https://<pool>/_pool/apps/my-app -H "$A"           # gone, with its hostname, index and key
+curl https://my-app.fangorn.network/search?q=table                # or https://<pool>/apps/my-app/search?q=table
+```
+
+The admin API is in [worker/API.md#the-pool](worker/API.md#the-pool).
+
+- **Hostnames.** With `CF_API_TOKEN` set, each new app gets `<name>.<POOL_ZONE>` as a Workers Custom Domain on the pool ([worker/domains.js](worker/domains.js)). That costs nothing: a first-level name needs no extra certificate. A hostname another Worker already serves is refused, never moved. Without the token, or for a refused name, the app is served by path, and its `/api.json` gives URLs under that path.
+- **Shared embeddings.** With the `EMBEDS` binding, a vector made once for a text is reused by every app that embeds the same text with the same model ([worker/embeds.js](worker/embeds.js)). It's one Durable Object's SQLite, not KV: a KV write costs five times as much, and the free plan allows 1,000 a day. Cache hits don't count against a run's budget of 100 embeddings, so an app following repos another app already indexed catches up much faster.
+- **Config** is the same as the per-app Worker's, minus what needs a deploy of its own: `rules` (check code; inline schemas work), `index: "repos"` (the registry stays its own Worker) and `x402`.
+- **Cost.** An idle app still runs every minute: about 43k alarms a month, with a few rows written and a second or two of Durable Object time each. That, not storage or embedding, is most of what an app costs, and on the free plan it's what limits how many apps fit.
+
+Deploy it: copy [worker/pool.wrangler.example.json](worker/pool.wrangler.example.json) into a project that depends on westmarch, set `POOL_SERVICE` to the Worker's name and `CF_ACCOUNT_ID` to its account, then:
+
+```sh
+openssl rand -hex 32 | wrangler secret put MASTER_KEY     # seals each app's gas key; losing it loses every app's wallet
+openssl rand -hex 32 | wrangler secret put ADMIN_TOKEN
+wrangler secret put CF_API_TOKEN                          # optional, for hostnames: Workers Scripts edit, Zone read, DNS edit, Workers Routes edit
+wrangler deploy
+```
 
 ## Give it to an agent
 
@@ -165,6 +166,11 @@ Without `--watch`, the server only reads `index.db`, and a separate `npm start` 
 | [src/client.js](src/client.js) | creates the SDK client from a config |
 | [src/fold.js](src/fold.js) | `fold`: shared app state, a pure reducer over the update log of the repos a set of patterns follows; resumable, and stoppable at a stitch |
 | [src/d1.js](src/d1.js) / [worker/](worker/) | the index on Cloudflare D1 (store, lens, view, search by meaning), and the Worker that runs it on a cron with Workers AI, its MCP tools, and publishing as a person |
+| [worker/pool.js](worker/pool.js) | the pool: many apps in one Worker, one Durable Object each (`App`), the list of them (`Directory`), and the admin API |
+| [worker/tenant.js](worker/tenant.js) | an app's config as the pool takes it, its sealed gas key, its env, and which app a request is for |
+| [worker/sql.js](worker/sql.js) | `d1OfSql`: a D1-shaped database over a Durable Object's SQLite, so src/d1.js runs in one unchanged |
+| [worker/embeds.js](worker/embeds.js) | the shared embedding cache: the `Embeds` Durable Object, and `embedCache` for src/d1.js's `embedMissing` |
+| [worker/domains.js](worker/domains.js) | each app's hostname, as a Workers Custom Domain on the pool |
 | [src/repos.js](src/repos.js) | `d1Repos`: the repos index on D1 (one row per repo: head and agent card, re-read a bounded batch per run), `find` and `get` |
 | [src/gemma.js](src/gemma.js) | EmbeddingGemma: the model, the prompts, matryoshka truncation and vector packing |
 | [src/sandbox.js](src/sandbox.js) | the local sandbox: anvil, the contracts, and `storageServer` (the upload worker and gateway, locally) |
@@ -177,5 +183,7 @@ A lens is anything with `apply(changes)`, where `changes` is `[{ publisher, repo
 npm test                    # in memory: an in-memory chain, a fake embedder, :memory: SQLite
 EMBED_LOCAL=1 npm test      # also runs the real model
 ```
+
+[worker/pool.test.js](worker/pool.test.js) runs the pool on the in-memory chain, with a stand-in for a Durable Object's storage over `node:sqlite`. The stand-in can't prove everything the runtime does (what a Worker's main module may export, Durable Object SQLite's own rules), so check a pool change in `wrangler dev` too.
 
 [src/e2e.test.js](src/e2e.test.js) covers the whole path: publish, then the runner follows it, then an agent searches and fetches over MCP.
